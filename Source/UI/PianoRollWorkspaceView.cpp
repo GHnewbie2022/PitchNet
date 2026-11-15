@@ -81,6 +81,9 @@ PianoRollWorkspaceView::PianoRollWorkspaceView(PianoRollComponent &piano)
   // The range is wide now; keep the slider's middle where it was (260 px/s)
   // so the everyday zooms still get most of its travel.
   zoomXSlider.setSkewFactorFromMidPoint(260.0);
+  // Alt + click (or a double-click) puts it back in the middle.
+  zoomXSlider.setDoubleClickReturnValue(true, 260.0,
+                                        juce::ModifierKeys::altModifier);
   zoomXSlider.setValue(pianoRoll.getPixelsPerSecond(),
                        juce::dontSendNotification);
   zoomXSlider.onValueChange = [this]()
@@ -96,6 +99,8 @@ PianoRollWorkspaceView::PianoRollWorkspaceView(PianoRollComponent &piano)
   zoomYSlider.setLookAndFeel(&floatingZoomSliderLookAndFeel);
   zoomYSlider.setRange(MIN_PIXELS_PER_SEMITONE, MAX_PIXELS_PER_SEMITONE, 0.1);
   zoomYSlider.setSkewFactorFromMidPoint(64.0);
+  zoomYSlider.setDoubleClickReturnValue(true, 64.0,
+                                        juce::ModifierKeys::altModifier);
   zoomYSlider.setValue(pianoRoll.getPixelsPerSemitone(),
                        juce::dontSendNotification);
   zoomYSlider.onValueChange = [this]()
