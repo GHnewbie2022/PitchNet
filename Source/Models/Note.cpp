@@ -2,7 +2,14 @@
 
 #include <algorithm>
 #include "../Utils/Constants.h"
+#include <atomic>
 #include <cmath>
+
+std::uint64_t Note::nextUid()
+{
+    static std::atomic<std::uint64_t> counter{0};
+    return ++counter;
+}
 
 Note::Note(int startFrame, int endFrame, float midiNote)
     : srcStartFrame(startFrame), srcEndFrame(endFrame),

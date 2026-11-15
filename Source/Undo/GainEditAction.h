@@ -3,6 +3,7 @@
 #include "UndoableAction.h"
 #include "../Audio/ProjectGain.h"
 #include "../Models/Project.h"
+#include "../Models/NoteRef.h"
 #include "../Utils/Constants.h"
 #include "../Utils/NoteGainCurve.h"
 
@@ -112,9 +113,10 @@ inline std::unique_ptr<GainEditAction> noteGains(
 {
     const auto [first, last] = projectgain::noteGainSpan(
         project, std::vector<const Note*>(notes.begin(), notes.end()));
-    auto setState = [notes, volumeBefore, volumeAfter, balanceBefore,
-                     balanceAfter](bool after)
+    auto setState = [refs = noteref::refs(notes), volumeBefore, volumeAfter,
+                     balanceBefore, balanceAfter](bool after)
     {
+        const auto notes = noteref::resolve(refs);
         for (size_t i = 0; i < notes.size(); ++i)
         {
             if (!notes[i])

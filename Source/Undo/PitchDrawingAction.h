@@ -3,6 +3,7 @@
 #include "UndoableAction.h"
 #include "../Models/Note.h"
 #include "../Models/Project.h"
+#include "../Models/NoteRef.h"
 #include "../Utils/PitchCurveProcessor.h"
 #include "../Utils/TransformParams.h"
 
@@ -13,7 +14,7 @@
 
 struct PitchDrawingNoteState
 {
-    Note* note = nullptr;
+    NoteRef note;
     TransformParams params;
     std::vector<float> bakedDeltaPitch;
 };
@@ -46,15 +47,16 @@ private:
 
         for (const auto& state : states)
         {
-            if (!state.note)
+            auto* note = state.note.get();
+            if (!note)
                 continue;
 
-            state.params.applyToNote(*state.note);
-            state.note->setBakedDeltaPitch(state.bakedDeltaPitch);
-            state.note->markDirty();
-            state.note->markSynthDirty();
-            minFrame = std::min(minFrame, state.note->getStartFrame());
-            maxFrame = std::max(maxFrame, state.note->getEndFrame());
+            state.params.applyToNote(*note);
+            note->setBakedDeltaPitch(state.bakedDeltaPitch);
+            note->markDirty();
+            note->markSynthDirty();
+            minFrame = std::min(minFrame, note->getStartFrame());
+            maxFrame = std::max(maxFrame, note->getEndFrame());
         }
 
         if (!project || minFrame > maxFrame)

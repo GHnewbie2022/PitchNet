@@ -3,6 +3,7 @@
 #include "UndoableAction.h"
 #include "../Models/Note.h"
 #include "../Models/Project.h"
+#include "../Models/NoteRef.h"
 #include "../Utils/PitchCurveProcessor.h"
 #include "../Utils/TransformParams.h"
 #include <vector>
@@ -23,7 +24,7 @@ public:
         const std::vector<TransformParams> &newParams,
         std::function<void(int, int)> onRangeChanged = nullptr)
         : project(project),
-          notes(std::move(affectedNotes)),
+          noteRefs(noteref::refs(affectedNotes)),
           oldParams(oldParams),
           newParams(newParams),
           onRangeChanged(std::move(onRangeChanged)) {}
@@ -43,15 +44,18 @@ public:
 private:
     void applyParams(const std::vector<TransformParams> &params)
     {
-        for (size_t i = 0; i < notes.size(); ++i)
+        const auto resolved = noteref::resolve(noteRefs);
+        for (size_t i = 0; i < resolved.size(); ++i)
         {
-            if (notes[i] && i < params.size())
+            if (resolved[i] && i < params.size())
             {
-                params[i].applyToNote(*notes[i]);
-                notes[i]->markDirty();
-                notes[i]->markSynthDirty();
+                params[i].applyToNote(*resolved[i]);
+                resolved[i]->markDirty();
+                resolved[i]->markSynthDirty();
             }
         }
+        // The ranges below only count the notes that still exist.
+        const auto notes = noteref::present(noteRefs);
 
         if (project)
         {
@@ -84,7 +88,7 @@ private:
     }
 
     Project *project;
-    std::vector<Note *> notes;
+    std::vector<NoteRef> noteRefs;
     std::vector<TransformParams> oldParams;
     std::vector<TransformParams> newParams;
     std::function<void(int, int)> onRangeChanged;

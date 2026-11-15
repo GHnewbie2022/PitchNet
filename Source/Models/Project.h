@@ -4,6 +4,7 @@
 #include "../Audio/IO/MidiReference.h"
 #include "../Audio/WarpMap.h"
 #include "Note.h"
+#include "NoteRef.h"
 #include <cstdint>
 #include <vector>
 #include <memory>
@@ -361,7 +362,7 @@ private:
     juce::String audioSha256;
 
     AudioData audioData;
-    std::vector<Note> notes;
+    NoteList notes;
 
     float globalPitchOffset = 0.0f;
     float formantShift = 0.0f;

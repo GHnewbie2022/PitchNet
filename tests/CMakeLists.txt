@@ -28,6 +28,7 @@ set(PITCHNET_TEST_SOURCES
     PluginStateArchiveTests.cpp
     ProjectModificationRangeTests.cpp
     TimelineCoordinateTests.cpp
+    UndoNoteRefTests.cpp
     VisualWaveformEnvelopeTests.cpp
     WarpLayerTests.cpp)
 

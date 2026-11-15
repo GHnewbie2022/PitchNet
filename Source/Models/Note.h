@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../JuceHeader.h"
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -269,7 +270,16 @@ public:
     bool containsFrame(int frame) const;
     bool isNeutralForOriginalWaveform() const;
 
+    // Identifies the note across edits that move it in memory (a split or
+    // merge inserts into and erases from the project's note list): copies
+    // keep it, so undo can find the note it changed (NoteRef.h). A note
+    // made from scratch - the right half of a split - gets a new one.
+    std::uint64_t getUid() const { return uid; }
+
 private:
+    static std::uint64_t nextUid();
+    std::uint64_t uid = nextUid();
+
     // Source position (in original waveform, fixed after detection)
     int srcStartFrame = 0;
     int srcEndFrame = 0;

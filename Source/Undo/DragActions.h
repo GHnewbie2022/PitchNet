@@ -3,6 +3,7 @@
 #include "UndoableAction.h"
 #include "F0FrameEdit.h"
 #include "../Models/Note.h"
+#include "../Models/NoteRef.h"
 #include <vector>
 #include <functional>
 
@@ -16,11 +17,12 @@ public:
                         float oldMidi, float newMidi,
                         std::vector<F0FrameEdit> f0Edits,
                         std::function<void(Note *)> onNoteChanged = nullptr)
-        : note(note), f0Array(f0Array), oldMidi(oldMidi), newMidi(newMidi),
+        : noteRef(note), f0Array(f0Array), oldMidi(oldMidi), newMidi(newMidi),
           f0Edits(std::move(f0Edits)), onNoteChanged(onNoteChanged) {}
 
     void undo() override
     {
+        Note *note = noteRef.get();
         if (note)
         {
             note->setMidiNote(oldMidi);
@@ -43,6 +45,7 @@ public:
 
     void redo() override
     {
+        Note *note = noteRef.get();
         if (note)
         {
             note->setMidiNote(newMidi);
@@ -66,7 +69,7 @@ public:
     juce::String getName() const override { return "Drag Note Pitch"; }
 
 private:
-    Note *note;
+    NoteRef noteRef;
     std::vector<float> *f0Array;
     float oldMidi;
     float newMidi;
@@ -84,11 +87,12 @@ public:
                              std::vector<float> oldMidis, float pitchDelta,
                              std::vector<F0FrameEdit> f0Edits,
                              std::function<void(const std::vector<Note *> &)> onNotesChanged = nullptr)
-        : notes(std::move(notes)), f0Array(f0Array), oldMidis(std::move(oldMidis)),
+        : noteRefs(noteref::refs(notes)), f0Array(f0Array), oldMidis(std::move(oldMidis)),
           pitchDelta(pitchDelta), f0Edits(std::move(f0Edits)), onNotesChanged(onNotesChanged) {}
 
     void undo() override
     {
+        const auto notes = noteref::resolve(noteRefs);
         for (size_t i = 0; i < notes.size() && i < oldMidis.size(); ++i)
         {
             if (notes[i])
@@ -107,11 +111,12 @@ public:
             }
         }
         if (onNotesChanged)
-            onNotesChanged(notes);
+            onNotesChanged(noteref::present(noteRefs));
     }
 
     void redo() override
     {
+        const auto notes = noteref::resolve(noteRefs);
         for (size_t i = 0; i < notes.size() && i < oldMidis.size(); ++i)
         {
             if (notes[i])
@@ -130,13 +135,13 @@ public:
             }
         }
         if (onNotesChanged)
-            onNotesChanged(notes);
+            onNotesChanged(noteref::present(noteRefs));
     }
 
     juce::String getName() const override { return "Drag Multiple Notes"; }
 
 private:
-    std::vector<Note *> notes;
+    std::vector<NoteRef> noteRefs;
     std::vector<float> *f0Array;
     std::vector<float> oldMidis;
     float pitchDelta;
@@ -154,13 +159,14 @@ public:
                              std::vector<float> oldMidis,
                              std::vector<float> newMidis,
                              std::function<void(const std::vector<Note *> &)> onNotesChanged = nullptr)
-        : notes(std::move(notes)),
+        : noteRefs(noteref::refs(notes)),
           oldMidis(std::move(oldMidis)),
           newMidis(std::move(newMidis)),
           onNotesChanged(std::move(onNotesChanged)) {}
 
     void undo() override
     {
+        const auto notes = noteref::resolve(noteRefs);
         for (size_t i = 0; i < notes.size() && i < oldMidis.size(); ++i)
         {
             if (!notes[i])
@@ -170,11 +176,12 @@ public:
             notes[i]->markSynthDirty();
         }
         if (onNotesChanged)
-            onNotesChanged(notes);
+            onNotesChanged(noteref::present(noteRefs));
     }
 
     void redo() override
     {
+        const auto notes = noteref::resolve(noteRefs);
         for (size_t i = 0; i < notes.size() && i < newMidis.size(); ++i)
         {
             if (!notes[i])
@@ -184,13 +191,13 @@ public:
             notes[i]->markSynthDirty();
         }
         if (onNotesChanged)
-            onNotesChanged(notes);
+            onNotesChanged(noteref::present(noteRefs));
     }
 
     juce::String getName() const override { return "Nudge Note Pitch"; }
 
 private:
-    std::vector<Note *> notes;
+    std::vector<NoteRef> noteRefs;
     std::vector<float> oldMidis;
     std::vector<float> newMidis;
     std::function<void(const std::vector<Note *> &)> onNotesChanged;
@@ -213,7 +220,7 @@ public:
                                 float oldPitchCenter,
                                 float newPitchCenter,
                                 ChangeCallback onChanged = nullptr)
-        : notes(std::move(notes)), oldMidis(std::move(oldMidis)),
+        : noteRefs(noteref::refs(notes)), oldMidis(std::move(oldMidis)),
           newMidis(std::move(newMidis)), oldDrifts(std::move(oldDrifts)),
           newDrifts(std::move(newDrifts)), oldPitchCenter(oldPitchCenter),
           newPitchCenter(newPitchCenter), onChanged(std::move(onChanged)) {}
@@ -225,6 +232,7 @@ public:
 private:
     void apply(const std::vector<float> &midis, const std::vector<float> &drifts, float pitchCenter)
     {
+        const auto notes = noteref::resolve(noteRefs);
         for (size_t i = 0; i < notes.size() && i < midis.size(); ++i)
         {
             if (!notes[i]) continue;
@@ -233,10 +241,10 @@ private:
             notes[i]->markDirty();
             notes[i]->markSynthDirty();
         }
-        if (onChanged) onChanged(pitchCenter, notes);
+        if (onChanged) onChanged(pitchCenter, noteref::present(noteRefs));
     }
 
-    std::vector<Note *> notes;
+    std::vector<NoteRef> noteRefs;
     std::vector<float> oldMidis, newMidis;
     std::vector<float> oldDrifts, newDrifts;
     float oldPitchCenter = 0.0f, newPitchCenter = 0.0f;

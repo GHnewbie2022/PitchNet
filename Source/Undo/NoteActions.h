@@ -3,6 +3,7 @@
 #include "UndoableAction.h"
 #include "../Models/Note.h"
 #include "../Models/Project.h"
+#include "../Models/NoteRef.h"
 #include "../Utils/PitchCurveProcessor.h"
 #include <algorithm>
 #include <limits>
@@ -21,12 +22,13 @@ public:
     NoteFloatPropertyAction(Note *note, float oldVal, float newVal,
                             Setter setter, juce::String actionName,
                             std::function<void(Note *)> onNoteChanged = nullptr)
-        : note(note), oldVal(oldVal), newVal(newVal),
+        : noteRef(note), oldVal(oldVal), newVal(newVal),
           setter(setter), actionName(std::move(actionName)),
           onNoteChanged(onNoteChanged) {}
 
     void undo() override
     {
+        Note *note = noteRef.get();
         if (!note)
             return;
         (note->*setter)(oldVal);
@@ -36,6 +38,7 @@ public:
     }
     void redo() override
     {
+        Note *note = noteRef.get();
         if (!note)
             return;
         (note->*setter)(newVal);
@@ -46,7 +49,7 @@ public:
     juce::String getName() const override { return actionName; }
 
 private:
-    Note *note;
+    NoteRef noteRef;
     float oldVal;
     float newVal;
     Setter setter;
@@ -68,12 +71,13 @@ public:
                                  const std::vector<float> &newVals,
                                  Setter setter, juce::String actionName,
                                  std::function<void()> onChanged = nullptr)
-        : notes(notes), oldVals(oldVals), newVals(newVals),
+        : noteRefs(noteref::refs(notes)), oldVals(oldVals), newVals(newVals),
           setter(setter), actionName(std::move(actionName)),
           onChanged(onChanged) {}
 
     void undo() override
     {
+        const auto notes = noteref::resolve(noteRefs);
         for (size_t i = 0; i < notes.size() && i < oldVals.size(); ++i)
         {
             if (notes[i])
@@ -88,6 +92,7 @@ public:
 
     void redo() override
     {
+        const auto notes = noteref::resolve(noteRefs);
         for (size_t i = 0; i < notes.size() && i < newVals.size(); ++i)
         {
             if (notes[i])
@@ -103,7 +108,7 @@ public:
     juce::String getName() const override { return actionName; }
 
 private:
-    std::vector<Note *> notes;
+    std::vector<NoteRef> noteRefs;
     std::vector<float> oldVals;
     std::vector<float> newVals;
     Setter setter;
@@ -129,11 +134,12 @@ public:
                     const std::vector<float> &oldTilts,
                     const std::vector<float> &oldMidiNotes,
                     std::function<void()> onChanged = nullptr)
-        : notes(notes), side(side), oldTilts(oldTilts),
+        : noteRefs(noteref::refs(notes)), side(side), oldTilts(oldTilts),
           oldMidiNotes(oldMidiNotes), onChanged(onChanged) {}
 
     void undo() override
     {
+        const auto notes = noteref::resolve(noteRefs);
         for (size_t i = 0; i < notes.size() && i < oldTilts.size(); ++i)
         {
             if (notes[i])
@@ -156,6 +162,7 @@ public:
 
     void redo() override
     {
+        const auto notes = noteref::resolve(noteRefs);
         for (size_t i = 0; i < notes.size(); ++i)
         {
             if (notes[i])
@@ -189,7 +196,7 @@ public:
     }
 
 private:
-    std::vector<Note *> notes;
+    std::vector<NoteRef> noteRefs;
     TiltSide side;
     std::vector<float> oldTilts;
     std::vector<float> oldMidiNotes;
@@ -207,11 +214,12 @@ public:
                              float oldMidi, float oldOffset,
                              float newMidi,
                              std::function<void(Note *)> onNoteChanged = nullptr)
-        : note(note), oldMidi(oldMidi), oldOffset(oldOffset),
+        : noteRef(note), oldMidi(oldMidi), oldOffset(oldOffset),
           newMidi(newMidi), onNoteChanged(onNoteChanged) {}
 
     void undo() override
     {
+        Note *note = noteRef.get();
         if (note)
         {
             note->setMidiNote(oldMidi);
@@ -225,6 +233,7 @@ public:
 
     void redo() override
     {
+        Note *note = noteRef.get();
         if (note)
         {
             note->setMidiNote(newMidi);
@@ -239,7 +248,7 @@ public:
     juce::String getName() const override { return "Snap to Semitone"; }
 
 private:
-    Note *note;
+    NoteRef noteRef;
     float oldMidi;
     float oldOffset;
     float newMidi;
@@ -257,7 +266,7 @@ public:
                                   std::vector<float> oldOffsets,
                                   std::vector<float> newMidis,
                                   std::function<void(const std::vector<Note *> &)> onNotesChanged = nullptr)
-        : notes(notes),
+        : noteRefs(noteref::refs(notes)),
           oldMidis(std::move(oldMidis)),
           oldOffsets(std::move(oldOffsets)),
           newMidis(std::move(newMidis)),
@@ -265,6 +274,7 @@ public:
 
     void undo() override
     {
+        const auto notes = noteref::resolve(noteRefs);
         for (size_t i = 0; i < notes.size(); ++i)
         {
             auto *note = notes[i];
@@ -276,11 +286,12 @@ public:
             note->markSynthDirty();
         }
         if (onNotesChanged)
-            onNotesChanged(notes);
+            onNotesChanged(noteref::present(noteRefs));
     }
 
     void redo() override
     {
+        const auto notes = noteref::resolve(noteRefs);
         for (size_t i = 0; i < notes.size(); ++i)
         {
             auto *note = notes[i];
@@ -292,13 +303,13 @@ public:
             note->markSynthDirty();
         }
         if (onNotesChanged)
-            onNotesChanged(notes);
+            onNotesChanged(noteref::present(noteRefs));
     }
 
     juce::String getName() const override { return "Snap Notes to Semitone"; }
 
 private:
-    std::vector<Note *> notes;
+    std::vector<NoteRef> noteRefs;
     std::vector<float> oldMidis;
     std::vector<float> oldOffsets;
     std::vector<float> newMidis;

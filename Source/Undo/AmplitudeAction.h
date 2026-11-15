@@ -26,9 +26,10 @@ private:
     static SetState makeSetState(std::vector<Note*> notes, std::vector<float> before,
                                  std::vector<float> after)
     {
-        return [notes = std::move(notes), before = std::move(before),
+        return [refs = noteref::refs(notes), before = std::move(before),
                 after = std::move(after)](bool toAfter)
         {
+            const auto notes = noteref::resolve(refs);
             const auto& volume = toAfter ? after : before;
             for (size_t i = 0; i < notes.size() && i < volume.size(); ++i)
                 if (notes[i])
