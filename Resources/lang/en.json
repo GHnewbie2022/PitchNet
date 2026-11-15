@@ -351,5 +351,18 @@
   "warp.limit.left": "Left segment: {reason}",
   "warp.limit.right": "Right segment: {reason}",
   "warp.input.tooltip": "Type a ratio (e.g. 112.35%) or a length (e.g. 1.57 s); Enter applies, Esc cancels",
+  "category.view": "View",
+  "command.zoom_in_horizontal": "Zoom In Horizontally",
+  "command.zoom_in_horizontal.desp": "Zoom the timeline in (Shortcut: G)",
+  "command.zoom_out_horizontal": "Zoom Out Horizontally",
+  "command.zoom_out_horizontal.desp": "Zoom the timeline out (Shortcut: H)",
+  "command.zoom_in_vertical": "Zoom In Vertically",
+  "command.zoom_in_vertical.desp": "Zoom the pitch axis in (Shortcut: Shift+G)",
+  "command.zoom_out_vertical": "Zoom Out Vertically",
+  "command.zoom_out_vertical.desp": "Zoom the pitch axis out (Shortcut: Shift+H)",
+  "command.zoom_to_selection": "Zoom to Selected Notes",
+  "command.zoom_to_selection.desp": "Fit the selected notes in both directions; with none selected, zoom in horizontally around the playhead (Shortcut: Shift+S)",
+  "command.zoom_to_full_length": "Zoom to Full Length",
+  "command.zoom_to_full_length.desp": "Fit the whole audio horizontally (Shortcut: Shift+F)",
   "canvas.warp": "Warp"
 }

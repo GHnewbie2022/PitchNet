@@ -46,6 +46,14 @@ namespace CommandIDs
         activateWarpTool    = 0x2046,
         
         // Pitch Tool Commands (0x2050-0x205F)
-        fourierFilter       = 0x2050
+        fourierFilter       = 0x2050,
+
+        // View Commands (0x2060-0x206F)
+        zoomInHorizontal    = 0x2060,
+        zoomOutHorizontal   = 0x2061,
+        zoomInVertical      = 0x2062,
+        zoomOutVertical     = 0x2063,
+        zoomToSelection     = 0x2064,
+        zoomToFullLength    = 0x2065
     };
 }

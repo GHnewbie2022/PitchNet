@@ -120,6 +120,16 @@ public:
   // Zoom with optional center point
   void setPixelsPerSecond(float pps, bool centerOnCursor = false);
   void setPixelsPerSemitone(float pps, float anchorContentY = -1.0f);
+
+  // Keyboard zoom (G / H, Shift+G / Shift+H, Shift+S, Shift+F).
+  // Horizontal zoom keeps the playhead in place while it is on screen,
+  // otherwise the middle of the view.
+  void zoomHorizontallyBy(float factor);
+  void zoomVerticallyBy(float factor);
+  // Fits the selected notes in both directions. With none selected, zooms
+  // in one horizontal step centred on the playhead instead.
+  bool zoomToNotes();
+  void zoomToFullLength();
   float getPixelsPerSecond() const { return pixelsPerSecond; }
   float getPixelsPerSemitone() const { return pixelsPerSemitone; }
 

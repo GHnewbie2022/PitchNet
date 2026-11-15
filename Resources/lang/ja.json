@@ -309,5 +309,18 @@
   "warp.limit.left": "左の区間: {reason}",
   "warp.limit.right": "右の区間: {reason}",
   "warp.input.tooltip": "比率（例: 112.35%）または長さ（例: 1.57 s）を入力。Enter で適用、Esc で取消",
+  "category.view": "表示",
+  "command.zoom_in_horizontal": "水平ズームイン",
+  "command.zoom_in_horizontal.desp": "時間軸を拡大します（ショートカット: G）",
+  "command.zoom_out_horizontal": "水平ズームアウト",
+  "command.zoom_out_horizontal.desp": "時間軸を縮小します（ショートカット: H）",
+  "command.zoom_in_vertical": "垂直ズームイン",
+  "command.zoom_in_vertical.desp": "音高方向を拡大します（ショートカット: Shift＋G）",
+  "command.zoom_out_vertical": "垂直ズームアウト",
+  "command.zoom_out_vertical.desp": "音高方向を縮小します（ショートカット: Shift＋H）",
+  "command.zoom_to_selection": "選択ノートにズーム",
+  "command.zoom_to_selection.desp": "選択したノートに水平・垂直ともズームします。未選択時は playhead を中心に水平ズームイン（ショートカット: Shift＋S）",
+  "command.zoom_to_full_length": "全体を表示",
+  "command.zoom_to_full_length.desp": "オーディオ全体に水平ズームします（ショートカット: Shift＋F）",
   "canvas.warp": "ワープ"
 }

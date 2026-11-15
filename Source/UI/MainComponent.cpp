@@ -4037,7 +4037,15 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID> &commands)
       CommandIDs::activateMainTool,
       CommandIDs::activateSplitTool,
       CommandIDs::activatePitchDrawingTool,
-      CommandIDs::activateTimingTool};
+      CommandIDs::activateWarpTool,
+
+      // View commands
+      CommandIDs::zoomInHorizontal,
+      CommandIDs::zoomOutHorizontal,
+      CommandIDs::zoomInVertical,
+      CommandIDs::zoomOutVertical,
+      CommandIDs::zoomToSelection,
+      CommandIDs::zoomToFullLength};
 
   commands.addArray(commandArray, sizeof(commandArray) / sizeof(commandArray[0]));
 }
@@ -4210,7 +4218,50 @@ void MainComponent::getCommandInfo(juce::CommandID commandID,
                    TR("category.edit_mode"), 0);
     result.addDefaultKeypress('4', juce::ModifierKeys::noModifiers);
     result.setActive(project != nullptr && toolGroupEnabled);
-    result.setTicked(pianoRoll.getEditMode() == EditMode::Timing);
+    result.setTicked(pianoRoll.getEditMode() == EditMode::Warp);
+    break;
+
+  // View commands
+  case CommandIDs::zoomInHorizontal:
+    result.setInfo(TR("command.zoom_in_horizontal"), TR("command.zoom_in_horizontal.desp"),
+                   TR("category.view"), 0);
+    result.addDefaultKeypress('g', juce::ModifierKeys::noModifiers);
+    result.setActive(project != nullptr);
+    break;
+
+  case CommandIDs::zoomOutHorizontal:
+    result.setInfo(TR("command.zoom_out_horizontal"), TR("command.zoom_out_horizontal.desp"),
+                   TR("category.view"), 0);
+    result.addDefaultKeypress('h', juce::ModifierKeys::noModifiers);
+    result.setActive(project != nullptr);
+    break;
+
+  case CommandIDs::zoomInVertical:
+    result.setInfo(TR("command.zoom_in_vertical"), TR("command.zoom_in_vertical.desp"),
+                   TR("category.view"), 0);
+    result.addDefaultKeypress('g', juce::ModifierKeys::shiftModifier);
+    result.setActive(project != nullptr);
+    break;
+
+  case CommandIDs::zoomOutVertical:
+    result.setInfo(TR("command.zoom_out_vertical"), TR("command.zoom_out_vertical.desp"),
+                   TR("category.view"), 0);
+    result.addDefaultKeypress('h', juce::ModifierKeys::shiftModifier);
+    result.setActive(project != nullptr);
+    break;
+
+  case CommandIDs::zoomToSelection:
+    result.setInfo(TR("command.zoom_to_selection"), TR("command.zoom_to_selection.desp"),
+                   TR("category.view"), 0);
+    result.addDefaultKeypress('s', juce::ModifierKeys::shiftModifier);
+    result.setActive(project != nullptr);
+    break;
+
+  case CommandIDs::zoomToFullLength:
+    result.setInfo(TR("command.zoom_to_full_length"), TR("command.zoom_to_full_length.desp"),
+                   TR("category.view"), 0);
+    result.addDefaultKeypress('f', juce::ModifierKeys::shiftModifier);
+    result.setActive(project != nullptr);
     break;
 
   default:
@@ -4351,7 +4402,31 @@ bool MainComponent::perform(const ApplicationCommandTarget::InvocationInfo &info
 
   case CommandIDs::activateWarpTool:
     if (toolGroupEnabled)
-      setEditMode(EditMode::Timing);
+      setEditMode(EditMode::Warp);
+    return true;
+
+  case CommandIDs::zoomInHorizontal:
+    pianoRoll.zoomHorizontallyBy(1.5f);
+    return true;
+
+  case CommandIDs::zoomOutHorizontal:
+    pianoRoll.zoomHorizontallyBy(1.0f / 1.5f);
+    return true;
+
+  case CommandIDs::zoomInVertical:
+    pianoRoll.zoomVerticallyBy(1.25f);
+    return true;
+
+  case CommandIDs::zoomOutVertical:
+    pianoRoll.zoomVerticallyBy(1.0f / 1.25f);
+    return true;
+
+  case CommandIDs::zoomToSelection:
+    pianoRoll.zoomToNotes();
+    return true;
+
+  case CommandIDs::zoomToFullLength:
+    pianoRoll.zoomToFullLength();
     return true;
 
   default:

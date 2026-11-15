@@ -2712,13 +2712,6 @@ void PianoRollComponent::modifierKeysChanged(
       mousePosition.x >= pianoKeysWidth && mousePosition.y >= headerHeight &&
       mousePosition.x < pianoKeysWidth + getVisibleContentWidth() &&
       mousePosition.y < headerHeight + getVisibleContentHeight();
-  const float worldX = mousePosition.x - pianoKeysWidth +
-                       static_cast<float>(scrollX);
-  const float worldY = mousePosition.y - headerHeight +
-                       static_cast<float>(scrollY);
-  const bool pointerOverNote =
-      mouseOverCanvas && editMode == EditMode::Select &&
-      findNoteAt(worldX, worldY) != nullptr;
 
 #if JUCE_MAC
   const bool zoomModifierDown = modifiers.isCommandDown();
@@ -3604,6 +3597,137 @@ void PianoRollComponent::setPixelsPerSecond(float pps, bool centerOnCursor)
 
   // Don't call onZoomChanged here to avoid infinite recursion
   // The caller is responsible for synchronizing other components
+}
+
+void PianoRollComponent::zoomHorizontallyBy(float factor)
+{
+  const int visibleWidth = getVisibleContentWidth();
+  if (visibleWidth <= 0 || !(factor > 0.0f))
+    return;
+  const double viewStart = scrollX / pixelsPerSecond;
+  const double viewEnd = (scrollX + visibleWidth) / pixelsPerSecond;
+  const bool cursorOnScreen = cursorTime >= viewStart && cursorTime <= viewEnd;
+  const double anchorTime =
+      cursorOnScreen ? cursorTime : (viewStart + viewEnd) * 0.5;
+  const double anchorOffset = anchorTime * pixelsPerSecond - scrollX;
+
+  const double totalTime = getTimelineLength();
+  const float minPps = totalTime > 0.0
+                           ? std::max(MIN_PIXELS_PER_SECOND,
+                                      static_cast<float>(visibleWidth / totalTime))
+                           : MIN_PIXELS_PER_SECOND;
+  const float newPps =
+      juce::jlimit(minPps, MAX_PIXELS_PER_SECOND, pixelsPerSecond * factor);
+  if (std::abs(newPps - pixelsPerSecond) < 0.01f)
+    return;
+
+  pixelsPerSecond = newPps;
+  coordMapper->setPixelsPerSecond(newPps);
+  scrollX = clampScrollX(anchorTime * newPps - anchorOffset);
+  coordMapper->setScrollX(scrollX);
+  updateScrollBars();
+  updatePreviewButtonBounds();
+  repaint();
+  if (onZoomChanged)
+    onZoomChanged(pixelsPerSecond);
+}
+
+void PianoRollComponent::zoomVerticallyBy(float factor)
+{
+  if (!(factor > 0.0f))
+    return;
+  setPixelsPerSemitone(pixelsPerSemitone * factor,
+                       static_cast<float>(getVisibleContentHeight()) * 0.5f);
+  updateScrollBars();
+  repaint();
+}
+
+bool PianoRollComponent::zoomToNotes()
+{
+  if (!project)
+    return false;
+  std::vector<const Note *> notes;
+  for (const auto &note : project->getNotes())
+    if (!note.isRest() && note.isSelected())
+      notes.push_back(&note);
+  if (notes.empty())
+  {
+    // Nothing selected: zoom in one step around the playhead (the playback
+    // position in plugin mode, where the host owns the transport), and put
+    // it in the middle of the view.
+    const double centre = playheadMarkerVisible ? playheadTime : cursorTime;
+    zoomHorizontallyBy(1.5f);
+    scrollX = clampScrollX(centre * pixelsPerSecond -
+                           getVisibleContentWidth() * 0.5);
+    coordMapper->setScrollX(scrollX);
+    updateScrollBars();
+    updatePreviewButtonBounds();
+    repaint();
+    return true;
+  }
+
+  int firstFrame = std::numeric_limits<int>::max();
+  int lastFrame = std::numeric_limits<int>::lowest();
+  float lowMidi = std::numeric_limits<float>::max();
+  float highMidi = std::numeric_limits<float>::lowest();
+  for (const auto *note : notes)
+  {
+    firstFrame = std::min(firstFrame, note->getStartFrame());
+    lastFrame = std::max(lastFrame, note->getEndFrame());
+    lowMidi = std::min(lowMidi, note->getAdjustedMidiNote());
+    highMidi = std::max(highMidi, note->getAdjustedMidiNote());
+  }
+
+  // Horizontal: the notes plus 5% on each side.
+  const int visibleWidth = getVisibleContentWidth();
+  if (visibleWidth > 0)
+  {
+    const double start = framesToSeconds(firstFrame);
+    const double end = framesToSeconds(lastFrame);
+    const double span = std::max(0.2, end - start);
+    const double margin = span * 0.05;
+    const double totalTime = getTimelineLength();
+    const float minPps = totalTime > 0.0
+                             ? std::max(MIN_PIXELS_PER_SECOND,
+                                        static_cast<float>(visibleWidth / totalTime))
+                             : MIN_PIXELS_PER_SECOND;
+    pixelsPerSecond = juce::jlimit(
+        minPps, MAX_PIXELS_PER_SECOND,
+        static_cast<float>(visibleWidth / (span + margin * 2.0)));
+    coordMapper->setPixelsPerSecond(pixelsPerSecond);
+    // Centre the notes in the view (the limits may leave room to spare).
+    const double centre = (start + start + span) * 0.5;
+    scrollX = clampScrollX(centre * pixelsPerSecond - visibleWidth * 0.5);
+    coordMapper->setScrollX(scrollX);
+  }
+
+  // Vertical: the notes' rows plus two semitones above and below.
+  const int visibleHeight = getVisibleContentHeight();
+  if (visibleHeight > 0)
+  {
+    const float rows = (highMidi - lowMidi) + 1.0f + 4.0f;
+    setPixelsPerSemitone(static_cast<float>(visibleHeight) / rows);
+    const double centreY =
+        midiToY((lowMidi + highMidi) * 0.5f) + pixelsPerSemitone * 0.5;
+    setScrollY(centreY - visibleHeight * 0.5);
+  }
+
+  updateScrollBars();
+  updatePreviewButtonBounds();
+  repaint();
+  if (onZoomChanged)
+    onZoomChanged(pixelsPerSecond);
+  return true;
+}
+
+void PianoRollComponent::zoomToFullLength()
+{
+  // The smallest horizontal zoom is exactly the whole timeline in the view.
+  zoomHorizontallyBy(0.0001f);
+  scrollX = clampScrollX(getTimelineStart() * pixelsPerSecond);
+  coordMapper->setScrollX(scrollX);
+  updateScrollBars();
+  repaint();
 }
 
 void PianoRollComponent::setBlobHeightScale(float scale)
