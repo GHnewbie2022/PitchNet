@@ -173,8 +173,8 @@ std::vector<NoteCurveEdit> smoothOverBoundaries(Project& project, int start, int
 {
     std::vector<NoteCurveEdit> edits;
     // Untouched notes sing the recording: refit them to it over the new base
-    // (PitchCurveProcessor::refitUntouchedCurves). Edited or warped notes keep
-    // the pitch they sang through the compensation below.
+    // (PitchCurveProcessor::refitUntouchedCurves). Edited notes keep the
+    // pitch they sang through the compensation below.
     const int first = std::max(0, start - kBoundaryReach);
     if (before.empty())
         return edits;
@@ -226,9 +226,7 @@ std::vector<NoteCurveEdit> smoothOverBoundaries(Project& project, int start, int
                 continue;
             if (bakedOnly && !note.hasBakedDeltaPitch())
                 continue;
-            if (!audio.denseF0.empty() && note.isPitchUntouched() &&
-                note.getStartFrame() == note.getSrcStartFrame() &&
-                note.getDurationFrames() == note.getSrcDurationFrames())
+            if (!audio.denseF0.empty() && note.isPitchUntouched())
                 continue; // refitted to the recording above
             const bool baked = note.hasBakedDeltaPitch();
             const auto& storedCurve =
@@ -1510,6 +1508,39 @@ bool NoteSplitter::commitResizeNote(Note* note, const Note& originalNote,
     auto neighbourEdits = compensateNeighbourBaseChange(
         *project, baseBefore, reachStart, reachEnd, uid, newStart);
     PitchCurveProcessor::rebuildBaseFromNotes(*project);
+
+    // Unedited notes, the resized one included, sing the recording over the
+    // new base. Record what that changes in the neighbours for undo.
+    {
+        std::vector<Note> prior;
+        for (const auto& n : project->getNotes())
+            if (!n.isRest() && n.getUid() != uid)
+                prior.push_back(n);
+        for (const int changed :
+             PitchCurveProcessor::refitUntouchedCurves(*project, reachStart, reachEnd))
+        {
+            const Note* now = noteStartingAt(*project, changed);
+            if (!now || now->getUid() == uid)
+                continue;
+            auto edit = std::find_if(neighbourEdits.begin(), neighbourEdits.end(),
+                                     [changed](const NoteCurveEdit& e)
+                                     { return e.startFrame == changed; });
+            if (edit != neighbourEdits.end())
+            {
+                edit->originalAfter = now->getOriginalDeltaPitch();
+                edit->bakedAfter = now->getBakedDeltaPitch();
+                continue;
+            }
+            const auto was = std::find_if(prior.begin(), prior.end(),
+                                          [now](const Note& n)
+                                          { return n.getUid() == now->getUid(); });
+            if (was != prior.end())
+                neighbourEdits.push_back({changed, was->getOriginalDeltaPitch(),
+                                          now->getOriginalDeltaPitch(),
+                                          was->getBakedDeltaPitch(),
+                                          now->getBakedDeltaPitch()});
+        }
+    }
     activeNote = findResizedNote(*project, uid, newStart);
 
     const Note afterNote = activeNote ? *activeNote : originalNote;

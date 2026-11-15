@@ -407,11 +407,15 @@ html { scroll-behavior: smooth; }
         <li>拖音高時的試聽：獨立版已改播合成結果，但目前是循環播放，跟第 2 節「一樣只播那一個音符、完整播放」不同；外掛模式還沒改。</li>
       </ul>
 
-      <h3>已知風險（尚未處理）</h3>
+      <h3>已知風險</h3>
       <ul class="plain">
-        <li><code>PitchCurveProcessor::refitUntouchedCurves</code> 會略過 Warped 音符。沒有還原時間伸縮的重設（例如只做 Restore Pitch），Warped 音符可能不會貼回錄音音高；尚未驗證。</li>
         <li>拉伸音符邊界時，鄰居補償（<code>compensateNeighbourBaseChange</code>）仍在含移調的音高上計算；旁邊有移調過的音符時，可能出現跟刪除同類的污染；尚未驗證。</li>
-        <li>拉伸出來的範圍，在基準音高彎曲處最多差約 0.086 半音。分析曲線以來源長度儲存、經 warp 線性內插造成；改成時間軸長度可以消除，但之後再調 warp 時顫音會滑位，所以保留。</li>
+      </ul>
+      <h3>已解決的風險</h3>
+      <ul class="plain">
+        <li>被拉長過的未編輯音符不會貼回錄音音高（<code>refitUntouchedCurves</code> 原本略過它們），Restore Pitch 後尾巴被移調的鄰居帶歪最多 1.24 半音。現在依時間軸逐格、照整條伸縮對應讀取錄音貼回；每次調整伸縮（<code>warp::apply</code>）後重新貼合。</li>
+        <li>Reset Pitch 只貼回被按的那一顆：鄰居 reset 後，已 reset 的拉長音符尾巴留下尖角（1.33 半音）。現在左右 12 格內的未編輯鄰居一起貼回。</li>
+        <li>拉伸、刪除、黏合後約 0.086 半音的內插落差，隨上一項一起消失（&lt; 0.001 半音）。</li>
       </ul>
     </section>
   </main>

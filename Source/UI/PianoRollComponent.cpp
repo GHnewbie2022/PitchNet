@@ -301,9 +301,14 @@ namespace
       project.setModified(true);
       PitchCurveProcessor::rebuildBaseFromNotes(project);
       // Restored notes sing the recording again: their curve is the recorded
-      // pitch over the base as it is now, edited neighbours included.
-      if (&states == &after && dirtyStart < dirtyEnd)
-        PitchCurveProcessor::refitUntouchedCurves(project, dirtyStart, dirtyEnd);
+      // pitch over the base as it is now, edited neighbours included. The
+      // base moved within reach of their edges too, so unedited neighbours
+      // there are refitted as well (both ways: they sing the recording
+      // whichever state is put back).
+      constexpr int kBaseReach = 12; // as NoteSplitter's kBoundaryReach
+      if (dirtyStart < dirtyEnd)
+        PitchCurveProcessor::refitUntouchedCurves(project, dirtyStart - kBaseReach,
+                                                  dirtyEnd + kBaseReach);
       // Same range the edit and its undo mark (Project::markNoteEditDirtyRange).
       project.markNoteEditDirtyRange(dirtyStart, dirtyEnd);
     }

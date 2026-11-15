@@ -71,6 +71,7 @@ static void warpedSplitMergeAndDeletePreservePitchCurve(PianoRollComponent& roll
   proj.getNotes()[1].setAnalysisSpans(
       {{45, 62, 55.4f, proj.getNotes()[1].getOriginalDeltaPitch()}});
   PitchCurveProcessor::rebuildBaseFromNotes(proj);
+  PitchCurveProcessor::refitUntouchedCurves(proj, 0, 100);
 
   const auto f0Before = proj.getAudioData().f0;
 
@@ -206,6 +207,9 @@ static void buildWarpedTrio(Project& proj) {
     n.setAnalysisSpans({{n.getSrcStartFrame(), n.getSrcEndFrame(),
                          n.getOriginalMidiNote(), n.getOriginalDeltaPitch()}});
   PitchCurveProcessor::rebuildBaseFromNotes(proj);
+  // As a loaded project is (ProjectSerializer): unedited notes sing the
+  // recording exactly.
+  PitchCurveProcessor::refitUntouchedCurves(proj, 0, 120);
 }
 
 static Note* noteAt(Project& proj, int startFrame) {
@@ -355,12 +359,8 @@ static void warpedDeleteShiftedPieceResizeMergeRestoresAnalysis(PianoRollCompone
   const float afterMerge = report("after merge", 20, 92);
   roll.setUndoManager(nullptr);
   CHECK(afterDelete < 0.02f);
-  // The stretched note's contour is kept per recorded frame and read back
-  // through the warp by linear interpolation: where the base bends within a
-  // stretched stretch of the note, that reads a few cents off. A multi-
-  // semitone seam is the bug this guards against.
-  CHECK(afterResize < 0.1f);
-  CHECK(afterMerge < 0.1f);
+  CHECK(afterResize < 0.02f);
+  CHECK(afterMerge < 0.02f);
 }
 
 // Split, drag and glue, then Restore All Edits over the notes: they sing
@@ -402,13 +402,13 @@ static void warpedRestoreAllEditsSingsRecording(PianoRollComponent& roll) {
   for (const auto& n : proj.getNotes()) {
     if (n.isRest() || n.getEndFrame() <= 40)
       continue;
-    const auto map = notetiming::forNote(audio, n);
+    const auto& map = audio.warpMap;
     for (int t = n.getStartFrame(); t < n.getEndFrame(); ++t) {
-      const double src = std::clamp(map.sourceAt(t + 0.5) - 0.5,
-                                    static_cast<double>(n.getSrcStartFrame()),
-                                    static_cast<double>(n.getSrcEndFrame() - 1));
+      const int last = static_cast<int>(audio.denseF0.size()) - 1;
+      const double src = std::clamp(map.sourceAt(t + 0.5) - 0.5, 0.0,
+                                    static_cast<double>(last));
       const int a = static_cast<int>(std::floor(src));
-      const int b = std::min(a + 1, n.getSrcEndFrame() - 1);
+      const int b = std::min(a + 1, last);
       const float k = static_cast<float>(src - a);
       const float expected = freqToMidi(audio.denseF0[size_t(a)]) * (1.0f - k) +
                              freqToMidi(audio.denseF0[size_t(b)]) * k;
@@ -416,10 +416,84 @@ static void warpedRestoreAllEditsSingsRecording(PianoRollComponent& roll) {
       worst = std::max(worst, err);
     }
   }
-  if (worst >= 0.1f)
+  if (worst >= 0.02f)
     std::cerr << "restore all max error " << worst << " st\n";
   roll.setUndoManager(nullptr);
-  CHECK(worst < 0.1f);
+  CHECK(worst < 0.02f);
+}
+
+// Worst distance (semitones) between the sung pitch and the recording read
+// through the warp, over the notes starting in [from, to).
+static float maxErrorFromRecording(const Project& proj, int from, int to) {
+  const auto& audio = proj.getAudioData();
+  float worst = 0.0f;
+  for (const auto& n : proj.getNotes()) {
+    if (n.isRest() || n.getStartFrame() < from || n.getStartFrame() >= to)
+      continue;
+    const auto& map = audio.warpMap;
+    for (int t = n.getStartFrame(); t < n.getEndFrame(); ++t) {
+      const int last = static_cast<int>(audio.denseF0.size()) - 1;
+      const double src = std::clamp(map.sourceAt(t + 0.5) - 0.5, 0.0,
+                                    static_cast<double>(last));
+      const int a = static_cast<int>(std::floor(src));
+      const int b = std::min(a + 1, last);
+      const float k = static_cast<float>(src - a);
+      const float expected = freqToMidi(audio.denseF0[size_t(a)]) * (1.0f - k) +
+                             freqToMidi(audio.denseF0[size_t(b)]) * k;
+      worst = std::max(worst, std::abs(freqToMidi(audio.f0[size_t(t)]) - expected));
+    }
+  }
+  return worst;
+}
+
+// A stretched note dragged up, its neighbour dragged down, then Restore Pitch
+// on the stretched note: it sings the recording again, its ends included.
+static void warpedRestorePitchNextToShiftedNeighbour(PianoRollComponent& roll) {
+  Project proj;
+  buildWarpedTrio(proj);
+  PitchUndoManager history;
+  shiftNote(proj, 40, 3.0f);
+  shiftNote(proj, 70, -5.0f);
+
+  roll.setProject(&proj);
+  roll.setUndoManager(&history);
+  roll.setTrackViewMode(false);
+  proj.deselectAllNotes();
+  roll.resetNoteEdits(*noteAt(proj, 40), PianoRollComponent::NoteRestoreMode::Pitch);
+  const float err = maxErrorFromRecording(proj, 40, 41);
+  if (err >= 0.02f)
+    std::cerr << "restore pitch next to shifted neighbour max error " << err << " st\n";
+  roll.setUndoManager(nullptr);
+  // Before the refit covered stretched notes, the end bent 1.24 st toward
+  // the neighbour.
+  CHECK(err < 0.02f);
+}
+
+// Stretched note dragged up, its neighbour dragged down; Restore Pitch on the
+// stretched note, then on the neighbour: the stretched note, already back to
+// the recording, follows its neighbour back without a spike at the boundary.
+static void warpedRestorePitchThenNeighbourKeepsBoundary(PianoRollComponent& roll) {
+  Project proj;
+  buildWarpedTrio(proj);
+  PitchUndoManager history;
+  shiftNote(proj, 40, 4.0f);
+  shiftNote(proj, 70, -5.0f);
+
+  roll.setProject(&proj);
+  roll.setUndoManager(&history);
+  roll.setTrackViewMode(false);
+  proj.deselectAllNotes();
+  roll.resetNoteEdits(*noteAt(proj, 40), PianoRollComponent::NoteRestoreMode::Pitch);
+  const auto f0OneRestored = proj.getAudioData().f0;
+  roll.resetNoteEdits(*noteAt(proj, 70), PianoRollComponent::NoteRestoreMode::Pitch);
+  const float err = maxErrorFromRecording(proj, 20, 92);
+  if (err >= 0.02f)
+    std::cerr << "restore pitch then neighbour max error " << err << " st\n";
+  CHECK(err < 0.02f);
+
+  history.undo();
+  CHECK(maxF0ErrorSemitones(proj, f0OneRestored, 20, 92) < 0.02f);
+  roll.setUndoManager(nullptr);
 }
 
 int main() {
@@ -429,6 +503,8 @@ int main() {
     scratchRoll.setSize(800, 400);
     warpedDeleteShiftedPieceResizeMergeRestoresAnalysis(scratchRoll);
     warpedRestoreAllEditsSingsRecording(scratchRoll);
+    warpedRestorePitchNextToShiftedNeighbour(scratchRoll);
+    warpedRestorePitchThenNeighbourKeepsBoundary(scratchRoll);
   }
   warpedQuarteredShiftedPairMergeRestoresAnalysis();
   warpedResplitShiftedCrossNoteMergeRestoresAnalysis();
@@ -638,11 +714,15 @@ int main() {
   PitchCurveProcessor::rebuildBaseFromNotes(d);
   initWarpedOriginalDelta(d);
   PitchCurveProcessor::rebuildBaseFromNotes(d);
+  // As a loaded project is: unedited notes sing the recording through the
+  // warp. Frames 23 and 24 play recorded frames 19.08 and 19.92, either side
+  // of the 82 -> 88 step, so each reads a little toward the other note.
+  PitchCurveProcessor::refitUntouchedCurves(d, 0, 80);
 
   const float f0LeftBoundaryBefore = d.getAudioData().f0[23];
   const float f0RightBoundaryBefore = d.getAudioData().f0[24];
-  CHECK(std::abs(freqToMidi(f0LeftBoundaryBefore) - 82.0f) < 0.25f);
-  CHECK(std::abs(freqToMidi(f0RightBoundaryBefore) - 88.0f) < 0.25f);
+  CHECK(std::abs(freqToMidi(f0LeftBoundaryBefore) - 82.0f) < 0.6f);
+  CHECK(std::abs(freqToMidi(f0RightBoundaryBefore) - 88.0f) < 0.6f);
 
   PitchUndoManager warpResizeHistory;
   roll.setUndoManager(&warpResizeHistory);
@@ -701,6 +781,7 @@ int main() {
   PitchCurveProcessor::rebuildBaseFromNotes(e);
   initWarpedOriginalDelta(e);
   PitchCurveProcessor::rebuildBaseFromNotes(e);
+  PitchCurveProcessor::refitUntouchedCurves(e, 0, 80); // as a loaded project is
   const auto initialEF0 = e.getAudioData().f0;
 
   PitchUndoManager wiggleHistory;

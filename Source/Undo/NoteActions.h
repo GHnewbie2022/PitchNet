@@ -541,7 +541,8 @@ private:
         PitchCurveProcessor::rebuildBaseFromNotes(*project);
         // The centres changed: untouched notes around sing the recording
         // over the new base (PitchCurveProcessor::refitUntouchedCurves).
-        if (first <= last)
+        // Undo puts the recorded curves back as they were instead.
+        if (forward && first <= last)
             PitchCurveProcessor::refitUntouchedCurves(*project, first - 12, last + 12);
         if (first <= last)
             project->markNoteEditDirtyRange(first, last);

@@ -303,10 +303,59 @@ namespace PitchCurveProcessor
         for (auto& note : project.getNotes())
         {
             if (note.isRest() || note.getEndFrame() <= start || note.getStartFrame() >= end ||
-                !note.isPitchUntouched() ||
-                note.getStartFrame() != note.getSrcStartFrame() ||
-                note.getDurationFrames() != note.getSrcDurationFrames())
+                !note.isPitchUntouched())
                 continue;
+            if (note.getStartFrame() != note.getSrcStartFrame() ||
+                note.getDurationFrames() != note.getSrcDurationFrames())
+            {
+                // Stretched: fit each frame on the timeline to the recorded
+                // pitch the warp plays there, so the note sings the recording
+                // exactly. The curve is per timeline frame, so it is refitted
+                // whenever the warp changes (warp::apply).
+                const int frames = note.getDurationFrames();
+                if (frames <= 0 || note.getSrcDurationFrames() <= 0)
+                    continue;
+                const auto& stored = note.getOriginalDeltaPitch();
+                auto fitted = notetiming::curveOnNote(audio, note, stored);
+                fitted.resize(static_cast<size_t>(frames), 0.0f);
+                // The track's own map, not the note's slice of it: the slice
+                // runs between rounded note edges and drifts off it near them.
+                const auto& map = audio.warpMap;
+                // The recording is continuous: a frame reads it where the
+                // warp plays it, past the note's own recorded frames at its
+                // ends too, so where the note is cut changes nothing.
+                const double srcFirst = 0.0;
+                const double srcLast = static_cast<double>(dense.size() - 1);
+                bool refit = static_cast<int>(stored.size()) != frames;
+                for (int i = 0; i < frames; ++i)
+                {
+                    const int t = note.getStartFrame() + i;
+                    if (t < 0 || static_cast<size_t>(t) >= audio.basePitch.size())
+                        continue;
+                    const double src = std::clamp(
+                        map.sourceAt(static_cast<double>(t) + 0.5) - 0.5, srcFirst, srcLast);
+                    const auto a = static_cast<size_t>(std::floor(src));
+                    const auto b = std::min(a + 1, static_cast<size_t>(srcLast));
+                    if (!(dense[a] > 0.0f) || !(dense[b] > 0.0f))
+                        continue;
+                    const float k = static_cast<float>(src - static_cast<double>(a));
+                    const float value = freqToMidi(dense[a]) * (1.0f - k) +
+                                        freqToMidi(dense[b]) * k -
+                                        audio.basePitch[static_cast<size_t>(t)];
+                    if (std::abs(value - fitted[static_cast<size_t>(i)]) > 0.0001f)
+                    {
+                        fitted[static_cast<size_t>(i)] = value;
+                        refit = true;
+                    }
+                }
+                if (!refit)
+                    continue;
+                note.setOriginalDeltaPitch(fitted);
+                if (!note.getDeltaPitch().empty())
+                    note.setDeltaPitch(fitted);
+                changed.push_back(note.getStartFrame());
+                continue;
+            }
             auto curve = note.getOriginalDeltaPitch();
             if (static_cast<int>(curve.size()) != note.getDurationFrames())
                 continue;
