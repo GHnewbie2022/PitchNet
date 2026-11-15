@@ -461,6 +461,14 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
 
     const Note firstNote = *first;
     const Note secondNote = *second;
+
+    // Like gluing segments in Cubase's VariAudio, the merged note goes back
+    // to the pitch the analysis gave it: the halves' pitch edits (drag,
+    // drift, vibrato, tilt, smoothing, drawn curves) are dropped. Undo brings
+    // them back.
+    const bool reshaped =
+        !(pitchUntouched(firstNote) && pitchUntouched(secondNote));
+
     Note mergedNote = firstNote;
     mergedNote.setEndFrame(secondNote.getEndFrame());
     mergedNote.setSrcEndFrame(secondNote.getSrcEndFrame());
@@ -530,16 +538,45 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
     else
         mergedNote.setSynthDirty(false);
 
+    // Back to the analysis: the detected note itself when the merge made it
+    // whole again, otherwise the halves' analysed curves joined above.
+    if (!mergedNote.restoreAnalysisPitch())
+    {
+        mergedNote.setTiltLeft(0.0f);
+        mergedNote.setTiltRight(0.0f);
+        mergedNote.setVibrato(1.0f);
+        mergedNote.setPitchDrift(1.0f);
+        mergedNote.setSmoothLeftFrames(0);
+        mergedNote.setSmoothRightFrames(0);
+        mergedNote.setDeltaScale(1.0f);
+        mergedNote.setDeltaOffset(0.0f);
+        mergedNote.setBakedDeltaPitch({});
+        mergedNote.setDeltaPitch(mergedNote.getOriginalDeltaPitch());
+        if (reshaped)
+        {
+            mergedNote.markDirty();
+            mergedNote.markSynthDirty();
+        }
+    }
+    else if (!reshaped)
+    {
+        // Untouched halves sang the analysis already: nothing to render.
+        mergedNote.setDirty(isDirty);
+        if (!isSynthDirty)
+            mergedNote.setSynthDirty(false);
+    }
+
     *first = mergedNote;
     project->removeNoteByStartFrame(secondNote.getStartFrame());
-
-    if (undoManager)
-        undoManager->addAction(std::make_unique<NoteMergeAction>(
-            project, firstNote, secondNote, mergedNote, nullptr));
 
     // Rebuild the drawn pitch curve from the new notes (pitch-neutral edit:
     // the audio already matches).
     PitchCurveProcessor::rebuildBaseFromNotes(*project);
+
+
+    if (undoManager)
+        undoManager->addAction(std::make_unique<NoteMergeAction>(
+            project, firstNote, secondNote, mergedNote, nullptr));
     if (onNoteSplit)
         onNoteSplit();
 
