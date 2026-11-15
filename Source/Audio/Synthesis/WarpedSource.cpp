@@ -89,20 +89,39 @@ void stretchRange(const float *source, int sourceSamples, InputAt inputAt,
   }
 }
 
-// Start of the quietest `length`-sample window in buffer[from, to).
-int quietestWindow(const float *buffer, int from, int to, int length)
+// Start of the `length`-sample window in [from, to) where the stretch and the
+// copy differ least, so a crossfade between them loses least. Scanned from
+// `nearest` outward; a later window has to be clearly better to win, so
+// where the two agree the fade stays next to the run.
+// `stretched` holds timeline samples from `stretchedFirst` on.
+int handOverWindow(const float *copy, const float *stretched,
+                   int stretchedFirst, int from, int to, int length,
+                   bool nearestIsEnd)
 {
   if (to - from <= length)
     return from;
   constexpr int kStep = 32;
-  int best = from;
-  double bestEnergy = std::numeric_limits<double>::infinity();
-  for (int start = from; start + length <= to; start += kStep)
+  auto difference = [&](int start)
   {
     double energy = 0.0;
     for (int i = start; i < start + length; ++i)
-      energy += static_cast<double>(buffer[i]) * buffer[i];
-    if (energy < bestEnergy)
+    {
+      const double d =
+          static_cast<double>(stretched[i - stretchedFirst]) - copy[i];
+      energy += d * d;
+    }
+    return energy;
+  };
+  const int lastStart = to - length;
+  int best = nearestIsEnd ? lastStart : from;
+  double bestEnergy = difference(best);
+  for (int k = 1;; ++k)
+  {
+    const int start = nearestIsEnd ? lastStart - k * kStep : from + k * kStep;
+    if (start < from || start > lastStart)
+      break;
+    const double energy = difference(start);
+    if (energy < bestEnergy * 0.9)
     {
       bestEnergy = energy;
       best = start;
@@ -184,11 +203,20 @@ std::vector<StretchedRun> renderWarpedSource(const float *source,
       cores.push_back({segment.start, segment.end});
   }
 
+  const int reach = std::max(pad, static_cast<int>(settings.handOverSeconds *
+                                                   settings.sampleRate));
   std::vector<float> rendered;
-  for (const auto &core : cores)
+  for (size_t c = 0; c < cores.size(); ++c)
   {
-    const int first = std::max(0, core.startSample - pad);
-    const int last = std::min(outputSamples, core.endSample + pad);
+    const auto &core = cores[c];
+    // Up to `reach` into the unstretched audio, but at most halfway to the
+    // neighbouring run, so two runs never hand over in the same place.
+    int first = std::max(0, core.startSample - reach);
+    int last = std::min(outputSamples, core.endSample + reach);
+    if (c > 0)
+      first = std::max(first, (cores[c - 1].endSample + core.startSample) / 2);
+    if (c + 1 < cores.size())
+      last = std::min(last, (core.endSample + cores[c + 1].startSample) / 2);
     rendered.assign(static_cast<size_t>(last - first), 0.0f);
     stretchRange(source, sourceSamples, inputAt, first, last, rendered.data(),
                  settings);
@@ -197,9 +225,13 @@ std::vector<StretchedRun> renderWarpedSource(const float *source,
     const bool fadeIn = first > 0;
     const bool fadeOut = last < outputSamples;
     const int inStart =
-        fadeIn ? quietestWindow(output, first, core.startSample, fade) : first;
+        fadeIn ? handOverWindow(output, rendered.data(), first, first,
+                                core.startSample, fade, true)
+               : first;
     const int outStart =
-        fadeOut ? quietestWindow(output, core.endSample, last, fade) : last;
+        fadeOut ? handOverWindow(output, rendered.data(), first,
+                                 core.endSample, last, fade, false)
+                : last;
     for (int sample = inStart; sample < (fadeOut ? outStart + fade : last);
          ++sample)
     {

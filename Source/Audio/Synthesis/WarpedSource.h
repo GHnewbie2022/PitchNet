@@ -14,9 +14,12 @@
  * Neighbouring stretched segments are processed as one continuous run whose
  * rate changes at the anchors, so an anchor between two stretched segments
  * is not a seam. A run hands over to the copied recording inside unstretched
- * audio next to it, with a 10 ms crossfade placed where the recording is
- * quietest; there the stretch plays at rate 1, so both sides carry the same
- * audio and the fade cannot comb.
+ * audio next to it, where the stretch plays at rate 1, with a 10 ms
+ * crossfade. Both sides carry the same audio there, but the stretch keeps its
+ * own phase: it starts aligned with the recording and can end up to half a
+ * period off it, so a fade inside a held vowel can cancel (a dip, heard as a
+ * click). The fade goes where the two differ least - a quiet spot, or one
+ * where they happen to line up - searched up to handOverSeconds from the run.
  *
  * The random seed is fixed: past a ratio of 2 signalsmith randomises phases,
  * and the same edit must always render the same audio.
@@ -27,8 +30,12 @@ struct WarpedSourceSettings
 {
   double sampleRate = 44100.0;
   int hopSize = 512;
-  // Unstretched audio rendered with each run so it can hand over to the copy.
+  // Unstretched audio a run always renders on each side; runs closer than
+  // twice this are joined into one.
   double padSeconds = 0.06;
+  // How far into unstretched audio a run may go to find its hand-over (at
+  // most halfway to the next run).
+  double handOverSeconds = 0.3;
   double fadeSeconds = 0.010;
   long seed = 20261115L;
 };
