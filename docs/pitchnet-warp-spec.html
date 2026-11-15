@@ -1,0 +1,545 @@
+<title>PitchNet 伸縮層規格</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: single reading column with a sticky section index on wide screens; timeline diagrams drawn like a DAW lane */
+:root {
+  --bg: #F4F6F8;
+  --surface: #FFFFFF;
+  --fg: #161A1F;
+  --muted: #5B6571;
+  --line: #D8DEE4;
+  --note: #3A6BD4;
+  --note-soft: #DCE6FA;
+  --warp: #D9801A;
+  --warp-soft: #FBEBD6;
+  --rigid: #C23F38;
+  --rigid-soft: #F7DEDC;
+  --region: #8A94A0;
+  --ok: #2E8A57;
+  --font-body: "Noto Sans TC", "PingFang TC", "Heiti TC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111317; --surface: #191C21; --fg: #E5E8EC; --muted: #9AA3AE; --line: #2B3038;
+    --note: #6F9CF2; --note-soft: #1F2C45; --warp: #F2A43C; --warp-soft: #3A2C17;
+    --rigid: #E46B63; --rigid-soft: #3D1F1D; --region: #7E8894; --ok: #5CC28A;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111317; --surface: #191C21; --fg: #E5E8EC; --muted: #9AA3AE; --line: #2B3038;
+  --note: #6F9CF2; --note-soft: #1F2C45; --warp: #F2A43C; --warp-soft: #3A2C17;
+  --rigid: #E46B63; --rigid-soft: #3D1F1D; --region: #7E8894; --ok: #5CC28A;
+  color-scheme: dark;
+}
+
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 16px; line-height: 1.75; }
+.wrap {
+  max-width: 1080px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 80px;
+  display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 48px;
+}
+@media (max-width: 860px) { .wrap { grid-template-columns: minmax(0, 1fr); gap: 24px; } nav.toc { position: static !important; } }
+
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: 14px; }
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+nav.toc a { color: var(--muted); text-decoration: none; display: block; padding: 4px 10px; border-left: 2px solid var(--line); }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--fg); border-left-color: var(--warp); outline: none; }
+nav.toc .num { font-family: var(--font-mono); font-size: 12px; margin-right: 6px; color: var(--warp); }
+
+main { min-width: 0; display: grid; gap: 56px; }
+header.doc { display: grid; gap: 12px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-size: clamp(28px, 4vw, 38px); line-height: 1.3; margin: 0; font-weight: 700; text-wrap: balance; }
+h2 { font-size: 22px; margin: 0; font-weight: 700; text-wrap: balance; display: flex; gap: 12px; align-items: baseline; }
+h2 .num { font-family: var(--font-mono); font-size: 14px; color: var(--warp); font-weight: 600; }
+h3 { font-size: 17px; margin: 0; font-weight: 700; }
+p { margin: 0; max-width: 66ch; }
+.lede { color: var(--muted); max-width: 62ch; }
+section { display: grid; gap: 18px; scroll-margin-top: 24px; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; overflow-wrap: anywhere; }
+
+.meta { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; color: var(--muted); }
+.meta b { color: var(--fg); font-weight: 500; }
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); }
+.status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--warp); }
+
+.decisions { display: grid; gap: 0; border-top: 1px solid var(--line); }
+.decisions > div { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.decisions dt { font-weight: 700; font-size: 15px; }
+.decisions dd { margin: 0; color: var(--fg); }
+.decisions dd .why { display: block; color: var(--muted); font-size: 14px; margin-top: 2px; }
+@media (max-width: 560px) { .decisions > div { grid-template-columns: minmax(0, 1fr); gap: 4px; } }
+
+.figure { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 18px 14px; display: grid; gap: 10px; min-width: 0; }
+.figure .cap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; align-items: baseline; }
+.figure .cap h3 { font-size: 15px; }
+.figure .cap .tag { font-family: var(--font-mono); font-size: 13px; color: var(--warp); }
+.figure .note { font-size: 14px; color: var(--muted); }
+.svgbox { overflow-x: auto; }
+.svgbox svg { display: block; width: 100%; min-width: 520px; height: auto; }
+.figs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 980px) { .figs { grid-template-columns: minmax(0, 1fr); } }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 14px; height: 10px; border-radius: 2px; display: inline-block; }
+.sw.note { background: var(--note); }
+.sw.rigid { background: repeating-linear-gradient(135deg, var(--rigid) 0 2px, var(--rigid-soft) 2px 5px); }
+.sw.warp-auto { width: 2px; height: 14px; background: repeating-linear-gradient(var(--warp) 0 3px, transparent 3px 5px); }
+.sw.warp-user { width: 2px; height: 14px; background: var(--warp); }
+.sw.warp-drag { width: 4px; height: 14px; background: var(--warp); }
+.sw.stretch { background: var(--warp-soft); border: 1px solid var(--warp); }
+
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.tablebox { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 700; font-size: 13px; color: var(--muted); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.bad { color: var(--rigid); font-weight: 500; }
+
+ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; max-width: 66ch; }
+ul.plain li::marker { color: var(--warp); }
+
+.ops { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.op { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--surface); display: grid; gap: 6px; align-content: start; }
+.op .key { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--warp); }
+.op p { font-size: 14px; color: var(--muted); }
+
+.rule { border-left: 3px solid var(--warp); padding: 4px 0 4px 16px; display: grid; gap: 8px; }
+.rule ol { margin: 0; padding-left: 1.3em; display: grid; gap: 4px; max-width: 64ch; }
+
+.open { display: grid; gap: 10px; }
+.open .item { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; padding: 12px 16px; border: 1px dashed var(--line); border-radius: 10px; background: var(--surface); }
+.open .item .q { font-family: var(--font-mono); font-size: 12px; color: var(--muted); padding-top: 4px; }
+.open .item p { font-size: 15px; }
+.open .item p small { display: block; color: var(--muted); font-size: 13px; }
+
+.files { display: grid; gap: 0; border-top: 1px solid var(--line); }
+.files div { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.files div code { justify-self: start; }
+@media (max-width: 560px) { .files div { grid-template-columns: minmax(0, 1fr); gap: 4px; } }
+
+.callout { border: 1px solid var(--rigid); background: var(--rigid-soft); border-radius: 10px; padding: 12px 16px; font-size: 14px; }
+
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+html { scroll-behavior: smooth; }
+</style>
+
+<div class="wrap">
+  <nav class="toc" aria-label="章節">
+    <ol>
+      <li><a href="#problem"><span class="num">1</span>問題與根因</a></li>
+      <li><a href="#arch"><span class="num">2</span>架構決定</a></li>
+      <li><a href="#warp"><span class="num">3</span>伸縮層操作</a></li>
+      <li><a href="#notes"><span class="num">4</span>音符層捷徑</a></li>
+      <li><a href="#anchors"><span class="num">5</span>補錨點規則</a></li>
+      <li><a href="#open"><span class="num">6</span>尚未決定</a></li>
+      <li><a href="#scope"><span class="num">7</span>影響範圍</a></li>
+      <li><a href="#progress"><span class="num">8</span>實作進度</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <header class="doc">
+      <div class="eyebrow">PitchNet fork · GHnewbie2022/PitchNet · v0.8.1 (dc2c1b3)</div>
+      <h1>PitchNet 伸縮層規格</h1>
+      <p class="lede">照 Cubase 的分法，在 PitchNet 加上一層獨立的 AudioWarp 式伸縮層。時間資料只存在這一層；音符層只管音高，拖音符邊界只是放錨點的捷徑。</p>
+      <div class="meta">
+        <span class="status">實作中：第 2 階段完成，之後的修正持續提交中（分支 warp-layer，37 個 commit，已推上 GitHub，最新 c9bd9e9）</span>
+        <span>更新：<b>2026-11-16</b></span>
+        <span>測試素材：<b class="mono">190414 Region 8.wav</b></span>
+      </div>
+    </header>
+
+    <section id="problem">
+      <h2><span class="num">1</span>問題與根因</h2>
+      <p>第一句尾音往後拉，離第二句還有一大段空隙，卻在很早的地方就被擋住。原因是 PitchNet 用 GAME 切片器的區段當作樂句，並把區段頭尾的無音高聲音（前導、尾巴）當成只能平移、不能伸縮的硬塊。</p>
+
+      <div class="figure">
+        <div class="cap"><h3>測試素材 0～3.2 秒的區段切法</h3><span class="tag">門檻 -40 dBFS RMS</span></div>
+        <div class="svgbox" data-diagram="rootcause"></div>
+        <div class="legend">
+          <span><i class="sw note"></i>有音高的聲音</span>
+          <span><i class="sw rigid"></i>硬塊（只能平移）</span>
+        </div>
+        <p class="note">空隙 1.60～2.94 s 原本是一整段靜音。1.94 s 附近有 1 格 10 ms 的底噪是 -39.1 dB，剛好高過門檻，把靜音切開，使區段 2 從 1.84 s 開始。1.84～2.90 s 的底噪變成短音前面的前導，第一句只剩約 0.14 s 可以拉。</p>
+      </div>
+
+      <div class="tablebox">
+        <table>
+          <thead><tr><th>門檻</th><th>區段 1 結尾</th><th>區段 2 開頭</th><th>可以拉的空間</th></tr></thead>
+          <tbody>
+            <tr><td class="num">-38.5 dB</td><td class="num">1.48 s</td><td class="num">1.48 s</td><td class="num bad">≈ 0 s</td></tr>
+            <tr><td class="num">-40 dB（現行）</td><td class="num">1.70 s</td><td class="num">1.84 s</td><td class="num bad">≈ 0.14 s</td></tr>
+            <tr><td class="num">-42 dB</td><td class="num">2.06 s</td><td class="num">2.62 s</td><td class="num">≈ 0.56 s</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="lede">門檻只要改一點，結果就忽好忽壞，所以靠調門檻解決不了，要從伸縮邏輯下手。數字是用近似腳本照 PitchNet 的規則重算的（48 kHz、每格 10 ms；PitchNet 實際上會先轉成 44.1 kHz）。</p>
+
+      <h3>另外兩個已確認的問題</h3>
+      <ul class="plain">
+        <li>多選邊界一起拖，只會整組平移，不能按比例縮放整句。</li>
+        <li>多選拖曳的範圍，是所有選到的邊界各自限制的交集。只要其中 1 條碰到硬塊，整組都會被卡住；交集不存在時，範圍直接變成 0，而且畫面上沒有任何提示。</li>
+      </ul>
+    </section>
+
+    <section id="arch">
+      <h2><span class="num">2</span>架構決定</h2>
+      <dl class="decisions">
+        <div><dt>時間資料</dt><dd>只存在伸縮層：一串 warp 錨點，每個錨點記錄「原始錄音的時間 → 伸縮後的時間」。<span class="why">PitchNet 現在有 3 套各自運作的時間規則：音符伸縮、音符之間空隙被覆蓋、區段前導和尾巴只能平移。這 3 套合併成整條音軌共用的一張時間對應表；合成、畫面、音高曲線、呼吸音符、undo、存檔全部改讀這張表。</span></dd></div>
+        <div><dt>音符位置</dt><dd>存在原始錄音的時間上，伸縮層一動，音符和音高曲線自動跟著走。<span class="why">跟 Cubase 的做法相同。</span></dd></div>
+        <div><dt>音符層的職責</dt><dd>只管音高。拖音符邊界只是介面上的捷徑，結果寫進伸縮層。</dd></div>
+        <div><dt>圖層順序</dt><dd>伸縮層在上，音符層在下。</dd></div>
+        <div><dt>錨點之間的伸縮</dt><dd>等比例：子音、母音、空隙一起伸縮。<span class="why">要保住子音，由使用者自己在子音前後放錨點。整句伸縮時，每個子音分到的變化量很小，只有拉很長或縮很短時才會聽出來。</span></dd></div>
+        <div><dt>移除的舊邏輯</dt><dd>PitchNet 原本「保住子音、只拉母音」的音符計時（<code>NoteTimeMap</code>），以及區段前導和尾巴的硬塊。</dd></div>
+        <div><dt>聲音怎麼產生（Q1 定案）</dt><dd>依「有沒有伸縮、有沒有改音高」分成 4 種範圍，每段只經過一種演算法：
+          <div class="tablebox" style="margin-top:8px"><table>
+            <thead><tr><th>範圍</th><th>處理方式</th><th>說明</th></tr></thead>
+            <tbody>
+              <tr><td>只伸縮</td><td>signalsmith-stretch</td><td>拉伸原始錄音，不需要音高。新增的路徑。</td></tr>
+              <tr><td>沒伸縮、沒改音高</td><td>原始錄音</td><td>位置可能因前面的伸縮而移動，聲音本身不處理。</td></tr>
+              <tr><td>沒伸縮、有改音高</td><td>聲碼器</td><td>PitchNet 現在的做法。</td></tr>
+              <tr><td>有伸縮、有改音高</td><td>聲碼器</td><td>從原始錄音算出的 mel 和音高，照時間對應表重新排列後一次合成；不串接 signalsmith 的輸出。</td></tr>
+            </tbody></table></div>
+          <span class="why">依據試聽（2026-11-15，整理在「伸縮研究圖解」）：聲碼器靠音高合成，音高偵測錯誤、氣泡音、底噪大的素材會壞或出現麻感、毛邊；signalsmith 不用音高，在品質差的素材上不放大瑕疵。小倍率明測（Jingle bells 全曲）：signalsmith 在 0.95、1.05、1.10 倍都是 5 分，0.90 倍 4 分（字與字之間些微扭動）；聲碼器 0.90～1.10 倍都是 5 分。跑拍修正小於 1/8 拍時，兩者都夠好，所以只伸縮的地方用 signalsmith，保持接近原始錄音。</span></dd></div>
+        <div><dt>聲碼器範圍裡的無聲段</dt><dd>連續 24 格以上的無聲段、吐息、齒音：沒伸縮時保留原始錄音（PitchNet 現在的做法），有伸縮時改用 signalsmith。</dd></div>
+        <div><dt>接縫</dt><dd>不同處理方式的交界用 10 ms 交叉淡化，接縫優先放在無聲、底噪或子音的位置；找不到時可以切在音符內（Q6 試聽中切在母音中間也聽不出問題）。聲碼器的輸出先補約 4.5 ms 的延遲再交接。相鄰而伸縮比例不同的 signalsmith 範圍，連續處理、中途改變比例，不切段，錨點位置沒有接縫。<span class="why">沿用 <code>BreathSibilanceProtection.h</code> 的原則：交叉淡化只讓雜訊跟雜訊混，避免原始人聲跟處理過的人聲疊在一起造成梳狀濾波。</span></dd></div>
+        <div><dt>氣泡音（Q7 定案）</dt><dd>用 <code>detect_fry</code> 的規則偵測句尾氣泡音（比前一段低 7 個半音以上、30 格以內、之後 10 格內沒有回到原音高的短段落），這些格跟吐息、齒音同樣處理：沒伸縮時保留原始錄音，有伸縮時用 signalsmith，不走聲碼器，也就不跟著移調。<span class="why">盲測（試聽_氣泡音，整句移高 0.5 半音）以「還原度」為準，5 段都是保留原始錄音較好：聲碼器會把原始錄音的瑕疵吃掉，聽起來乾淨，但跟原聲不同（F01、F02 起初選了聲碼器，重聽後改判）。氣泡音沒有明確音高，不跟著移調聽不出落差。限制：規則只在女友感台本上驗證過 5 段；S1 那種句子中間的不規則發聲不在範圍內。</span></dd></div>
+        <div><dt>音高自動修正</dt><dd>送進聲碼器的音高加上「自動折回」：很短的段落如果剛好是前後音高的 1/2～1/5，乘回整數倍；再加上 Viterbi 解碼，處理偵測器在兩個八度之間猶豫的格。<span class="why">盲測 10 個案例：自動折回較好 4、不修正較好 0、差不多 3、兩個都壞 3（都是氣泡音）。S5 那段 RMVPE、FCPE、SwiftF0 都給 142～205 Hz，表示低週期是真的（次諧波），聲碼器要用上方主要諧波才合得對，換偵測模型解決不了。實驗程式在 <code>試聽工具/pitch_paths.py</code>。</span></dd></div>
+        <div><dt>signalsmith 的亂數種子</dt><dd>固定種子。<span class="why">伸縮比例超過 2 的區塊，signalsmith 會隨機化相位，預設種子取自 <code>std::random_device</code>，同一個編輯每次算出來會不同。</span></dd></div>
+        <div><dt>取樣率（Q5 定案）</dt><dd>3 項都做：
+          <div class="tablebox" style="margin-top:8px"><table>
+            <thead><tr><th></th><th>做法</th><th>效果</th></tr></thead>
+            <tbody>
+              <tr><td>A</td><td>只替換編輯過的範圍，其他地方直接播主機的原始音訊，接縫交叉淡化（接縫位置照「接縫」一項的原則）。</td><td>沒編輯的部分完全不經過取樣率轉換。</td></tr>
+              <tr><td>B</td><td>處理結果產生後，用 r8brain 一次轉成主機取樣率存起來，播放時直接讀，不再即時插值；主機改取樣率時重新轉換。</td><td>編輯過的部分沒有高頻損失和雜散。</td></tr>
+              <tr><td>C</td><td>signalsmith 直接拉伸原始取樣率的錄音，不經過 44.1 kHz。</td><td>只伸縮的範圍完全不經過取樣率轉換。</td></tr>
+            </tbody></table></div>
+          <span class="why">PitchNet 內部固定用 44.1 kHz（<code>Constants.h</code> 的 SAMPLE_RATE，聲碼器和 GAME 模型都綁定這個取樣率），所以改了音高的部分一定要轉換。現在只要區段編輯過，整個區段（包括沒動到的部分）都走「48→44.1 kHz（r8brain，<code>AudioResampler.cpp</code>）→ 44.1→48 kHz（JUCE <code>LagrangeInterpolator</code>，播放時即時插值）」。拉格朗日插值沒有抗混疊濾波，離線模擬來回轉換：15 kHz 掉 1.2 dB 並在 18.9 kHz 產生 -17.7 dB 的雜散，18 kHz 掉 2.8 dB、雜散 -9.7 dB；乾淨人聲 16～22 kHz 約少 2 dB，殘差 -38.8 dB。雜散在「原頻率 + 3.9 kHz」，跟原聲沒有諧波關係。0.7.3 也是同樣的做法。</span></dd></div>
+        <div><dt>舊存檔（Q3 定案）</dt><dd>不支援。讀到舊格式的 .pitchnet 檔或外掛狀態時，顯示「此檔案來自舊版 PitchNet，無法開啟」之類的提示，不嘗試轉換。<span class="why">目前沒有任何正式專案用到 PitchNet，本機也找不到 .pitchnet 檔。舊存檔的時間資料只有每個音符的原始位置和目前位置：音符內部的伸縮可以換算，但舊版在空出的位置填靜音、前導和尾巴整塊平移，新的連續時間對應表無法重現，換算後聲音會不同。fork 可以用建置選項 <code>PITCHNET_DEV_BUILD</code> 建成「PitchNet Dev」（外掛代碼 PTD1，官方是 PTE1），跟官方版同時安裝、互不讀取對方的狀態。</span></dd></div>
+        <div><dt>長度與比例限制（Q2 定案）</dt><dd>每段至少 1 格、比例 12.5%～800%；超出 0.5～2 倍只提示、不阻擋。操作方式見第 3 節。<span class="why">1 格（11.6 ms）是聲碼器的最小時間單位，也是 PitchNet 現在每個音符的下限（<code>TimingHandler.cpp</code> 的 <code>+ 1.0f</code>）。長度 0 等於刪除那段原始錄音，時間對應表會無法反推。12.5%～800% 跟 iZotope RX 的 Time &amp; Pitch 相同。signalsmith 在 0.5～2 倍之外品質沒有保證：壓縮超過 2 倍時相位只算到 2 倍（<code>timeFactor</code> 下限 0.5），拉長超過 2 倍時開始隨機化相位；這點是從程式碼推論的，沒有試聽過。跑拍修正小於 1/8 拍時碰不到這些限制。</span></dd></div>
+        <div><dt>GAME 區段</dt><dd>只留給模型推論用，不再影響編輯。<span class="why">分析時還是要切：PitchNet 一次最多送 5000 幀（約 50 秒）給 GAME，GAME 官方的推論程式也一樣先切再送，門檻設定（-40 dB、1000 ms、200 ms、100 ms）完全相同。GAME 訓練時加過噪音和殘響的資料擴增，切出來的片段帶有底噪不是問題。</span></dd></div>
+        <div><dt>相鄰音符的判斷</dt><dd>合併音符、剪刀工具的合併線、音高曲線相連，這 3 個功能拿掉「同一個區段」的條件，只看兩個音符是否緊貼。<span class="why">區段由音量門檻決定，跟畫面上的音符排列無關。例如把第一句尾音拉到貼上第二句的短音，兩個音符在畫面上緊貼，卻分屬不同區段，音高曲線會斷開、也不能合併。</span></dd></div>
+        <div><dt>點音符試聽</dt><dd>比照 Cubase：只播被點的那一個音符，從頭播到尾，播的是編輯後的實際結果。<span class="why">取代原本「從前一個音符播到後一個音符」（原本的範圍是同一個區段內的前後音符）。不採用 Melodyne 那種按住時循環播放一小段的方式。</span></dd></div>
+        <div><dt>試聽的觸發</dt><dd>在音符上按下滑鼠就播放，取代原本要先等試聽按鈕出現再點的方式。<span class="why">播放會一路播到音符結尾，跟滑鼠何時放開無關。PitchNet 在選取模式下，按住音符本來就會開始改音高；按下後如果拖曳，就變成改音高，試聽方式見下一項。</span></dd></div>
+        <div><dt>拖音高時的試聽</dt><dd>改成播放聲碼器合成的實際結果，一樣只播那一個音符、完整播放；取代原本把原始錄音變速移調、循環播放的近似效果。<span class="why">PitchNet 目前只在放開滑鼠時才重新合成（<code>onPitchEditFinished</code>），拖曳中聽到的都是近似效果。它的合成本來就是在背景執行：新的請求會中斷還沒算完的那一次，改算最新的音高（<code>EditorController</code> 的 pendingRerun）。所以拖曳中可以一再送出合成請求，只會算到最新的音高；畫音高曲線的工具已經是這樣邊畫邊合成。合成需要時間，音高改變後要等合成完成才會聽到新版本；這段延遲有多長，文件沒有寫，要建置後實測。</span></dd></div>
+        <div><dt>切分、黏合、刪除、拉伸後的音高</dt><dd>比照 VariAudio：先把所有音符暫時切回未編輯狀態，在未編輯的音高上計算音符的分析中心（<code>originalMidiNote</code>）、分析曲線（<code>originalDeltaPitch</code>）和邊界補償，再把各音符的移調和音高工具放回去。黏合後的音符回到分析音高；被切開的音符兩半保留原本的移調。<span class="why">原本直接在含移調的音高上計算，已移調片段或鄰居的移調會被寫進分析曲線，黏合或刪除後白線出現多個半音的斷層（測試素材女友感台本第二版，Note 98–100）。只帶已烘焙曲線的鄰居，回到編輯狀態後再補償一次，維持原本唱的音高；只移調的鄰居，邊界附近跟著新的基準音高平滑過渡。實作在 <code>NoteSplitter.cpp</code> 的 <code>UneditedSpace</code>。</span></dd></div>
+        <div><dt>Restore All Edits 的順序</dt><dd>先還原音符切法，再還原時間伸縮，最後把未編輯的音符貼回錄音音高。<span class="why">先貼回錄音再還原時間伸縮的話，音符的時間配置會在貼合之後改變，邊界留下白線尖角。重切音符時對鄰居曲線做的補償也記錄進 undo。</span></dd></div>
+        <div><dt>暫不採用</dt><dd>保留現有架構，只把區段的前導和尾巴改成可以伸縮。<span class="why">改動較小，能解決被擋住的問題，但 3 套時間規則還是各自運作，撐不起獨立的伸縮層。改用統一的時間對應表之後，硬塊會自然消失。</span></dd></div>
+        <div><dt>暫不採用（Q1）</dt><dd>所有伸縮都走聲碼器。<span class="why">好處是只有一種演算法、沒有 signalsmith 和聲碼器之間的接縫，0.90 倍縮短時分數也較高。代價是沒改音高的地方也帶上聲碼器的音色（不伸縮的 1.00 倍也聽得出些微毛邊）、空隙和吐息的伸縮第一輪是 signalsmith 較好（4.40 對 4.05）、氣泡音合不好的問題會擴大到所有伸縮範圍、拖錨點時運算量較大。</span></dd></div>
+        <div><dt>暫不採用（Q1）</dt><dd>串接：整條先用 signalsmith 拉伸，再讓聲碼器處理改了音高的音符。<span class="why">聲碼器只處理改過的音符，交界一樣要交叉淡化，接縫沒有減少；而且聲碼器會分析到已經變模糊的聲音，兩種失真疊在一起。</span></dd></div>
+      </dl>
+    </section>
+
+    <section id="warp">
+      <h2><span class="num">3</span>伸縮層操作</h2>
+      <div class="ops">
+        <div class="op"><span class="key">進入 warp 狀態</span><p>游標會改變，提示目前在伸縮層操作。</p></div>
+        <div class="op"><span class="key">左鍵單擊</span><p>在點擊位置放一個 warp 錨點，可以放在任何位置，不必對齊音符。</p></div>
+        <div class="op"><span class="key">Alt / Option ＋ 左鍵</span><p>刪除錨點。左右兩個相鄰錨點之間的伸縮自動重算。</p></div>
+        <div class="op"><span class="key">拖動錨點</span><p>左右相鄰的兩段反向伸縮，其他片段完全不動。</p></div>
+        <div class="op"><span class="key">精準度</span><p>伸縮比例和時間都顯示到小數點後 2 位，例如 <span class="mono">112.35%</span>、<span class="mono">1.57 s</span>。</p></div>
+        <div class="op"><span class="key">吸附拍點</span><p>做成開關。吸附的格線預計沿用 Cubase 透過 ARA 傳來的速度資訊。</p></div>
+        <div class="op"><span class="key">輸入目標長度</span><p>直接輸入一段的目標長度或比例，相鄰那段自動反向調整。</p></div>
+        <div class="op"><span class="key">長度與比例限制（Q2）</span><p>硬限制：每段至少 1 格（512 樣本 ≈ 11.6 ms），比例 12.5%～800%，不允許長度 0。軟提示：比例超出 0.5～2 倍時，那段的比例數字改成警告色，仍可操作。碰到硬限制時錨點停住，並顯示原因。</p></div>
+      </div>
+    </section>
+
+    <section id="notes">
+      <h2><span class="num">4</span>音符層捷徑</h2>
+      <p>在音符層拖音符邊界時，程式先在伸縮層產生錨點，再拖動錨點。這只是介面上的操作邏輯，資料一律寫進伸縮層。產生的錨點是：音符自己的左右邊界，加上相鄰音符靠近這一側的邊界。</p>
+      <div class="legend">
+        <span><i class="sw note"></i>音符</span>
+        <span><i class="sw warp-auto"></i>自動產生的錨點</span>
+        <span><i class="sw warp-user"></i>使用者放的錨點</span>
+        <span><i class="sw warp-drag"></i>正在拖的錨點</span>
+        <span><i class="sw stretch"></i>被伸縮的片段</span>
+      </div>
+      <div class="figs">
+        <div class="figure">
+          <div class="cap"><h3>有空隙，拖 B 的左邊界</h3><span class="tag">A||B|C</span></div>
+          <div class="svgbox" data-diagram="leftEdge"></div>
+          <p class="note">固定點是 A 的右邊界和 B 的右邊界。B 變長，A 和 B 之間的空隙變短；A 和 C 不動。</p>
+        </div>
+        <div class="figure">
+          <div class="cap"><h3>有空隙，拖 B 的右邊界</h3><span class="tag">A|B||C</span></div>
+          <div class="svgbox" data-diagram="rightEdge"></div>
+          <p class="note">固定點是 B 的左邊界和 C 的左邊界。B 和後面的空隙反向伸縮。套到測試素材：第一句尾音往右拉，後面的底噪空隙被壓縮，第二句的短音不動。</p>
+        </div>
+        <div class="figure">
+          <div class="cap"><h3>A 和 B 緊貼，拖兩者的分界</h3><span class="tag">|A|B|</span></div>
+          <div class="svgbox" data-diagram="touching"></div>
+          <p class="note">分界兩側沒有空隙，固定點改成 A 的左邊界和 B 的右邊界，A 和 B 反向伸縮。</p>
+        </div>
+        <div class="figure">
+          <div class="cap"><h3>B 是第一個音符，拖它的左邊界</h3><span class="tag">開頭|B|C</span></div>
+          <div class="svgbox" data-diagram="firstNote"></div>
+          <p class="note">沒有相鄰音符時，用音訊的開頭（或結尾）當固定點。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="anchors">
+      <h2><span class="num">5</span>補錨點規則</h2>
+      <div class="rule">
+        <p>拖動點的左右兩側各自判斷：</p>
+        <ol>
+          <li>從拖動點往那一側找，找到預定補點的邊界為止。</li>
+          <li>途中遇到已經存在的錨點，就用最靠近拖動點的那個當固定點，邊界不補。</li>
+          <li>途中沒有任何錨點，才在邊界補一個。</li>
+          <li>拖動點本身的位置已經有錨點時，直接拖那個，不另外產生。</li>
+        </ol>
+      </div>
+      <div class="figs">
+        <div class="figure">
+          <div class="cap"><h3>兩側都沒有錨點</h3><span class="tag">|___AB___| → |___|A|B|___|</span></div>
+          <div class="svgbox" data-diagram="reuseNone"></div>
+          <p class="note">左右都在音符邊界補點。</p>
+        </div>
+        <div class="figure">
+          <div class="cap"><h3>A 中間已經有使用者的錨點</h3><span class="tag">AA|AAAB___| → AA|AAA|B|___|</span></div>
+          <div class="svgbox" data-diagram="reuseUser"></div>
+          <p class="note">左側沿用使用者的錨點，A 的開頭不補點，A 前半段保持原樣；右側在 B 的右邊界補點。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="open">
+      <h2><span class="num">6</span>尚未決定</h2>
+      <div class="open">
+        <div class="item"><span class="q">Q1 已定案</span><p>伸縮用什麼方法<small>只伸縮的範圍用 signalsmith-stretch（MIT），改了音高的音符用聲碼器，詳見第 2 節「聲音怎麼產生」。rubberband R3 在第一輪試聽中分數最低（3.40），沒有採用；pbshift、Bungee 沒有測。</small></p></div>
+        <div class="item"><span class="q">Q6 已定案</span><p>signalsmith 和聲碼器之間的接縫：交叉淡化 10 ms，接縫優先放在無聲處，先補聲碼器的延遲<small>試聽（試聽_接縫，Jingle bells 全曲拉長 1.05 倍，7 個音符換成聲碼器，音高沒改）：5 個版本都聽不出問題，包括淡化 5／10／20 ms、故意切在母音中間、不補延遲。所以接縫的容錯空間很大；仍採用最保險的做法（無聲處、10 ms、補延遲），找不到無聲處時可以切在音符內。限制：只測了乾淨的唱歌素材、小倍率、音高沒改。</small></p></div>
+        <div class="item"><span class="q">Q7 已定案</span><p>改了音高的音符裡的氣泡音：偵測到的段落不走聲碼器<small>詳見第 2 節「氣泡音（Q7 定案）」。</small></p></div>
+        <div class="item"><span class="q">Q8 已定案</span><p>signalsmith 的分析窗參數：維持 <code>presetDefault</code>（120 ms、每 30 ms 一步）<small>明測（試聽_signalsmith參數）：0.90 倍下 5 組分析窗（120／30、100／40、90／22.5、72／18、60／15 ms）聽起來都差不多。之前 0.90 倍聽到的抖動，是原本的自然顫音被壓縮後變快（縮短到 0.90 倍時，顫音速率變成約 1.11 倍），等比例伸縮本來就會這樣，不是演算法的瑕疵。</small></p></div>
+        <div class="item"><span class="q">Q2 已定案</span><p>伸縮的長度與比例限制<small>每段至少 1 格、比例 12.5%～800%，超出 0.5～2 倍時提示，詳見第 3 節「長度與比例限制」。</small></p></div>
+        <div class="item"><span class="q">Q3 已定案</span><p>舊存檔：不支援<small>詳見第 2 節「舊存檔（Q3 定案）」。</small></p></div>
+        <div class="item"><span class="q">Q4</span><p>音符層的其他問題，等伸縮層做完再規劃<small>無音高的即興段落（例如「嗚呼」）被切成很多段：GAME 的 4 個切割參數寫死在程式裡，介面上調不到；後處理也只有齒音合併這一條規則。</small></p></div>
+        <div class="item"><span class="q">Q5 已定案</span><p>保留原始取樣率<small>只替換編輯過的範圍、處理結果改用 r8brain 轉成主機取樣率、signalsmith 直接處理原始錄音，詳見第 2 節「取樣率（Q5 定案）」。原本這裡寫「再用 r8brain 轉回 48 kHz」是錯的：播放時用的是 JUCE 的拉格朗日插值。</small></p></div>
+      </div>
+    </section>
+
+    <section id="scope">
+      <h2><span class="num">7</span>影響範圍</h2>
+      <p>需要重寫計時系統，會讓 fork 跟上游 PitchNet 分得更開。目前已知會動到的檔案：</p>
+      <div class="files">
+        <div><code>Source/Audio/Synthesis/IncrementalSynthesizer.cpp</code><span>mel、PSOLA、音高、原始錄音這 4 條路徑，改成讀統一的時間對應表；保留區間和清空空隙的邏輯重寫。新增 signalsmith 路徑：只伸縮的範圍拉伸原始錄音；混合遮罩（<code>generateBlendMask</code>）從「合成或原始」兩種擴充成 3 種來源。現在只要音符有時間編輯，整個音符就強制走合成（註解：「Keep the entire retimed note on the synthesized side of the blend」），這條要改成只有改了音高的音符才走聲碼器。</span></div>
+        <div><code>Source/Audio/FCPEPitchDetector.cpp</code>、<code>Source/Audio/EditorController.cpp</code>、<code>Source/Audio/BreathSibilanceAnalysis.h</code><span>氣泡音偵測：分析時標記氣泡音格，混合遮罩把它們放在原始錄音那一側。音高自動修正：FCPE 解碼改用 Viterbi（需要整段 360 格機率，不只取每格最大值）；後處理（<code>removeOutliers</code> 之後）加上自動折回。</span></div>
+        <div><code>Source/Plugin/ARADocumentController.cpp</code>、<code>Source/Plugin/PitchNetAudioModification.h</code>、<code>Source/Plugin/PluginProcessor.cpp</code><span>Q5：處理結果發布時（<code>setProcessedAudio</code>）用 r8brain 轉成主機取樣率存起來；播放時（<code>mixProcessedRegionAudio</code>）不再用 <code>LagrangeInterpolator</code>，只在編輯過的範圍讀處理結果，其他範圍讀主機的原始音訊，接縫交叉淡化。</span></div>
+        <div><code>Source/Audio/AudioEngine.h</code><span>單機版播放也用 <code>LagrangeInterpolator</code>，同樣改成事先用 r8brain 轉換。</span></div>
+        <div><code>Source/Models/ProjectSerializer.cpp</code>、<code>Source/Plugin/ARADocumentController.cpp</code><span>存檔加入伸縮層的錨點；格式版本號（<code>FORMAT_VERSION</code>、<code>kProjectArchiveVersion</code>、ARA 封存版本）往上提，讀到舊版本時顯示提示並拒絕開啟。</span></div>
+        <div><span class="mono">新增依賴</span><span>signalsmith-stretch（MIT，只有標頭檔）與 signalsmith-linear；macOS 可用 Accelerate。固定亂數種子。</span></div>
+        <div><code>Source/Audio/NoteTimeMap.h</code>、<code>NoteTiming.h</code><span>母音優先的音符計時，換成 warp 對應表。</span></div>
+        <div><code>Source/Utils/TimingRegionUtils.h</code><span>區段不再參與編輯，只留給推論用。</span></div>
+        <div><code>Source/UI/PianoRoll/States/TimingHandler.cpp</code><span>拖音符邊界改成產生並拖動錨點；移除硬塊限制。</span></div>
+        <div><code>Source/Undo/TimingAction.h</code><span>undo / redo 改成記錄錨點的變化。</span></div>
+        <div><code>Source/Audio/BreathNotes.h</code><span>呼吸音符的位置改成經過時間對應表。</span></div>
+        <div><code>Source/Audio/Synthesis/BreathSibilanceProtection.h</code><span>伸縮過的範圍裡，吐息和齒音不再直接保留原始錄音，要跟著一起伸縮（方法見 Q1）。現在的 <code>protectMovedNoiseInBlend</code> 靠 <code>NoteTimeMap</code> 讓吐息和齒音維持錄音時的長度，只把原始錄音搬到新位置；改成等比例伸縮、移除 <code>NoteTimeMap</code> 之後，這段要重寫。只改音高、時間沒動的範圍，維持保留原始錄音。</span></div>
+        <div><code>Source/UI/PianoRoll/NoteSplitter.cpp</code>、<code>NoteRenderer.cpp</code>、<code>PitchCurveRenderer.cpp</code><span>拿掉「同一個區段」的條件，只看是否緊貼。</span></div>
+        <div><code>Source/UI/PianoRollComponent.cpp</code><span>點音符試聽的範圍，改成只播那一個音符（<code>triggerPreviewForNote</code>）。</span></div>
+        <div><code>Source/UI/PianoRoll/States/SelectHandler.cpp</code><span>在音符上按下滑鼠就觸發試聽；拖音高時持續送出合成請求。</span></div>
+        <div><code>Source/UI/MainComponent.cpp</code>、<code>Source/Audio/ResampledLoopAudition.*</code><span>拖曳試聽改播合成結果，原本變速循環的近似試聽移除。</span></div>
+        <div><span class="mono">新增</span><span>伸縮層的資料模型、存檔欄位、伸縮層的介面（游標、錨點、比例顯示、數字輸入、吸附開關）。</span></div>
+      </div>
+      <p class="callout">各階段完成項目與尚未實作的項目，見第 8 節。</p>
+
+    <section id="progress">
+      <h2><span class="num">8</span>實作進度</h2>
+      <p>2026-11-15 開始實作，分支 <code>warp-layer</code>。以下依 commit 整理，截至 <code>c9bd9e9</code>（2026-11-16）。</p>
+
+      <h3>第 1 階段（完成）</h3>
+      <ul class="plain">
+        <li>時間對應表、signalsmith 底層、合成器改讀對應表並移除硬塊（<code>5fe77a7</code>）。</li>
+        <li>拖音符邊界改成產生錨點、undo、存檔（舊版拒絕開啟）、點音符只播該音符、外掛模式發布伸縮結果。</li>
+        <li>執行檔路徑含中文時 ONNX Runtime 載入失敗（<code>73dc8f2</code>）。</li>
+      </ul>
+
+      <h3>第 2 階段（完成）</h3>
+      <ul class="plain">
+        <li>伸縮工具（快速鍵 4，工具列第 4 顆，取代原本的計時工具）：單擊放錨點並可直接拖動、Alt＋單擊刪除、上方比例條（小數 2 位，超出 0.5～2 倍顯示警告色）、錨點時間標籤、碰到硬限制時停住並說明原因、雙擊比例輸入比例或長度、「錨點吸附」開關（沿用時間軸格線）（<code>808467c</code>）。</li>
+        <li>第 4 節的音符層捷徑併入伸縮工具：滑鼠在音符那一列的邊緣上時邊界加亮，拖動就照第 4、5 節補固定點；拖錨點時背景波形即時照新的對應表重排。</li>
+        <li>G／H 水平縮放、Shift＋G／Shift＋H 垂直縮放、Shift＋S 縮放到選取音符、Shift＋F 顯示完整長度（<code>796648a</code>）。</li>
+        <li>所有工具取消 Alt 拖曳平移，伸縮工具裡 Alt 只在錨點上變成橡皮擦（<code>752abf7</code>）。</li>
+        <li>獨立版分開 playhead（播放起點）和 playback（播放位置），暫停或停止後跳回 playhead（<code>c2011d6</code>）。</li>
+      </ul>
+
+      <h3>第 2 階段之後（已提交）</h3>
+      <div class="tablebox">
+        <table>
+          <thead><tr><th>類別</th><th>內容</th><th>commit</th></tr></thead>
+          <tbody>
+            <tr><td style="white-space:nowrap">聲音</td><td>伸縮層交接改在拉伸聲與原錄音差異最小處，修正右邊界卡一聲（兩者反相）</td><td class="num" style="white-space:normal">dbd2166</td></tr>
+            <tr><td style="white-space:nowrap">聲音</td><td>音高偵測改成 3 個模型逐格取中位數</td><td class="num" style="white-space:normal">6cc5dca</td></tr>
+            <tr><td style="white-space:nowrap">聲音</td><td>WarpRender 加入離線重繪量測與合併測試</td><td class="num" style="white-space:normal">d90707e</td></tr>
+            <tr><td style="white-space:nowrap">音高曲線</td><td>切分、黏合、刪除、拉伸邊界改在未編輯音高計算，修正白線斷層（見第 2 節）</td><td class="num" style="white-space:normal">09fea0a</td></tr>
+            <tr><td style="white-space:nowrap">音高曲線</td><td>Restore All Edits 先還原時間伸縮再貼合錄音；重切音符時鄰居曲線的補償可以 undo</td><td class="num" style="white-space:normal">c9bd9e9</td></tr>
+            <tr><td style="white-space:nowrap">音高曲線</td><td>切開音符保留修過的音高；黏回時回到分析音高；未修改的音符貼回錄音音高；剪開、合併及其 undo／redo 後白線整條重建</td><td class="num" style="white-space:normal">4e81378 60ad215 185ff8c 0b66318</td></tr>
+            <tr><td style="white-space:nowrap">音符編輯</td><td>選取工具可拖動音符左右邊界，調整涵蓋範圍，附 undo（Gemini）</td><td class="num" style="white-space:normal">a0d608a</td></tr>
+            <tr><td style="white-space:nowrap">音符編輯</td><td>Delete／Backspace 刪除選取或游標下的音符，附 undo（Gemini）</td><td class="num" style="white-space:normal">c5afe58</td></tr>
+            <tr><td style="white-space:nowrap">音符編輯</td><td>重設選單新增「音符切點」，恢復分析時的切法與音高；Reset All Edits 一併還原音符切分</td><td class="num" style="white-space:normal">c10c258 1ba24fa</td></tr>
+            <tr><td style="white-space:nowrap">音符編輯</td><td>Cmd 點選與框選追加音符，Alt 點空白處縮放</td><td class="num" style="white-space:normal">581fdb4</td></tr>
+            <tr><td style="white-space:nowrap">音高工具</td><td>Tilt 加入支點與 Alt 旋轉（Cubase 蹺蹺板）；Drawing 工具改成 RePitch 式，點了就套用，錨點留在線上</td><td class="num" style="white-space:normal">d758132 8e255d4</td></tr>
+            <tr><td style="white-space:nowrap">試聽</td><td>拖曳試聽改用正式合成器：拖到新音高時重算整顆音符並循環播放，每輪之間停 0.5 秒；外掛模式維持原本的持續音</td><td class="num" style="white-space:normal">fde5247</td></tr>
+            <tr><td style="white-space:nowrap">播放</td><td>播放中點時間列只設定 playhead、不打斷播放；Shift＋Alt＋左鍵與時間列都可按住拖曳 playhead，放開才設定；工具列顯示並可輸入 playhead 時間</td><td class="num" style="white-space:normal">b6cfb8b dae0d57 23833b0 008159f 85fb7a5</td></tr>
+            <tr><td style="white-space:nowrap">檔案</td><td>雙擊 .pitchnet 開啟；存檔記住畫面位置與 playhead；修正開專案時調性按鈕讀到已刪除的舊專案而閃退</td><td class="num" style="white-space:normal">00dc1d2 3b40c65 748e479</td></tr>
+            <tr><td style="white-space:nowrap">介面</td><td>提高縮放上限、Blob Height 預設最大、縮放滑桿 Alt＋左鍵回到中間、修正最大倍率卡頓；右鍵選單改成直式工具列表</td><td class="num" style="white-space:normal">6489ac1 b8fc14e 6ba5505 cdaa354</td></tr>
+            <tr><td style="white-space:nowrap">修正</td><td>跨過切開或黏回音符連續復原時閃退</td><td class="num" style="white-space:normal">6cfa79b</td></tr>
+            <tr><td style="white-space:nowrap">建置</td><td>本機編譯改用固定憑證簽章，重開不再重問權限</td><td class="num" style="white-space:normal">c45bce1</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>尚未實作</h3>
+      <ul class="plain">
+        <li>Q7 氣泡音偵測（程式碼裡還沒有相關實作）。</li>
+        <li>音高自動修正：自動折回與 Viterbi 解碼。</li>
+        <li>Q5 取樣率：外掛播放仍用 <code>LagrangeInterpolator</code>（<code>ARADocumentController.cpp</code>）。</li>
+        <li>相鄰音符的判斷：黏合已經只看是否緊貼，<code>NoteRenderer.cpp</code> 與 <code>PitchCurveRenderer.cpp</code> 仍用「同一個區段」判斷。</li>
+        <li>拖音高時的試聽：獨立版已改播合成結果，但目前是循環播放，跟第 2 節「一樣只播那一個音符、完整播放」不同；外掛模式還沒改。</li>
+      </ul>
+
+      <h3>已知風險（尚未處理）</h3>
+      <ul class="plain">
+        <li><code>PitchCurveProcessor::refitUntouchedCurves</code> 會略過 Warped 音符。沒有還原時間伸縮的重設（例如只做 Restore Pitch），Warped 音符可能不會貼回錄音音高；尚未驗證。</li>
+        <li>拉伸音符邊界時，鄰居補償（<code>compensateNeighbourBaseChange</code>）仍在含移調的音高上計算；旁邊有移調過的音符時，可能出現跟刪除同類的污染；尚未驗證。</li>
+        <li>拉伸出來的範圍，在基準音高彎曲處最多差約 0.086 半音。分析曲線以來源長度儲存、經 warp 線性內插造成；改成時間軸長度可以消除，但之後再調 warp 時顫音會滑位，所以保留。</li>
+      </ul>
+    </section>
+  </main>
+</div>
+
+<script>
+(function () {
+  var NS = "http://www.w3.org/2000/svg";
+  var W = 640, LEFT = 74, RIGHT = 620, ROW = 54, TOP = 14;
+  var uid = 0;
+
+  function el(name, attrs, parent, text) {
+    var e = document.createElementNS(NS, name);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    if (text != null) e.textContent = text;
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+
+  function draw(box, spec) {
+    var rows = spec.rows, len = spec.len;
+    var h = TOP + rows.length * ROW + (spec.axis ? 26 : 6);
+    var svg = el("svg", { viewBox: "0 0 " + W + " " + h, role: "img", "aria-label": spec.label });
+    var id = "hatch" + (uid++);
+    var defs = el("defs", {}, svg);
+    var pat = el("pattern", { id: id, width: 6, height: 6, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, defs);
+    el("rect", { width: 6, height: 6, style: "fill: var(--rigid-soft)" }, pat);
+    el("rect", { width: 2, height: 6, style: "fill: var(--rigid)" }, pat);
+    var X = function (v) { return LEFT + (v / len) * (RIGHT - LEFT); };
+
+    rows.forEach(function (row, i) {
+      var y = TOP + i * ROW, mid = y + 18;
+      el("text", { x: 0, y: mid + 5, style: "fill: var(--muted); font: 500 13px var(--font-body)" }, svg, row.label);
+      el("line", { x1: LEFT, x2: RIGHT, y1: mid, y2: mid, style: "stroke: var(--line); stroke-width: 1" }, svg);
+      (row.bands || []).forEach(function (b) {
+        el("rect", { x: X(b.s), y: y, width: X(b.e) - X(b.s), height: 36, rx: 3, style: "fill: var(--warp-soft); stroke: var(--warp); stroke-width: 1; stroke-opacity: .55" }, svg);
+      });
+      (row.blocks || []).forEach(function (b) {
+        var st;
+        if (b.cls === "rigid") st = "fill: url(#" + id + "); stroke: var(--rigid); stroke-width: 1";
+        else if (b.cls === "region") st = "fill: none; stroke: var(--region); stroke-width: 1.5; stroke-dasharray: 4 3";
+        else st = "fill: var(--note)";
+        var hh = b.cls === "region" ? 30 : 22, yy = b.cls === "region" ? y + 3 : y + 7;
+        el("rect", { x: X(b.s), y: yy, width: Math.max(2, X(b.e) - X(b.s)), height: hh, rx: 3, style: st }, svg);
+        if (b.text) {
+          var light = b.cls === "note" || !b.cls;
+          el("text", { x: (X(b.s) + X(b.e)) / 2, y: mid + 5, "text-anchor": "middle",
+            style: "fill: " + (light ? "#fff" : (b.cls === "rigid" ? "var(--rigid)" : "var(--muted)")) + "; font: 600 12px var(--font-mono)" }, svg, b.text);
+        }
+      });
+      (row.marks || []).forEach(function (m) {
+        var x = X(m.x);
+        if (m.kind === "edge") {
+          el("rect", { x: x - 3, y: y - 2, width: 3, height: 40, style: "fill: var(--muted)" }, svg);
+          return;
+        }
+        var w = m.kind === "drag" ? 3.5 : 2;
+        el("line", { x1: x, x2: x, y1: y - 4, y2: y + 40,
+          style: "stroke: var(--warp); stroke-width: " + w + (m.kind === "auto" ? "; stroke-dasharray: 4 3" : "") }, svg);
+        el("path", { d: "M" + (x - 5) + " " + (y - 8) + " L" + (x + 5) + " " + (y - 8) + " L" + x + " " + (y - 2) + " Z", style: "fill: var(--warp)" }, svg);
+        if (m.to != null) {
+          var x2 = X(m.to), yA = y + 44;
+          el("line", { x1: x, x2: x2, y1: yA, y2: yA, style: "stroke: var(--warp); stroke-width: 1.5" }, svg);
+          var d = x2 > x ? 1 : -1;
+          el("path", { d: "M" + x2 + " " + yA + " L" + (x2 - 6 * d) + " " + (yA - 4) + " L" + (x2 - 6 * d) + " " + (yA + 4) + " Z", style: "fill: var(--warp)" }, svg);
+        }
+      });
+    });
+
+    if (spec.axis) {
+      var ay = TOP + rows.length * ROW + 4;
+      el("line", { x1: LEFT, x2: RIGHT, y1: ay, y2: ay, style: "stroke: var(--line)" }, svg);
+      spec.axis.forEach(function (t) {
+        el("line", { x1: X(t), x2: X(t), y1: ay, y2: ay + 5, style: "stroke: var(--muted)" }, svg);
+        el("text", { x: X(t), y: ay + 19, "text-anchor": "middle", style: "fill: var(--muted); font: 11px var(--font-mono)" }, svg, t.toFixed(1) + " s");
+      });
+    }
+    box.appendChild(svg);
+  }
+
+  var D = {
+    rootcause: { len: 3.2, label: "測試素材的區段切法", axis: [0, 0.5, 1, 1.5, 2, 2.5, 3],
+      rows: [
+        { label: "聲音", blocks: [{ s: 0.20, e: 1.57, text: "第一句", cls: "note" }, { s: 2.90, e: 3.05, cls: "note" }] },
+        { label: "區段", blocks: [{ s: 0.11, e: 1.70, text: "區段 1　0.11–1.70", cls: "region" }, { s: 1.84, e: 3.15, text: "區段 2　1.84–3.15", cls: "region" }] },
+        { label: "硬塊", blocks: [{ s: 1.57, e: 1.70, cls: "rigid" }, { s: 1.84, e: 2.90, text: "前導 1.06 s", cls: "rigid" }] }
+      ] },
+    leftEdge: { len: 100, label: "拖 B 的左邊界", rows: [
+      { label: "拖曳前", blocks: [{ s: 4, e: 28, text: "A" }, { s: 44, e: 66, text: "B" }, { s: 76, e: 96, text: "C" }],
+        marks: [{ x: 28, kind: "auto" }, { x: 44, kind: "drag", to: 36 }, { x: 66, kind: "auto" }] },
+      { label: "拖曳後", bands: [{ s: 28, e: 36 }, { s: 36, e: 66 }], blocks: [{ s: 4, e: 28, text: "A" }, { s: 36, e: 66, text: "B" }, { s: 76, e: 96, text: "C" }],
+        marks: [{ x: 28, kind: "auto" }, { x: 36, kind: "drag" }, { x: 66, kind: "auto" }] }
+    ] },
+    rightEdge: { len: 100, label: "拖 B 的右邊界", rows: [
+      { label: "拖曳前", blocks: [{ s: 4, e: 26, text: "A" }, { s: 34, e: 56, text: "B" }, { s: 82, e: 96, text: "C" }],
+        marks: [{ x: 34, kind: "auto" }, { x: 56, kind: "drag", to: 72 }, { x: 82, kind: "auto" }] },
+      { label: "拖曳後", bands: [{ s: 34, e: 72 }, { s: 72, e: 82 }], blocks: [{ s: 4, e: 26, text: "A" }, { s: 34, e: 72, text: "B" }, { s: 82, e: 96, text: "C" }],
+        marks: [{ x: 34, kind: "auto" }, { x: 72, kind: "drag" }, { x: 82, kind: "auto" }] }
+    ] },
+    touching: { len: 100, label: "A 和 B 緊貼", rows: [
+      { label: "拖曳前", blocks: [{ s: 14, e: 46, text: "A" }, { s: 46, e: 80, text: "B" }],
+        marks: [{ x: 14, kind: "auto" }, { x: 46, kind: "drag", to: 58 }, { x: 80, kind: "auto" }] },
+      { label: "拖曳後", bands: [{ s: 14, e: 58 }, { s: 58, e: 80 }], blocks: [{ s: 14, e: 58, text: "A" }, { s: 58, e: 80, text: "B" }],
+        marks: [{ x: 14, kind: "auto" }, { x: 58, kind: "drag" }, { x: 80, kind: "auto" }] }
+    ] },
+    firstNote: { len: 100, label: "第一個音符", rows: [
+      { label: "拖曳前", blocks: [{ s: 22, e: 50, text: "B" }, { s: 64, e: 92, text: "C" }],
+        marks: [{ x: 0.6, kind: "edge" }, { x: 22, kind: "drag", to: 12 }, { x: 50, kind: "auto" }] },
+      { label: "拖曳後", bands: [{ s: 0.6, e: 12 }, { s: 12, e: 50 }], blocks: [{ s: 12, e: 50, text: "B" }, { s: 64, e: 92, text: "C" }],
+        marks: [{ x: 0.6, kind: "edge" }, { x: 12, kind: "drag" }, { x: 50, kind: "auto" }] }
+    ] },
+    reuseNone: { len: 100, label: "兩側都沒有錨點", rows: [
+      { label: "拖曳前", blocks: [{ s: 20, e: 48, text: "A" }, { s: 48, e: 74, text: "B" }],
+        marks: [{ x: 0.6, kind: "edge" }, { x: 20, kind: "auto" }, { x: 48, kind: "drag", to: 56 }, { x: 74, kind: "auto" }, { x: 99.4, kind: "edge" }] },
+      { label: "拖曳後", bands: [{ s: 20, e: 56 }, { s: 56, e: 74 }], blocks: [{ s: 20, e: 56, text: "A" }, { s: 56, e: 74, text: "B" }],
+        marks: [{ x: 0.6, kind: "edge" }, { x: 20, kind: "auto" }, { x: 56, kind: "drag" }, { x: 74, kind: "auto" }, { x: 99.4, kind: "edge" }] }
+    ] },
+    reuseUser: { len: 100, label: "沿用使用者的錨點", rows: [
+      { label: "拖曳前", blocks: [{ s: 4, e: 50, text: "A" }, { s: 50, e: 72, text: "B" }],
+        marks: [{ x: 22, kind: "user" }, { x: 50, kind: "drag", to: 58 }, { x: 72, kind: "auto" }, { x: 99.4, kind: "edge" }] },
+      { label: "拖曳後", bands: [{ s: 22, e: 58 }, { s: 58, e: 72 }], blocks: [{ s: 4, e: 58, text: "A" }, { s: 58, e: 72, text: "B" }],
+        marks: [{ x: 22, kind: "user" }, { x: 58, kind: "drag" }, { x: 72, kind: "auto" }, { x: 99.4, kind: "edge" }] }
+    ] }
+  };
+
+  document.querySelectorAll("[data-diagram]").forEach(function (box) {
+    var spec = D[box.getAttribute("data-diagram")];
+    if (spec) draw(box, spec);
+  });
+})();
+</script>
