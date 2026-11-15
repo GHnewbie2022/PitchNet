@@ -172,12 +172,13 @@ public:
                 else
                     notes[i]->setTiltRight(0.0f);
 
-                const float newTiltMean = (notes[i]->getTiltLeft() + notes[i]->getTiltRight()) / 2.0f;
+                const float newTiltMean = notes[i]->getTiltMean();
                 if (i < oldMidiNotes.size())
                 {
                     const float oldTiltLeft = (side == TiltSide::Left) ? oldTilts[i] : notes[i]->getTiltLeft();
                     const float oldTiltRight = (side == TiltSide::Right) ? oldTilts[i] : notes[i]->getTiltRight();
-                    const float oldTiltMean = (oldTiltLeft + oldTiltRight) / 2.0f;
+                    juce::ignoreUnused(oldTiltLeft, oldTiltRight);
+                    const float oldTiltMean = 0.0f; // see Note::getTiltMean
                     const float baseline = oldMidiNotes[i] - oldTiltMean;
                     notes[i]->setMidiNote(baseline + newTiltMean);
                 }

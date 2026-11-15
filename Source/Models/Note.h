@@ -188,6 +188,37 @@ public:
     void setTiltLeft(float tilt) { tiltLeft = tilt; }
     float getTiltRight() const { return tiltRight; }
     void setTiltRight(float tilt) { tiltRight = tilt; }
+    // Where the tilt pivots, as a fraction of the note's length (Cubase's
+    // diamond): tiltLeft moves the left edge and tiltRight the right edge,
+    // each side ramping to zero at the pivot.
+    float getTiltPivot() const { return tiltPivot; }
+    void setTiltPivot(float pivot) { tiltPivot = juce::jlimit(0.0f, 1.0f, pivot); }
+    /** The mean offset a tilt gives the note's frames. Only for reading
+     *  projects saved when a tilt still moved the note's centre by it. */
+    static float tiltMeanFor(float left, float right, float pivot)
+    {
+        return 0.5f * (left * pivot + right * (1.0f - pivot));
+    }
+    /** How far a tilt moves the note's centre: not at all. The seesaw turns
+     *  about its pivot, which stays, so the blob stays at the pitch the
+     *  note turns about rather than following the mean offset (a scoop
+     *  pulled up would otherwise lift the blob above the curve). The tools
+     *  still add this to the centre, so it stays the one place to change. */
+    float getTiltMean() const { return 0.0f; }
+    // Tilt from earlier pivots, kept as it was when the pivot moved: moving
+    // the pivot (Cubase's diamond) leaves the curve where it is; only the
+    // tilts made after it turn about the new place.
+    const std::vector<float>& getFrozenTilt() const { return frozenTilt; }
+    void setFrozenTilt(std::vector<float> offsets) { frozenTilt = std::move(offsets); }
+    static float meanOf(const std::vector<float>& values)
+    {
+        if (values.empty())
+            return 0.0f;
+        float sum = 0.0f;
+        for (const float v : values)
+            sum += v;
+        return sum / static_cast<float>(values.size());
+    }
     // Scales deviations from the note center: 1.0 preserves the recorded
     // contour, 0.0 flattens it, and negative values invert it. The range is
     // limited to -10.0 through 10.0 (-1000% through 1000%).
@@ -309,6 +340,10 @@ private:
     // Pitch tool transformation parameters (non-destructive, stored as parameters)
     float tiltLeft = 0.0f;           // Tilt amount at left edge (semitones)
     float tiltRight = 0.0f;          // Tilt amount at right edge (semitones)
+    float tiltPivot = 0.5f;          // Where the tilt pivots (0..1 of the note)
+    // Tilts made about earlier pivots, frozen when the pivot moved
+    // (semitones per frame, laid over the note's length).
+    std::vector<float> frozenTilt;
     float vibrato = 1.0f;            // 1.0=original, 0.0=flat, >1.0=amplify, <0.0=invert
     float pitchDrift = 1.0f;
     int smoothLeftFrames = 0;        // Smoothing transition length at left boundary

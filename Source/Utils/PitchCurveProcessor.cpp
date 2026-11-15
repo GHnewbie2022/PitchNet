@@ -93,7 +93,7 @@ namespace
             seg.endFrame = note.getEndFrame();
             // Base pitch already includes per-note offset
             seg.midiNote = note.getMidiNote() + note.getPitchOffset()
-                         - (note.getTiltLeft() + note.getTiltRight()) / 2.0f;
+                         - note.getTiltMean();
             segments.push_back(seg);
         }
 
@@ -282,10 +282,12 @@ namespace PitchCurveProcessor
         const auto context = buildAdjacentContext(project.getNotes(), note);
         auto zero = PitchToolOperations::applyAllTransformations(source,
             note.getTiltLeft(), note.getTiltRight(), note.getVibrato(),
-            note.getSmoothLeftFrames(), note.getSmoothRightFrames(), context, 0.0f);
+            note.getSmoothLeftFrames(), note.getSmoothRightFrames(), context, 0.0f,
+            note.getTiltPivot(), &note.getFrozenTilt());
         auto one = PitchToolOperations::applyAllTransformations(source,
             note.getTiltLeft(), note.getTiltRight(), note.getVibrato(),
-            note.getSmoothLeftFrames(), note.getSmoothRightFrames(), context, 1.0f);
+            note.getSmoothLeftFrames(), note.getSmoothRightFrames(), context, 1.0f,
+            note.getTiltPivot(), &note.getFrozenTilt());
         for (size_t i = 0; i < one.size(); ++i)
             one[i] = (one[i] - zero[i]) * note.getDeltaScale();
         return one;
@@ -355,7 +357,9 @@ namespace PitchCurveProcessor
                 note.getSmoothLeftFrames(),
                 note.getSmoothRightFrames(),
                 adjacentContext,
-                note.getPitchDrift()
+                note.getPitchDrift(),
+                note.getTiltPivot(),
+                &note.getFrozenTilt()
             );
 
             // Apply per-note delta scale/offset (from delta control handles)
@@ -452,7 +456,9 @@ namespace PitchCurveProcessor
                 note->getSmoothLeftFrames(),
                 note->getSmoothRightFrames(),
                 adjacentContext,
-                note->getPitchDrift()
+                note->getPitchDrift(),
+                note->getTiltPivot(),
+                &note->getFrozenTilt()
             );
 
             const float dScale = note->getDeltaScale();
@@ -536,7 +542,9 @@ namespace PitchCurveProcessor
                 note->getSmoothLeftFrames(),
                 note->getSmoothRightFrames(),
                 adjacentContext,
-                note->getPitchDrift()
+                note->getPitchDrift(),
+                note->getTiltPivot(),
+                &note->getFrozenTilt()
             );
 
             // Apply per-note delta scale/offset

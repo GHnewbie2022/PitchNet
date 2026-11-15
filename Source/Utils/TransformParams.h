@@ -10,6 +10,8 @@ struct TransformParams
 {
     float tiltLeft = 0.0f;
     float tiltRight = 0.0f;
+    float tiltPivot = 0.5f;
+    std::vector<float> frozenTilt;
     float formantShift = 0.0f;
     float volumeDb = 0.0f;
     float sibilantBalance = 0.0f;
@@ -23,12 +25,17 @@ struct TransformParams
 
     TransformParams() = default;
 
+    /** The mean offset these tilts give a note (Note::tiltMeanFor). */
+    float tiltMean() const { return 0.0f; } // see Note::getTiltMean
+
     /** Capture all transformation params from a note. */
     static TransformParams fromNote(const Note& note)
     {
         TransformParams p;
         p.tiltLeft = note.getTiltLeft();
         p.tiltRight = note.getTiltRight();
+        p.tiltPivot = note.getTiltPivot();
+        p.frozenTilt = note.getFrozenTilt();
         p.formantShift = note.getFormantShift();
         p.volumeDb = note.getVolumeDb();
         p.sibilantBalance = note.getSibilantBalance();
@@ -48,6 +55,8 @@ struct TransformParams
         note.setMidiNote(midiNote);
         note.setTiltLeft(tiltLeft);
         note.setTiltRight(tiltRight);
+        note.setTiltPivot(tiltPivot);
+        note.setFrozenTilt(frozenTilt);
         note.setVibrato(vibrato);
         note.setPitchDrift(pitchDrift);
         note.setFormantShift(formantShift);
@@ -63,6 +72,8 @@ struct TransformParams
     {
         return tiltLeft == other.tiltLeft &&
                tiltRight == other.tiltRight &&
+               tiltPivot == other.tiltPivot &&
+               frozenTilt == other.frozenTilt &&
                formantShift == other.formantShift &&
                volumeDb == other.volumeDb &&
                sibilantBalance == other.sibilantBalance &&
@@ -84,6 +95,7 @@ struct TransformParams
     {
         return tiltLeft == 0.0f &&
                tiltRight == 0.0f &&
+               frozenTilt.empty() &&
                formantShift == 0.0f &&
                volumeDb == 0.0f &&
                sibilantBalance == 0.0f &&

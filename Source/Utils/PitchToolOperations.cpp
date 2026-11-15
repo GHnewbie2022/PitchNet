@@ -146,6 +146,22 @@ float computeMean(const std::vector<float>& deltaPitch) {
   return sum / static_cast<float>(deltaPitch.size());
 }
 
+std::vector<float> tiltOffsets(size_t frames, float left, float right, float pivot) {
+  std::vector<float> offsets(frames, 0.0f);
+  if (frames < 2)
+    return offsets;
+  const float p = std::clamp(pivot, 0.0f, 1.0f);
+  const float last = static_cast<float>(frames - 1);
+  for (size_t i = 0; i < frames; ++i) {
+    const float t = static_cast<float>(i) / last;
+    if (t < p)
+      offsets[i] = p > 0.0f ? left * (p - t) / p : 0.0f;
+    else
+      offsets[i] = p < 1.0f ? right * (t - p) / (1.0f - p) : 0.0f;
+  }
+  return offsets;
+}
+
 std::vector<float> applyAllTransformations(const std::vector<float>& originalDelta,
                                            float tiltLeft,
                                            float tiltRight,
@@ -153,7 +169,9 @@ std::vector<float> applyAllTransformations(const std::vector<float>& originalDel
                                            int smoothLeftFrames,
                                            int smoothRightFrames,
                                            const AdjacentNoteContext& adjacentContext,
-                                           float pitchDrift) {
+                                           float pitchDrift,
+                                           float tiltPivot,
+                                           const std::vector<float>* frozenTilt) {
   if (originalDelta.empty()) {
     return {};
   }
@@ -170,15 +188,28 @@ std::vector<float> applyAllTransformations(const std::vector<float>& originalDel
   // This retains the established 0% vibrato = flat behavior.
   result = scalePitchDrift(result, pitchDrift);
 
-  // 2. Apply tilt transformations (combined left + right)
-  // TiltLeft: pivot at right (1.0), negative amount
-  if (std::abs(tiltLeft) > 0.001f) {
-    result = tiltDeltaPitch(result, 1.0f, -tiltLeft);
+  // 2. Tilt about the pivot (Cubase's seesaw), on top of the tilts frozen
+  // when the pivot moved (laid over the note's current length).
+  if ((std::abs(tiltLeft) > 0.001f || std::abs(tiltRight) > 0.001f) &&
+      result.size() > 1) {
+    const auto offsets = tiltOffsets(result.size(), tiltLeft, tiltRight, tiltPivot);
+    for (size_t i = 0; i < result.size(); ++i)
+      result[i] += offsets[i];
   }
-  
-  // TiltRight: pivot at left (0.0), positive amount
-  if (std::abs(tiltRight) > 0.001f) {
-    result = tiltDeltaPitch(result, 0.0f, tiltRight);
+  if (frozenTilt && !frozenTilt->empty() && !result.empty()) {
+    const auto& frozen = *frozenTilt;
+    for (size_t i = 0; i < result.size(); ++i) {
+      if (frozen.size() == 1 || result.size() == 1) {
+        result[i] += frozen.front();
+        continue;
+      }
+      const double pos = static_cast<double>(i) * static_cast<double>(frozen.size() - 1) /
+                         static_cast<double>(result.size() - 1);
+      const size_t lo = static_cast<size_t>(pos);
+      const size_t hi = std::min(lo + 1, frozen.size() - 1);
+      const float t = static_cast<float>(pos - static_cast<double>(lo));
+      result[i] += frozen[lo] + (frozen[hi] - frozen[lo]) * t;
+    }
   }
 
   // 3. Apply boundary smoothing

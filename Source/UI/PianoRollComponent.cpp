@@ -119,6 +119,7 @@ namespace
     std::vector<float> deltaPitch;
     float originalMidiNote;
     std::vector<float> originalDeltaPitch;
+    std::vector<float> frozenTilt;
 
     static NoteEditState capture(const Note& note)
     {
@@ -128,7 +129,8 @@ namespace
               note.getSmoothLeftFrames(), note.getSmoothRightFrames(),
               note.getDeltaScale(), note.getDeltaOffset(),
               note.getBakedDeltaPitch(), note.getDeltaPitch(),
-              note.getOriginalMidiNote(), note.getOriginalDeltaPitch()};
+              note.getOriginalMidiNote(), note.getOriginalDeltaPitch(),
+              note.getFrozenTilt()};
     }
 
     // The unedited pitch: what the analysis gave the note when it is a
@@ -164,6 +166,7 @@ namespace
       note.setDeltaPitch(deltaPitch);
       note.setOriginalMidiNote(originalMidiNote);
       note.setOriginalDeltaPitch(originalDeltaPitch);
+      note.setFrozenTilt(frozenTilt);
       note.markDirty();
       note.markSynthDirty();
     }
@@ -200,6 +203,7 @@ namespace
            current.bakedDeltaPitch != defaults.bakedDeltaPitch ||
            current.originalMidiNote != defaults.originalMidiNote ||
            current.originalDeltaPitch != defaults.originalDeltaPitch ||
+           current.frozenTilt != defaults.frozenTilt ||
            hasUnrenderedDeltaEdit(note, current, defaults);
   }
 
@@ -621,6 +625,24 @@ void PianoRollComponent::paint(juce::Graphics &g)
     // Draw pitch tool handles in world space (transform applied by g.setOrigin above)
     if (editMode == EditMode::Select && pitchToolHandles && !pitchToolHandles->isEmpty())
     {
+      // A line through the tilt pivot while tilting, rotating or moving it
+      // (or pointing at those handles), to see where the seesaw turns.
+      const auto hoveredType =
+          hoveredPitchToolHandle >= 0 &&
+                  hoveredPitchToolHandle < static_cast<int>(pitchToolHandles->getHandles().size())
+              ? pitchToolHandles->getHandle(hoveredPitchToolHandle).type
+              : PitchToolHandles::HandleType::None;
+      const bool tiltHandle = hoveredType == PitchToolHandles::HandleType::TiltLeft ||
+                              hoveredType == PitchToolHandles::HandleType::TiltRight ||
+                              hoveredType == PitchToolHandles::HandleType::TiltPivot;
+      const auto line = pitchToolHandles->pivotLine();
+      if ((tiltHandle || (pitchToolController &&
+                          pitchToolController->isDraggingTiltOrPivot())) &&
+          line.getLength() > 0.0f)
+      {
+        g.setColour(juce::Colours::white.withAlpha(0.85f));
+        g.drawLine(line, 1.0f);
+      }
       pitchToolHandles->draw(g);
     }
   }
@@ -2735,6 +2757,7 @@ juce::String PianoRollComponent::getTooltip()
     case PitchToolHandles::HandleType::Amplitude: return TR("handle.amplitude");
     case PitchToolHandles::HandleType::Formant: return TR("handle.formant");
     case PitchToolHandles::HandleType::TiltRight: return TR("handle.tilt_right");
+    case PitchToolHandles::HandleType::TiltPivot: return TR("handle.tilt_pivot");
     default: return {};
   }
 }
@@ -4071,9 +4094,29 @@ void PianoRollComponent::updatePitchToolHandlesFromSelection()
       (selectHandler_ && (selectHandler_->isSingleNoteDragging() ||
                           selectHandler_->getIsDeltaScaleDragging() ||
                           selectHandler_->getIsDeltaOffsetDragging())) ||
-      (pitchToolController && pitchToolController->isDragging()) ||
       (pitchEditor && (pitchEditor->isDraggingNote() ||
                        pitchEditor->isDraggingMultiNotes()));
+
+  // Dragging one of the handles (tilt, pivot, drift...): keep that note's
+  // handles on screen, the dragged one lit, as Cubase does - the pivot line
+  // and the other handles stay to judge by.
+  if (project && editMode == EditMode::Select && pitchToolController &&
+      pitchToolController->isDragging())
+  {
+    if (auto *note = pitchToolController->getActiveHandleNote())
+    {
+      pitchToolHandles->updateHandles({note}, *coordMapper,
+                                      getNoteHoverShadowBounds(*note));
+      hoveredPitchToolHandle = -1;
+      const auto &handles = pitchToolHandles->getHandles();
+      for (int h = 0; h < static_cast<int>(handles.size()); ++h)
+        if (handles[static_cast<size_t>(h)].type ==
+            pitchToolController->getActiveHandleType())
+          hoveredPitchToolHandle = h;
+      pitchToolHandles->setHoveredHandleIndex(hoveredPitchToolHandle);
+      return;
+    }
+  }
 
   if (!project || editMode != EditMode::Select)
   {

@@ -21,6 +21,9 @@ public:
     Amplitude,
     SmoothLeft,
     SmoothRight,
+    // The seesaw's pivot (Cubase's diamond): drag it along the note,
+    // Alt + click puts it back in the middle.
+    TiltPivot,
     None
   };
 
@@ -93,9 +96,14 @@ public:
    */
   void setHoveredHandleIndex(int index) { hoveredHandleIndex = index; }
 
+  /** The tilt pivot's x (world) and the note body's vertical extent, for
+   *  the line drawn through the pivot while tilting. Empty without a note. */
+  juce::Line<float> pivotLine() const { return pivotGuide; }
+
 private:
   std::vector<Handle> handles;
   int hoveredHandleIndex = -1;
+  juce::Line<float> pivotGuide;
   // Keep decoded icon data scoped to the component instead of function-local
   // statics, which can outlive the plug-in editor in Windows hosts.
   juce::Image leftTiltIcon;

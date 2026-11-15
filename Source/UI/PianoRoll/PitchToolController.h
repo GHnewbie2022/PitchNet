@@ -73,6 +73,14 @@ public:
            (activeHandleType == PitchToolHandles::HandleType::TiltLeft ||
             activeHandleType == PitchToolHandles::HandleType::TiltRight);
   }
+  /** A tilt, rotation or pivot drag: the pivot line is drawn through it. */
+  bool isDraggingTiltOrPivot() const
+  {
+    return dragging &&
+           (activeHandleType == PitchToolHandles::HandleType::TiltLeft ||
+            activeHandleType == PitchToolHandles::HandleType::TiltRight ||
+            activeHandleType == PitchToolHandles::HandleType::TiltPivot);
+  }
   PitchToolHandles::HandleType getActiveHandleType() const
   {
     return activeHandleType;
@@ -99,6 +107,10 @@ public:
 private:
   Project* project = nullptr;
   bool dragging = false;
+  // Tilt with Alt held: rotate about the pivot instead of tilting one side.
+  bool rotating = false;
+  // Alt + click on the pivot: put it back in the middle.
+  bool pivotReset = false;
   PitchToolHandles::HandleType activeHandleType = PitchToolHandles::HandleType::None;
   Note* activeHandleNote = nullptr;
   std::vector<Note*> affectedNotes;

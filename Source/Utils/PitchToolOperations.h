@@ -84,6 +84,15 @@ std::vector<float> applyAllTransformations(const std::vector<float>& originalDel
                                            int smoothLeftFrames,
                                            int smoothRightFrames,
                                            const AdjacentNoteContext& adjacentContext = {},
-                                           float pitchDrift = 1.0f);
+                                           float pitchDrift = 1.0f,
+                                           float tiltPivot = 0.5f,
+                                           const std::vector<float>* frozenTilt = nullptr);
+
+/**
+ * The offsets a tilt about `pivot` gives `frames` frames: the left edge
+ * moves by `left` and the right edge by `right`, each side ramping to zero
+ * at the pivot.
+ */
+std::vector<float> tiltOffsets(size_t frames, float left, float right, float pivot);
 
 } // namespace PitchToolOperations

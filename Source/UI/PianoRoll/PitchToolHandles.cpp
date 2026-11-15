@@ -32,6 +32,7 @@ void PitchToolHandles::updateHandles(const std::vector<Note*>& selectedNotes,
                                      const CoordinateMapper& mapper,
                                      const juce::Rectangle<float>& hoverBounds) {
   handles.clear();
+  pivotGuide = {};
 
   if (selectedNotes.empty())
     return;
@@ -92,6 +93,29 @@ void PitchToolHandles::updateHandles(const std::vector<Note*>& selectedNotes,
   addButtonHandle(HandleType::SibilantBalance, 0, bottomRowY);
   addButtonHandle(HandleType::Amplitude, 1, bottomRowY);
   addButtonHandle(HandleType::Formant, 2, bottomRowY);
+
+  // Cubase's tilt: squares on the body's top corners tilt one side about the
+  // pivot (Alt rotates the whole note about it); the diamond above is the
+  // pivot itself.
+  if (targetNote)
+  {
+    constexpr float corner = 9.0f, diamond = 11.0f;
+    const float bodyTop = hoverBounds.isEmpty() ? topY - hoverPadding : hoverBounds.getY();
+    const float bodyLeft = hoverBounds.isEmpty() ? leftX - hoverPadding : hoverBounds.getX();
+    const float bodyRight = hoverBounds.isEmpty() ? rightX + hoverPadding : hoverBounds.getRight();
+    addHandle(HandleType::TiltLeft, bodyLeft, bodyTop, targetNote);
+    handles.back().bounds = {bodyLeft, bodyTop, corner, corner};
+    addHandle(HandleType::TiltRight, bodyRight, bodyTop, targetNote);
+    handles.back().bounds = {bodyRight - corner, bodyTop, corner, corner};
+
+    const float noteLeft = mapper.timeToX(mapper.framesToSeconds(targetNote->getStartFrame()));
+    const float noteRight = mapper.timeToX(mapper.framesToSeconds(targetNote->getEndFrame()));
+    const float pivotX = noteLeft + (noteRight - noteLeft) * targetNote->getTiltPivot();
+    const float diamondY = groupTop - diamond - 3.0f;
+    addHandle(HandleType::TiltPivot, pivotX, diamondY, targetNote);
+    handles.back().bounds = {pivotX - diamond * 0.5f, diamondY, diamond, diamond};
+    pivotGuide = {pivotX, diamondY + diamond, pivotX, bottom};
+  }
 }
 
 void PitchToolHandles::draw(juce::Graphics& g) const {
@@ -99,10 +123,28 @@ void PitchToolHandles::draw(juce::Graphics& g) const {
     const auto& handle = handles[i];
 
     const bool hovered = i == hoveredHandleIndex;
+    const auto bounds = handle.bounds;
+    if (handle.type == HandleType::TiltLeft || handle.type == HandleType::TiltRight)
+    {
+      g.setColour(hovered ? juce::Colour(0xFF8A8A8Au) : juce::Colour(0xFF2E2E2Du));
+      g.fillRect(bounds);
+      g.setColour(juce::Colour(0xFF9A9A9Au));
+      g.drawRect(bounds, 1.0f);
+      continue;
+    }
+    if (handle.type == HandleType::TiltPivot)
+    {
+      juce::Path diamond;
+      const auto c = bounds.getCentre();
+      const float r = bounds.getWidth() * 0.5f;
+      diamond.addQuadrilateral(c.x, c.y - r, c.x + r, c.y, c.x, c.y + r, c.x - r, c.y);
+      g.setColour(hovered ? juce::Colour(0xFFCFCFCFu) : juce::Colour(0xFF9A9A9Au));
+      g.fillPath(diamond);
+      continue;
+    }
     g.setColour(hovered ? juce::Colour(0xFF3B3B3Au)
                         : juce::Colour(0xFF2E2E2Du));
 
-    const auto bounds = handle.bounds;
     g.fillRect(bounds);
 
     const auto& icon = getIconForType(handle.type);
@@ -154,11 +196,24 @@ int PitchToolHandles::hitTest(float worldX, float worldY, float tolerance) const
 bool PitchToolHandles::containsLayoutPoint(float worldX, float worldY) const
 {
   // Combine handles within each row, not across the note between rows.
+  // The tilt squares and the pivot stand alone: a row through the corner
+  // squares would cover the note's top edge.
+  const auto standsAlone = [](HandleType type)
+  {
+    return type == HandleType::TiltLeft || type == HandleType::TiltRight ||
+           type == HandleType::TiltPivot;
+  };
   for (const auto& handle : handles)
   {
+    if (standsAlone(handle.type))
+    {
+      if (handle.bounds.contains(worldX, worldY))
+        return true;
+      continue;
+    }
     auto rowBounds = handle.bounds;
     for (const auto& other : handles)
-      if (other.bounds.getY() == handle.bounds.getY())
+      if (!standsAlone(other.type) && other.bounds.getY() == handle.bounds.getY())
         rowBounds = rowBounds.getUnion(other.bounds);
     if (rowBounds.contains(worldX, worldY))
       return true;

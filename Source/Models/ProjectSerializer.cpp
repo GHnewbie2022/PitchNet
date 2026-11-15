@@ -290,6 +290,9 @@ juce::var ProjectSerializer::toJson(const Project& project,
         obj->setProperty("warp", juce::var(warpObject));
     }
 
+    // Tilts no longer move a note's centre (Note::getTiltMean).
+    obj->setProperty("tiltKeepsCentre", true);
+
     // Breath note gains (a user edit), as [start, end, dB] runs of source
     // frames; the breath labels themselves are rebuilt on load.
     {
@@ -617,6 +620,16 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
             }
         }
     }
+
+    // Saved when a tilt still lifted the centre by its mean offset: take it
+    // off, so the note sings the same and its blob sits at its pivot.
+    if (!static_cast<bool>(json.getProperty("tiltKeepsCentre", false)))
+        for (auto &note : project.getNotes())
+            note.setMidiNote(note.getMidiNote() -
+                             Note::tiltMeanFor(note.getTiltLeft(), note.getTiltRight(),
+                                               note.getTiltPivot()) -
+                             Note::meanOf(note.getFrozenTilt()));
+
 
     // Pitch data
     auto pitchDataVar = json.getProperty("pitchData", juce::var());
@@ -1078,6 +1091,9 @@ juce::var ProjectSerializer::noteToJson(const Note& note,
     // Pitch tool transformation parameters (non-destructive)
     obj->setProperty("tiltLeft", note.getTiltLeft());
     obj->setProperty("tiltRight", note.getTiltRight());
+    obj->setProperty("tiltPivot", note.getTiltPivot());
+    if (!note.getFrozenTilt().empty())
+        obj->setProperty("frozenTilt", floatArrayToString(note.getFrozenTilt(), 4));
     obj->setProperty("vibrato", note.getVibrato());
     obj->setProperty("pitchDrift", note.getPitchDrift());
     obj->setProperty("smoothLeftFrames", note.getSmoothLeftFrames());
@@ -1168,6 +1184,8 @@ bool ProjectSerializer::noteFromJson(Note& note, const juce::var& json,
         note.setPhoneme(phoneme.toString());
 
     // Pitch tool transformation parameters (with defaults for backwards compatibility)
+    note.setFrozenTilt(stringToFloatArray(json.getProperty("frozenTilt", juce::var()).toString()));
+    note.setTiltPivot(static_cast<float>(json.getProperty("tiltPivot", 0.5)));
     note.setTiltLeft(static_cast<float>(json.getProperty("tiltLeft", 0.0)));
     note.setTiltRight(static_cast<float>(json.getProperty("tiltRight", 0.0)));
     note.setVibrato(static_cast<float>(json.getProperty("vibrato", 1.0)));

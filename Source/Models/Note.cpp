@@ -83,6 +83,8 @@ bool Note::isNeutralForOriginalWaveform() const
            std::abs(sibilantBalance) <= kGainEpsilon &&
            std::abs(tiltLeft) <= kPitchEpsilon &&
            std::abs(tiltRight) <= kPitchEpsilon &&
+           std::none_of(frozenTilt.begin(), frozenTilt.end(),
+                        [](float v) { return std::abs(v) > kPitchEpsilon; }) &&
            std::abs(vibrato - 1.0f) <= kPitchEpsilon &&
            std::abs(pitchDrift - 1.0f) <= kPitchEpsilon &&
            smoothLeftFrames == 0 &&
@@ -148,6 +150,7 @@ bool Note::restoreAnalysisPitch()
     setSmoothRightFrames(0);
     setDeltaScale(1.0f);
     setDeltaOffset(0.0f);
+    setFrozenTilt({});
     setBakedDeltaPitch({});
     setOriginalDeltaPitch(curve);
     setDeltaPitch(curve);

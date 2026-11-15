@@ -131,6 +131,7 @@ void keepSungPitch(Project& project, const std::vector<int>& starts, int start,
             note->setSmoothRightFrames(0);
             note->setDeltaScale(1.0f);
             note->setDeltaOffset(0.0f);
+            note->setFrozenTilt({});
         }
     PitchCurveProcessor::rebuildBaseFromNotes(project);
     const auto& base = project.getAudioData().basePitch;
@@ -223,6 +224,7 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
     secondNote.setSelected(note->isSelected());
     secondNote.setTiltLeft(note->getTiltLeft());
     secondNote.setTiltRight(note->getTiltRight());
+    secondNote.setTiltPivot(note->getTiltPivot());
     secondNote.setVibrato(note->getVibrato());
     secondNote.setPitchDrift(note->getPitchDrift());
     secondNote.setFormantShift(note->getFormantShift());
@@ -550,6 +552,7 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
         mergedNote.setSmoothRightFrames(0);
         mergedNote.setDeltaScale(1.0f);
         mergedNote.setDeltaOffset(0.0f);
+        mergedNote.setFrozenTilt({});
         mergedNote.setBakedDeltaPitch({});
         mergedNote.setDeltaPitch(mergedNote.getOriginalDeltaPitch());
         if (reshaped)

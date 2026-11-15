@@ -1,4 +1,5 @@
 #include "PitchToolController.h"
+#include "../../Utils/PitchToolOperations.h"
 #include "../../Audio/ProjectGain.h"
 #include "../../Undo/AmplitudeAction.h"
 #include "../../Utils/PitchCurveProcessor.h"
@@ -63,9 +64,6 @@ bool PitchToolController::mouseDown(const juce::MouseEvent& e,
                                     const std::vector<Note*>& selectedNotes,
                                     const CoordinateMapper& mapper)
 {
-  juce::ignoreUnused(mapper);
-
-
   const int hitIndex = handles.hitTest(e.position.x, e.position.y);
   if (hitIndex < 0) {
     return false;
@@ -109,7 +107,7 @@ bool PitchToolController::mouseDown(const juce::MouseEvent& e,
       
       // Store baseline midiNote (without tilt mean shift)
       // This ensures tilt adjustments are absolute, not cumulative
-      const float currentTiltMean = (note->getTiltLeft() + note->getTiltRight()) / 2.0f;
+      const float currentTiltMean = note->getTiltMean();
       params.midiNote = note->getMidiNote() - currentTiltMean;
       
       originalParams.push_back(params);
@@ -123,6 +121,11 @@ bool PitchToolController::mouseDown(const juce::MouseEvent& e,
   dragStartPos = e.position;
   dragging = true;
   gainPreviewValid = false;
+  rotating = e.mods.isAltDown();
+  pivotReset = handle.type == PitchToolHandles::HandleType::TiltPivot &&
+               e.mods.isAltDown();
+  if (pivotReset)
+    applyOperation(affectedNotes, activeHandleType, 0.0f, 0.0f, mapper);
   return true;
 }
 
@@ -138,6 +141,9 @@ bool PitchToolController::mouseDrag(const juce::MouseEvent& e,
   const float deltaX = e.position.x - dragStartPos.x;
   const float deltaY = e.position.y - dragStartPos.y;
 
+  if (pivotReset)
+    return true;
+  rotating = e.mods.isAltDown();
   applyOperation(affectedNotes, activeHandleType, deltaX, deltaY, mapper);
   gainPreviewValid = false;
   return true;
@@ -229,7 +235,7 @@ bool PitchToolController::mouseUp(const juce::MouseEvent& e,
   std::vector<TransformParams> undoOldParams = originalParams;
   for (size_t i = 0; i < undoOldParams.size(); ++i)
   {
-    const float tiltMean = (undoOldParams[i].tiltLeft + undoOldParams[i].tiltRight) / 2.0f;
+    const float tiltMean = undoOldParams[i].tiltMean();
     undoOldParams[i].midiNote += tiltMean;
   }
 
@@ -301,12 +307,17 @@ void PitchToolController::applyOperation(std::vector<Note*>& notes,
     {
       case PitchToolHandles::HandleType::TiltLeft:
       {
-        // Drag UP = positive semitoneDelta = left edge goes UP
+        // Drag UP = positive semitoneDelta = left edge goes UP. With Alt
+        // the note rotates about the pivot: the right side goes the other
+        // way, staying on one straight line through the pivot.
         const float amount = semitoneDelta;
         note->setTiltLeft(origParams.tiltLeft + amount);
+        const float pivot = origParams.tiltPivot;
+        if (rotating && pivot > 0.01f)
+          note->setTiltRight(origParams.tiltRight - amount * (1.0f - pivot) / pivot);
         
         // Calculate tilt mean shift
-        const float newTiltMean = (note->getTiltLeft() + note->getTiltRight()) / 2.0f;
+        const float newTiltMean = note->getTiltMean();
         note->setMidiNote(origParams.midiNote + newTiltMean);
         break;
       }
@@ -314,22 +325,60 @@ void PitchToolController::applyOperation(std::vector<Note*>& notes,
       {
         const float amount = semitoneDelta;
         note->setTiltRight(origParams.tiltRight + amount);
+        const float pivot = origParams.tiltPivot;
+        if (rotating && pivot < 0.99f)
+          note->setTiltLeft(origParams.tiltLeft - amount * pivot / (1.0f - pivot));
         
         // Calculate tilt mean shift
-        const float newTiltMean = (note->getTiltLeft() + note->getTiltRight()) / 2.0f;
+        const float newTiltMean = note->getTiltMean();
         note->setMidiNote(origParams.midiNote + newTiltMean);
+        break;
+      }
+      case PitchToolHandles::HandleType::TiltPivot:
+      {
+        // Along the note, in proportion to its width on screen.
+        const float noteWidth = juce::jmax(
+            1.0f, mapper.timeToX(mapper.framesToSeconds(note->getEndFrame())) -
+                      mapper.timeToX(mapper.framesToSeconds(note->getStartFrame())));
+        // As in Cubase, moving the pivot leaves the curve as it is: the tilt
+        // made about the old pivot is frozen into the note and only tilts
+        // after this turn about the new place.
+        if (std::abs(origParams.tiltLeft) > 0.001f ||
+            std::abs(origParams.tiltRight) > 0.001f)
+        {
+          const size_t frames = static_cast<size_t>(std::max(2, note->getDurationFrames()));
+          auto frozen = PitchToolOperations::tiltOffsets(
+              frames, origParams.tiltLeft, origParams.tiltRight, origParams.tiltPivot);
+          const auto& earlier = origParams.frozenTilt;
+          for (size_t f = 0; f < frozen.size() && !earlier.empty(); ++f)
+          {
+            const double pos = earlier.size() == 1 ? 0.0
+                : static_cast<double>(f) * static_cast<double>(earlier.size() - 1) /
+                      static_cast<double>(frozen.size() - 1);
+            const size_t lo = static_cast<size_t>(pos);
+            const size_t hi = std::min(lo + 1, earlier.size() - 1);
+            frozen[f] += earlier[lo] + (earlier[hi] - earlier[lo]) *
+                                          static_cast<float>(pos - static_cast<double>(lo));
+          }
+          note->setFrozenTilt(std::move(frozen));
+          note->setTiltLeft(0.0f);
+          note->setTiltRight(0.0f);
+        }
+        note->setTiltPivot(pivotReset ? 0.5f
+                                      : origParams.tiltPivot + dragDeltaX / noteWidth);
+        note->setMidiNote(origParams.midiNote + note->getTiltMean());
         break;
       }
       case PitchToolHandles::HandleType::Formant:
       {
         note->setFormantShift(std::round((origParams.formantShift + semitoneDelta) * 10.0f) / 10.0f);
-        note->setMidiNote(origParams.midiNote + (origParams.tiltLeft + origParams.tiltRight) * 0.5f);
+        note->setMidiNote(origParams.midiNote + origParams.tiltMean());
         break;
       }
       case PitchToolHandles::HandleType::PitchDrift:
       {
         note->setPitchDrift(origParams.pitchDrift - dragDeltaY / 100.0f);
-        note->setMidiNote(origParams.midiNote + (origParams.tiltLeft + origParams.tiltRight) * 0.5f);
+        note->setMidiNote(origParams.midiNote + origParams.tiltMean());
         break;
       }
       case PitchToolHandles::HandleType::Vibrato:
@@ -341,7 +390,7 @@ void PitchToolController::applyOperation(std::vector<Note*>& notes,
         note->setVibrato(newScale);
         
         // Preserve tilt offset when adjusting vibrato.
-        const float currentTiltMean = (note->getTiltLeft() + note->getTiltRight()) / 2.0f;
+        const float currentTiltMean = note->getTiltMean();
         note->setMidiNote(origParams.midiNote + currentTiltMean);
         break;
       }
@@ -353,7 +402,7 @@ void PitchToolController::applyOperation(std::vector<Note*>& notes,
         note->setSmoothLeftFrames(transitionFrames);
         
         // Preserve tilt offset when adjusting smoothing
-        const float currentTiltMean = (note->getTiltLeft() + note->getTiltRight()) / 2.0f;
+        const float currentTiltMean = note->getTiltMean();
         note->setMidiNote(origParams.midiNote + currentTiltMean);
         break;
       }
@@ -365,7 +414,7 @@ void PitchToolController::applyOperation(std::vector<Note*>& notes,
         note->setSmoothRightFrames(transitionFrames);
         
         // Preserve tilt offset when adjusting smoothing
-        const float currentTiltMean = (note->getTiltLeft() + note->getTiltRight()) / 2.0f;
+        const float currentTiltMean = note->getTiltMean();
         note->setMidiNote(origParams.midiNote + currentTiltMean);
         break;
       }
@@ -420,7 +469,7 @@ void PitchToolController::cancel()
       params.applyToNote(*affectedNotes[i]);
       
       // Restore midiNote with tilt mean (params.midiNote is baseline without tilt)
-      const float tiltMean = (params.tiltLeft + params.tiltRight) / 2.0f;
+      const float tiltMean = params.tiltMean();
       affectedNotes[i]->setMidiNote(params.midiNote + tiltMean);
     }
   }
