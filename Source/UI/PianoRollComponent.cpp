@@ -2185,6 +2185,7 @@ void PianoRollComponent::finishTrackGesture()
 void PianoRollComponent::mouseDown(const juce::MouseEvent &e)
 {
   swallowGestureUntilMouseUp = false;
+  playheadDragActive = false;
 
   if (!project)
   {
@@ -2273,22 +2274,15 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e)
   // and Magic Mouse scrolling cover it). In Select mode it inverts note-drag
   // snapping; in Warp mode Alt + click on an anchor deletes it.
 
-  // Shift + Alt + click anywhere on the canvas sets the playhead, like a
-  // click on the ruler, but never moves playback that is running. It takes
-  // the whole gesture: no tool sees it.
+  // Shift + Alt + click anywhere on the canvas grabs the playhead: it
+  // follows the pointer while the button is held and is set on release,
+  // like a click on the ruler, never moving playback that is running. It
+  // takes the whole gesture: no tool sees it.
   if (isCanvasPoint(e) && e.mods.isShiftDown() && e.mods.isAltDown() &&
       !e.mods.isCommandDown() && !e.mods.isCtrlDown())
   {
-    swallowGestureUntilMouseUp = true;
-    const double time = std::max(getTimelineStart(), xToTime(adjustedX));
-    if (onSetPlayhead)
-      onSetPlayhead(time);
-    else
-    {
-      setCursorTime(time);
-      if (onSeek)
-        onSeek(time);
-    }
+    playheadDragActive = true;
+    previewPlayheadDrag(std::max(getTimelineStart(), xToTime(adjustedX)));
     return;
   }
 
@@ -2411,6 +2405,12 @@ void PianoRollComponent::mouseDrag(const juce::MouseEvent &e)
   if (trackGestureActive) { updateTrackGesture(e); return; }
   if (e.mods.isPopupMenu())
     return;
+  if (playheadDragActive)
+  {
+    const float adjustedX = e.x - pianoKeysWidth + static_cast<float>(scrollX);
+    previewPlayheadDrag(std::max(getTimelineStart(), xToTime(adjustedX)));
+    return;
+  }
   if (swallowGestureUntilMouseUp)
     return;
   if (middleButtonScrubActive)
@@ -2466,6 +2466,21 @@ void PianoRollComponent::mouseUp(const juce::MouseEvent &e)
   if (trackGestureActive) { finishTrackGesture(); return; }
   if (e.mods.isPopupMenu())
     return;
+  if (playheadDragActive)
+  {
+    playheadDragActive = false;
+    repaint(); // drops the drag line
+    const double time = playheadDragTime;
+    if (onSetPlayhead)
+      onSetPlayhead(time);
+    else
+    {
+      setCursorTime(time);
+      if (onSeek)
+        onSeek(time);
+    }
+    return;
+  }
   if (swallowGestureUntilMouseUp)
   {
     swallowGestureUntilMouseUp = false;
@@ -3531,6 +3546,25 @@ void PianoRollComponent::setCursorTime(double time)
     onCursorMoved();
 }
 
+void PianoRollComponent::previewPlayheadDrag(double time)
+{
+  playheadDragTime = time;
+  // Standalone draws a playhead marker: move it (and the time readout)
+  // without setting anything yet. Plugin mode has none; the cursor shows
+  // where it will land.
+  if (playheadMarkerVisible)
+  {
+    playheadTime = time;
+    if (onPlayheadChanged)
+      onPlayheadChanged(playheadTime);
+    repaint();
+  }
+  else
+  {
+    setCursorTime(time);
+  }
+}
+
 void PianoRollComponent::setPlayheadTime(double time)
 {
   playheadTime = time;
@@ -3554,8 +3588,9 @@ void PianoRollComponent::drawPlayheadMarker(juce::Graphics &g)
   juce::Graphics::ScopedSaveState state(g);
   g.reduceClipRegion(pianoKeysWidth, 0, getWidth() - pianoKeysWidth,
                      getHeight());
-  // While playing, a faint line shows where playback will return to.
-  if (playbackActive)
+  // A thin faded line down the canvas while the playhead is dragged (Shift +
+  // Alt), and while playing, where playback will return to.
+  if (playheadDragActive || playbackActive)
   {
     g.setColour(colour.withAlpha(0.45f));
     g.fillRect(x - 0.5f, static_cast<float>(headerHeight), 1.0f,

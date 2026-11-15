@@ -597,6 +597,11 @@ private:
   // Set when a click only activated another region (its project was not
   // ready yet), so the rest of that gesture must not edit anything.
   bool swallowGestureUntilMouseUp = false;
+  // Shift + Alt + drag: the playhead follows the pointer and is set on
+  // release.
+  bool playheadDragActive = false;
+  double playheadDragTime = 0.0;
+  void previewPlayheadDrag(double time);
 
   // Re-applies the hover-button tooltips after a language change; the menus
   // and handle labels are built on demand, so they need nothing here.
