@@ -276,8 +276,10 @@ namespace
       }
     }
 
-    void undo() override { if (timing) timing->undo(); apply(before, curvesBefore); }
-    void redo() override { apply(after, curvesAfter); if (timing) timing->redo(); }
+    void undo() override { apply(before, curvesBefore); if (timing) timing->undo(); }
+    // Timing first: the restored notes are refitted to the recording on the
+    // layout they end up with, not the one the timing restore then changes.
+    void redo() override { if (timing) timing->redo(); apply(after, curvesAfter); }
     juce::String getName() const override { return name; }
 
   private:
@@ -4736,6 +4738,7 @@ PianoRollComponent::createRestoreSeparationAction(Note &note)
   if (groups.empty())
     return {};
 
+  const auto notesBefore = project->getNotes();
   std::vector<Note> before, after;
   for (const auto &group : groups)
   {
@@ -4751,6 +4754,32 @@ PianoRollComponent::createRestoreSeparationAction(Note &note)
   // Put the notes back as they were: applyRestoreAction() applies the action
   // (redo), so the edit and its history entry happen together.
   auto action = std::make_unique<NoteSeparationAction>(project, before, after);
+  // The merges and splits of the recut compensate the neighbours' curves at
+  // the group's edges: record that, so undo puts them back too.
+  {
+    const auto inRecut = [&](std::uint64_t uid)
+    {
+      const auto same = [uid](const Note &n) { return n.getUid() == uid; };
+      return std::any_of(before.begin(), before.end(), same) ||
+             std::any_of(after.begin(), after.end(), same);
+    };
+    std::vector<NoteCurveEdit> neighbourEdits;
+    for (const auto &now : project->getNotes())
+    {
+      if (now.isRest() || inRecut(now.getUid()))
+        continue;
+      const auto was = std::find_if(notesBefore.begin(), notesBefore.end(),
+                                    [&](const Note &n) { return n.getUid() == now.getUid(); });
+      if (was == notesBefore.end() ||
+          (was->getOriginalDeltaPitch() == now.getOriginalDeltaPitch() &&
+           was->getBakedDeltaPitch() == now.getBakedDeltaPitch()))
+        continue;
+      neighbourEdits.push_back({now.getStartFrame(), was->getOriginalDeltaPitch(),
+                                now.getOriginalDeltaPitch(), was->getBakedDeltaPitch(),
+                                now.getBakedDeltaPitch()});
+    }
+    action->setNeighbourEdits(std::move(neighbourEdits));
+  }
   action->undo();
   setHoveredNote(nullptr);
   return action;

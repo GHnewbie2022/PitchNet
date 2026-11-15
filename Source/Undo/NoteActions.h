@@ -511,14 +511,16 @@ public:
                          std::vector<Note> afterNotes)
         : project(proj), before(std::move(beforeNotes)), after(std::move(afterNotes)) {}
 
-    void undo() override { swap(after, before); }
-    void redo() override { swap(before, after); }
+    void undo() override { swap(after, before, false); }
+    void redo() override { swap(before, after, true); }
     juce::String getName() const override { return "Restore Note Separation"; }
+    /** The recut moves the neighbours' boundary compensation too. */
+    void setNeighbourEdits(std::vector<NoteCurveEdit> edits) { neighbourEdits = std::move(edits); }
     // The restored notes get their analysed pitch back.
     bool requiresAudioResynthesis() const override { return true; }
 
 private:
-    void swap(const std::vector<Note> &out, const std::vector<Note> &in)
+    void swap(const std::vector<Note> &out, const std::vector<Note> &in, bool forward)
     {
         if (!project)
             return;
@@ -534,6 +536,7 @@ private:
             last = std::max(last, note.getEndFrame());
             project->addNote(std::move(note));
         }
+        NoteCurveEdit::apply(*project, neighbourEdits, forward);
         project->setModified(true);
         PitchCurveProcessor::rebuildBaseFromNotes(*project);
         // The centres changed: untouched notes around sing the recording
@@ -547,6 +550,7 @@ private:
     Project *project;
     std::vector<Note> before;
     std::vector<Note> after;
+    std::vector<NoteCurveEdit> neighbourEdits;
 };
 
 /**

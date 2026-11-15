@@ -363,12 +363,72 @@ static void warpedDeleteShiftedPieceResizeMergeRestoresAnalysis(PianoRollCompone
   CHECK(afterMerge < 0.1f);
 }
 
+// Split, drag and glue, then Restore All Edits over the notes: they sing
+// the recording again, with no spike at any boundary.
+static void warpedRestoreAllEditsSingsRecording(PianoRollComponent& roll) {
+  Project proj;
+  buildWarpedTrio(proj);
+  PitchUndoManager history;
+  NoteSplitter splitter;
+  splitter.setProject(&proj);
+  splitter.setUndoManager(&history);
+
+  CHECK(splitter.splitNoteAtFrame(noteAt(proj, 40), 52));
+  shiftNote(proj, 40, 6.0f);
+  shiftNote(proj, 52, -7.0f);
+  CHECK(splitter.splitNoteAtFrame(noteAt(proj, 52), 61));
+  shiftNote(proj, 61, 4.0f);
+  shiftNote(proj, 70, -5.0f);
+  CHECK(splitter.mergeNotes(noteAt(proj, 40), noteAt(proj, 52)));
+
+  roll.setProject(&proj);
+  roll.setUndoManager(&history);
+  roll.setTrackViewMode(false);
+  proj.deselectAllNotes();
+  for (auto& n : proj.getNotes())
+    if (!n.isRest() && n.getStartFrame() >= 40)
+      n.setSelected(true);
+  const auto f0Edited = proj.getAudioData().f0;
+  roll.resetNoteEdits(*noteAt(proj, 40), PianoRollComponent::NoteRestoreMode::All);
+  const auto f0Restored = proj.getAudioData().f0;
+  history.undo();
+  CHECK(maxF0ErrorSemitones(proj, f0Edited, 20, 92) < 0.02f);
+  history.redo();
+  CHECK(maxF0ErrorSemitones(proj, f0Restored, 20, 92) < 0.02f);
+
+  // The recording, through the warp as it now is.
+  const auto& audio = proj.getAudioData();
+  float worst = 0.0f;
+  for (const auto& n : proj.getNotes()) {
+    if (n.isRest() || n.getEndFrame() <= 40)
+      continue;
+    const auto map = notetiming::forNote(audio, n);
+    for (int t = n.getStartFrame(); t < n.getEndFrame(); ++t) {
+      const double src = std::clamp(map.sourceAt(t + 0.5) - 0.5,
+                                    static_cast<double>(n.getSrcStartFrame()),
+                                    static_cast<double>(n.getSrcEndFrame() - 1));
+      const int a = static_cast<int>(std::floor(src));
+      const int b = std::min(a + 1, n.getSrcEndFrame() - 1);
+      const float k = static_cast<float>(src - a);
+      const float expected = freqToMidi(audio.denseF0[size_t(a)]) * (1.0f - k) +
+                             freqToMidi(audio.denseF0[size_t(b)]) * k;
+      const float err = std::abs(freqToMidi(audio.f0[size_t(t)]) - expected);
+      worst = std::max(worst, err);
+    }
+  }
+  if (worst >= 0.1f)
+    std::cerr << "restore all max error " << worst << " st\n";
+  roll.setUndoManager(nullptr);
+  CHECK(worst < 0.1f);
+}
+
 int main() {
   juce::ScopedJuceInitialiser_GUI gui;
   {
     PianoRollComponent scratchRoll;
     scratchRoll.setSize(800, 400);
     warpedDeleteShiftedPieceResizeMergeRestoresAnalysis(scratchRoll);
+    warpedRestoreAllEditsSingsRecording(scratchRoll);
   }
   warpedQuarteredShiftedPairMergeRestoresAnalysis();
   warpedResplitShiftedCrossNoteMergeRestoresAnalysis();
