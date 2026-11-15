@@ -354,8 +354,6 @@ private:
   bool isCanvasPoint(const juce::MouseEvent &e) const;
   bool isModifierZoomDrag(const juce::MouseEvent &e) const;
   void applyModifierZoomDrag(const juce::MouseEvent &e);
-  bool isModifierPanDrag(const juce::MouseEvent &e) const;
-  void applyModifierPanDrag(const juce::MouseEvent &e);
   void updateMouseCursorForEditMode();
 
   Note *findNoteAt(float x, float y);
@@ -577,8 +575,6 @@ private:
   juce::int64 lastDragRepaintTime = 0;
   bool modifierZoomDragActive = false;
   juce::Point<float> modifierZoomLastPosition;
-  bool modifierPanDragActive = false;
-  juce::Point<float> modifierPanLastPosition;
   bool pianoKeyAuditionMouseDown = false;
   bool middleButtonScrubActive = false;
   MainViewRegionPreviewList regionPreviews;

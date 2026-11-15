@@ -1989,28 +1989,6 @@ void PianoRollComponent::applyModifierZoomDrag(const juce::MouseEvent &e)
     onZoomChanged(pixelsPerSecond);
 }
 
-bool PianoRollComponent::isModifierPanDrag(const juce::MouseEvent &e) const
-{
-  return e.mods.isAltDown();
-}
-
-void PianoRollComponent::applyModifierPanDrag(const juce::MouseEvent &e)
-{
-  const float deltaX = e.position.x - modifierPanLastPosition.x;
-  const float deltaY = e.position.y - modifierPanLastPosition.y;
-  modifierPanLastPosition = e.position;
-
-  if (std::abs(deltaX) < 0.01f && std::abs(deltaY) < 0.01f)
-    return;
-
-  const double previousScrollX = scrollX;
-  setScrollX(scrollX - static_cast<double>(deltaX));
-  setScrollY(scrollY - static_cast<double>(deltaY));
-
-  if (std::abs(scrollX - previousScrollX) >= 0.01 && onScrollChanged)
-    onScrollChanged(scrollX);
-}
-
 std::vector<juce::Rectangle<float>> PianoRollComponent::trackNoteBounds(const Note& note, const Project& owner) const
 {
   std::vector<juce::Rectangle<float>> result;
@@ -2296,9 +2274,11 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e)
       editMode == EditMode::Select && findNoteAt(adjustedX, adjustedY) != nullptr;
   if (isCanvasPoint(e) && isModifierPanDrag(e) && !altNoteDrag)
   {
-    modifierPanDragActive = true;
-    modifierPanLastPosition = e.position;
-    setMouseCursor(juce::MouseCursor::DraggingHandCursor);
+    swallowGestureUntilMouseUp = true;
+    const double time = std::max(getTimelineStart(), xToTime(adjustedX));
+    setCursorTime(time);
+    if (onSeek)
+      onSeek(time);
     return;
   }
 
@@ -2433,11 +2413,6 @@ void PianoRollComponent::mouseDrag(const juce::MouseEvent &e)
     return;
   }
 
-  if (modifierPanDragActive)
-  {
-    applyModifierPanDrag(e);
-    return;
-  }
 
   // Throttle repaints during drag to ~60fps max
   juce::int64 now = juce::Time::getMillisecondCounter();
@@ -2500,13 +2475,6 @@ void PianoRollComponent::mouseUp(const juce::MouseEvent &e)
     return;
   }
 
-  if (modifierPanDragActive)
-  {
-    modifierPanDragActive = false;
-    if (!e.mods.isAltDown())
-      updateMouseCursorForEditMode();
-    return;
-  }
 
   float adjustedX = e.x - pianoKeysWidth + static_cast<float>(scrollX);
   float adjustedY = e.y - headerHeight + static_cast<float>(scrollY);
@@ -2536,14 +2504,6 @@ void PianoRollComponent::mouseMove(const juce::MouseEvent &e)
   if (e.y >= headerHeight && e.x >= pianoKeysWidth)
     noteAtPointer = findNoteAt(adjustedX, adjustedY);
 
-  const bool altControlsNoteSnap =
-      editMode == EditMode::Select && noteAtPointer != nullptr;
-  if (!showZoomCursor && isCanvasPoint(e) && e.mods.isAltDown() &&
-      !altControlsNoteSnap)
-  {
-    setMouseCursor(juce::MouseCursor::DraggingHandCursor);
-    return;
-  }
 
   // Hide the bound take outside the track's playback windows, rather than
   // treating any one region as the interaction boundary.
@@ -2721,9 +2681,8 @@ void PianoRollComponent::modifierKeysChanged(
 
   if (zoomModifierDown && mouseOverCanvas)
     setMouseCursor(zoomMouseCursor);
-  else if (modifierPanDragActive ||
-           (modifiers.isAltDown() && mouseOverCanvas && !pointerOverNote))
-    setMouseCursor(juce::MouseCursor::DraggingHandCursor);
+  else if (editMode == EditMode::Warp && warpHandler_)
+    warpHandler_->modifiersChanged(modifiers);
   else
     updateMouseCursorForEditMode();
 }
