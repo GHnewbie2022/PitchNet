@@ -364,5 +364,6 @@
   "command.zoom_to_selection.desp": "Fit the selected notes in both directions; with none selected, zoom in horizontally around the playhead (Shortcut: Shift+S)",
   "command.zoom_to_full_length": "Zoom to Full Length",
   "command.zoom_to_full_length.desp": "Fit the whole audio horizontally (Shortcut: Shift+F)",
-  "canvas.warp": "Warp"
+  "canvas.warp": "Warp",
+  "restore.separation": "Note Separation"
 }

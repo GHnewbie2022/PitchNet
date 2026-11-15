@@ -322,5 +322,6 @@
   "command.zoom_to_selection.desp": "水平和垂直同時縮放到選取的音符；沒有選取時以 playhead 為中心水平放大（快速鍵：Shift＋S）",
   "command.zoom_to_full_length": "顯示完整長度",
   "command.zoom_to_full_length.desp": "水平縮放到整段音訊（快速鍵：Shift＋F）",
-  "canvas.warp": "伸縮"
+  "canvas.warp": "伸縮",
+  "restore.separation": "音符切點"
 }

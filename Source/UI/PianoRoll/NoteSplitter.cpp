@@ -239,6 +239,10 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
     // Modify the first note (left part)
     note->setEndFrame(splitFrame);
     note->setSrcEndFrame(srcSplitFrame);
+    // Each half keeps the analysed notes it still overlaps.
+    secondNote.setAnalysisSpans(note->getAnalysisSpans());
+    note->trimAnalysisSpans();
+    secondNote.trimAnalysisSpans();
 
     NoteAmplitude::update(*note, audioData);
     NoteAmplitude::update(secondNote, audioData);
@@ -268,7 +272,6 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
             project, originalNote, firstNote, secondNote, nullptr);
         undoManager->addAction(std::move(action));
     }
-
     if (onNoteSplit)
         onNoteSplit();
 
@@ -362,6 +365,12 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
     Note mergedNote = firstNote;
     mergedNote.setEndFrame(secondNote.getEndFrame());
     mergedNote.setSrcEndFrame(secondNote.getSrcEndFrame());
+    {
+        auto spans = firstNote.getAnalysisSpans();
+        const auto& more = secondNote.getAnalysisSpans();
+        spans.insert(spans.end(), more.begin(), more.end());
+        mergedNote.setAnalysisSpans(std::move(spans));
+    }
 
     NoteAmplitude::update(mergedNote, project->getAudioData());
 
@@ -428,9 +437,169 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
     if (undoManager)
         undoManager->addAction(std::make_unique<NoteMergeAction>(
             project, firstNote, secondNote, mergedNote, nullptr));
-
     if (onNoteSplit)
         onNoteSplit();
 
+    return true;
+}
+
+std::optional<NoteSplitter::SeparationGroup>
+NoteSplitter::separationGroupFor(const Note& note) const
+{
+    if (!project || note.isRest() || note.getAnalysisSpans().empty())
+        return std::nullopt;
+
+    // Every current note that shares an analysed note with the group joins
+    // it, until nothing more does: the pieces of a split note, the notes a
+    // merge swallowed.
+    auto spans = note.getAnalysisSpans();
+    std::vector<const Note*> members{&note};
+    const auto& notes = project->getNotes();
+    for (bool grew = true; grew;)
+    {
+        grew = false;
+        for (const auto& candidate : notes)
+        {
+            if (candidate.isRest() ||
+                std::find(members.begin(), members.end(), &candidate) != members.end())
+                continue;
+            const auto& own = candidate.getAnalysisSpans();
+            const bool shares = std::any_of(own.begin(), own.end(), [&](const auto& s)
+                { return std::find(spans.begin(), spans.end(), s) != spans.end(); });
+            if (!shares)
+                continue;
+            members.push_back(&candidate);
+            spans.insert(spans.end(), own.begin(), own.end());
+            grew = true;
+        }
+    }
+    std::sort(spans.begin(), spans.end());
+    spans.erase(std::unique(spans.begin(), spans.end()), spans.end());
+    std::sort(members.begin(), members.end(), [](const Note* a, const Note* b)
+              { return a->getSrcStartFrame() < b->getSrcStartFrame(); });
+
+    SeparationGroup group;
+    group.srcStart = members.front()->getSrcStartFrame();
+    group.srcEnd = members.back()->getSrcEndFrame();
+    for (size_t i = 0; i < members.size(); ++i)
+    {
+        // Only a run of touching notes can be merged and recut.
+        if (i > 0 && (members[i - 1]->getSrcEndFrame() != members[i]->getSrcStartFrame() ||
+                      members[i - 1]->getEndFrame() != members[i]->getStartFrame()))
+            return std::nullopt;
+        if (i > 0)
+            group.currentCuts.push_back(members[i]->getSrcStartFrame());
+        group.notes.push_back(*members[i]);
+    }
+    for (const auto& span : spans)
+        for (const int edge : {span.first, span.second})
+            if (edge > group.srcStart && edge < group.srcEnd)
+                group.targetCuts.push_back(edge);
+    std::sort(group.targetCuts.begin(), group.targetCuts.end());
+    group.targetCuts.erase(std::unique(group.targetCuts.begin(), group.targetCuts.end()),
+                           group.targetCuts.end());
+    return group;
+}
+
+bool NoteSplitter::canRestoreSeparation(const Note& note) const
+{
+    const auto group = separationGroupFor(note);
+    return group && group->currentCuts != group->targetCuts;
+}
+
+bool NoteSplitter::restoreSeparation(const SeparationGroup& group,
+                                     std::vector<Note>& after)
+{
+    if (!project || group.notes.empty() || group.currentCuts == group.targetCuts)
+        return false;
+
+    // The steps below are one edit: no undo entries or callbacks of their own.
+    const auto savedUndo = undoManager;
+    const auto savedCallback = onNoteSplit;
+    undoManager = nullptr;
+    onNoteSplit = nullptr;
+
+    auto noteAtSource = [this](int srcStart) -> Note*
+    {
+        for (auto& n : project->getNotes())
+            if (!n.isRest() && n.getSrcStartFrame() == srcStart)
+                return &n;
+        return nullptr;
+    };
+
+    // 1. One note over the whole group.
+    for (size_t i = 1; i < group.notes.size(); ++i)
+    {
+        Note* left = noteAtSource(group.srcStart);
+        Note* right = noteAtSource(group.notes[i].getSrcStartFrame());
+        if (!left || !right || !mergeNotes(left, right))
+            break;
+    }
+
+    // 2. Cut it where the analysis did. The split works on the timeline, so
+    //    each cut goes through the warp map and the source edges are then set
+    //    to the analysed frame exactly.
+    const auto& map = project->getAudioData().warpMap;
+    for (const int cut : group.targetCuts)
+    {
+        Note* note = nullptr;
+        for (auto& n : project->getNotes())
+            if (!n.isRest() && n.getSrcStartFrame() < cut && n.getSrcEndFrame() > cut)
+                note = &n;
+        if (!note)
+            continue;
+        const int leftSource = note->getSrcStartFrame();
+        const auto spans = note->getAnalysisSpans();
+        const int at = static_cast<int>(std::lround(map.destinationAt(cut)));
+        if (!splitNoteAtFrame(note, at))
+            continue;
+        Note* left = noteAtSource(leftSource);
+        Note* right = nullptr;
+        for (auto& n : project->getNotes())
+            if (!n.isRest() && n.getStartFrame() == at && &n != left)
+                right = &n;
+        if (!left || !right)
+            continue;
+        left->setSrcEndFrame(cut);
+        right->setSrcStartFrame(cut);
+        left->setAnalysisSpans(spans);
+        right->setAnalysisSpans(spans);
+        left->trimAnalysisSpans();
+        right->trimAnalysisSpans();
+    }
+
+    // 3. Each note that is a detected note again gets its analysed pitch
+    //    back. (Merging and splitting re-centred notes on their mean f0 and
+    //    folded pitch edits into the curves.)
+    for (auto& n : project->getNotes())
+    {
+        if (n.isRest() || n.getSrcStartFrame() < group.srcStart ||
+            n.getSrcEndFrame() > group.srcEnd)
+            continue;
+        // A detected note again: its whole analysed pitch comes back, as in
+        // Cubase (pitch moves, curve edits and pitch tools are undone).
+        if (n.restoreAnalysisPitch())
+            continue;
+        // Spans saved without their curve: only the centre.
+        const auto& own = n.getAnalysisSpans();
+        if (own.size() != 1 || own.front().first != n.getSrcStartFrame() ||
+            own.front().second != n.getSrcEndFrame() || !(own.front().midi > 0.0f))
+            continue;
+        const float centre = n.getAdjustedMidiNote();
+        const float analysed = own.front().midi;
+        rebasePitchDeviation(n, centre - analysed);
+        n.setMidiNote(analysed);
+        n.setOriginalMidiNote(analysed);
+        n.setPitchOffset(0.0f);
+    }
+
+    undoManager = savedUndo;
+    onNoteSplit = savedCallback;
+
+    after.clear();
+    for (const auto& n : project->getNotes())
+        if (!n.isRest() && n.getSrcStartFrame() >= group.srcStart &&
+            n.getSrcEndFrame() <= group.srcEnd)
+            after.push_back(n);
     return true;
 }

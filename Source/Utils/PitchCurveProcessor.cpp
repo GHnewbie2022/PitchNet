@@ -250,6 +250,22 @@ namespace PitchCurveProcessor
             note.setOriginalDeltaPitch(std::move(origDelta));
         }
 
+        // A note the analysis just made remembers its pitch curve with its
+        // analysed range ("Restore note separation", Pitch restore).
+        for (auto& note : project.getNotes())
+        {
+            if (note.isRest() || note.getAnalysisSpans().size() != 1)
+                continue;
+            auto spans = note.getAnalysisSpans();
+            auto& span = spans.front();
+            if (span.first != note.getSrcStartFrame() ||
+                span.second != note.getSrcEndFrame() || !span.originalDelta.empty())
+                continue;
+            span.midi = note.getMidiNote();
+            span.originalDelta = note.getOriginalDeltaPitch();
+            note.setAnalysisSpans(std::move(spans));
+        }
+
         // Cache base F0 (Hz) for backwards compatibility
         audioData.baseF0.resize(static_cast<size_t>(totalFrames));
         for (int i = 0; i < totalFrames; ++i)

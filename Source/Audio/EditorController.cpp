@@ -1423,6 +1423,11 @@ void EditorController::segmentIntoNotes(Project &targetProject,
   {
     segmentIntoNotesImpl(targetProject, std::move(onStreamingUpdate),
                          std::move(onProgress));
+    // Remember how the analysis cut the notes, for "Restore note separation".
+    for (auto &note : targetProject.getNotes())
+      if (!note.isRest() && note.getAnalysisSpans().empty())
+        note.setAnalysisSpans(
+            {{note.getSrcStartFrame(), note.getSrcEndFrame(), note.getMidiNote(), {}}});
   }
   catch (const std::exception &e)
   {

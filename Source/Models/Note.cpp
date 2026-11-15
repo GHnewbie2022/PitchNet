@@ -1,4 +1,6 @@
 #include "Note.h"
+
+#include <algorithm>
 #include "../Utils/Constants.h"
 #include <cmath>
 
@@ -80,4 +82,69 @@ bool Note::isNeutralForOriginalWaveform() const
            smoothRightFrames == 0 &&
            std::abs(deltaScale - 1.0f) <= kPitchEpsilon &&
            std::abs(deltaOffset) <= kPitchEpsilon;
+}
+
+void Note::setAnalysisSpans(std::vector<SourceSpan> spans)
+{
+    std::sort(spans.begin(), spans.end());
+    spans.erase(std::unique(spans.begin(), spans.end()), spans.end());
+    spans.erase(std::remove_if(spans.begin(), spans.end(),
+                               [](const SourceSpan& s) { return s.second <= s.first; }),
+                spans.end());
+    analysisSpans = std::move(spans);
+}
+
+void Note::trimAnalysisSpans()
+{
+    analysisSpans.erase(
+        std::remove_if(analysisSpans.begin(), analysisSpans.end(),
+                       [this](const SourceSpan& s)
+                       { return s.second <= srcStartFrame || s.first >= srcEndFrame; }),
+        analysisSpans.end());
+}
+
+void Note::shiftAnalysisSpans(int frames)
+{
+    for (auto& span : analysisSpans)
+    {
+        span.first += frames;
+        span.second += frames;
+    }
+}
+
+const Note::SourceSpan* Note::exactAnalysisSpan() const
+{
+    if (analysisSpans.size() != 1)
+        return nullptr;
+    const auto& span = analysisSpans.front();
+    if (span.first != srcStartFrame || span.second != srcEndFrame ||
+        !(span.midi > 0.0f) || span.originalDelta.empty())
+        return nullptr;
+    return &span;
+}
+
+bool Note::restoreAnalysisPitch()
+{
+    const auto* span = exactAnalysisSpan();
+    if (!span)
+        return false;
+    const float midi = span->midi;
+    const auto curve = span->originalDelta;
+    setMidiNote(midi);
+    setOriginalMidiNote(midi);
+    setPitchOffset(0.0f);
+    setTiltLeft(0.0f);
+    setTiltRight(0.0f);
+    setVibrato(1.0f);
+    setPitchDrift(1.0f);
+    setSmoothLeftFrames(0);
+    setSmoothRightFrames(0);
+    setDeltaScale(1.0f);
+    setDeltaOffset(0.0f);
+    setBakedDeltaPitch({});
+    setOriginalDeltaPitch(curve);
+    setDeltaPitch(curve);
+    markDirty();
+    markSynthDirty();
+    return true;
 }

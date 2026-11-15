@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../JuceHeader.h"
+#include <utility>
 #include <vector>
 
 /**
@@ -33,6 +34,40 @@ public:
     void setSrcStartFrame(int frame) { srcStartFrame = frame; }
     void setSrcEndFrame(int frame) { srcEndFrame = frame; }
     int getSrcDurationFrames() const { return srcEndFrame - srcStartFrame; }
+
+    // The source ranges of the notes the analysis detected that this note
+    // covers: one, its own, straight after analysis; several after merges;
+    // a range reaching past the note after a split. "Restore note
+    // separation" cuts the notes back along them. Empty for notes from
+    // before this was kept (nothing to restore).
+    // A detected note: its source range and the pitch the analysis gave it
+    // (GAME's estimate, which is not the mean of the f0 a split or merge
+    // computes). Two spans are the same detected note when the ranges match.
+    struct SourceSpan
+    {
+        int first = 0;   // source start frame
+        int second = 0;  // source end frame
+        float midi = 0.0f;
+        // The analysed deviation curve (originalDeltaPitch) of that note.
+        std::vector<float> originalDelta;
+        bool operator==(const SourceSpan& o) const { return first == o.first && second == o.second; }
+        bool operator!=(const SourceSpan& o) const { return !(*this == o); }
+        bool operator<(const SourceSpan& o) const
+        { return first != o.first ? first < o.first : second < o.second; }
+    };
+    const std::vector<SourceSpan>& getAnalysisSpans() const { return analysisSpans; }
+    void setAnalysisSpans(std::vector<SourceSpan> spans);
+    // Keeps only the spans that overlap the note's own source range.
+    void trimAnalysisSpans();
+    // Moves the spans with the note (capture merges shift whole notes).
+    void shiftAnalysisSpans(int frames);
+    // The detected note this note is again (same source range), with its
+    // analysed pitch and curve, or nullptr.
+    const SourceSpan* exactAnalysisSpan() const;
+    // Puts the pitch back to what the analysis gave this note: centre,
+    // curves and every pitch tool. Needs exactAnalysisSpan(); returns
+    // false (and changes nothing) without it.
+    bool restoreAnalysisPitch();
 
     // Destination frame range (position in output timeline, can be changed)
     int getStartFrame() const { return startFrame; }
@@ -274,6 +309,7 @@ private:
     float deltaOffset = 0.0f;       // Added after scale (0.0=unchanged)
 
     std::vector<float> f0Values;
+    std::vector<SourceSpan> analysisSpans;
     bool renderedEdit = false; // Audio for this note is present in the composite
     // Timeline bounds represented by the current composite waveform. These can
     // differ from both the immutable source bounds and the next pending edit.

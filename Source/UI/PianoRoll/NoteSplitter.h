@@ -5,6 +5,7 @@
 #include "../../Undo/UndoActions.h"
 #include "CoordinateMapper.h"
 #include <functional>
+#include <optional>
 
 /**
  * Handles note splitting operations.
@@ -40,6 +41,26 @@ public:
 
     /** Merges two adjacent segments that originated from the same note. */
     bool mergeNotes(Note* first, Note* second);
+
+    /**
+     * "Restore note separation": the notes that share analysed notes with
+     * `note` (Note::getAnalysisSpans), cut back the way the analysis cut
+     * them - merges undone, extra splits joined - and each note that is a
+     * detected note again gets its analysed pitch back, as Cubase does.
+     * Formant and level edits stay.
+     */
+    struct SeparationGroup
+    {
+        int srcStart = 0;
+        int srcEnd = 0;
+        std::vector<int> currentCuts; // source frames between the notes now
+        std::vector<int> targetCuts;  // where the analysis cut
+        std::vector<Note> notes;      // the notes now, in order
+    };
+    std::optional<SeparationGroup> separationGroupFor(const Note& note) const;
+    bool canRestoreSeparation(const Note& note) const;
+    /** Recuts the group. Records no undo; `after` receives the new notes. */
+    bool restoreSeparation(const SeparationGroup& group, std::vector<Note>& after);
 
     // Callbacks
     std::function<void()> onNoteSplit;

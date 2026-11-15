@@ -117,6 +117,8 @@ namespace
     float deltaOffset;
     std::vector<float> bakedDeltaPitch;
     std::vector<float> deltaPitch;
+    float originalMidiNote;
+    std::vector<float> originalDeltaPitch;
 
     static NoteEditState capture(const Note& note)
     {
@@ -125,13 +127,22 @@ namespace
               note.getTiltLeft(), note.getTiltRight(), note.getVibrato(), note.getPitchDrift(),
               note.getSmoothLeftFrames(), note.getSmoothRightFrames(),
               note.getDeltaScale(), note.getDeltaOffset(),
-              note.getBakedDeltaPitch(), note.getDeltaPitch()};
+              note.getBakedDeltaPitch(), note.getDeltaPitch(),
+              note.getOriginalMidiNote(), note.getOriginalDeltaPitch()};
     }
 
+    // The unedited pitch: what the analysis gave the note when it is a
+    // detected note (merges and splits rewrite the note's own "original"
+    // centre and curve with the edited pitch), else the note's originals.
     static NoteEditState defaultsFor(const Note& note)
     {
+      if (const auto* span = note.exactAnalysisSpan())
+        return {span->midi, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f,
+                0, 0, 1.0f, 0.0f, {}, span->originalDelta,
+                span->midi, span->originalDelta};
       return {note.getOriginalMidiNote(), 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f,
-              0, 0, 1.0f, 0.0f, {}, note.getOriginalDeltaPitch()};
+              0, 0, 1.0f, 0.0f, {}, note.getOriginalDeltaPitch(),
+              note.getOriginalMidiNote(), note.getOriginalDeltaPitch()};
     }
 
     void applyTo(Note& note) const
@@ -151,6 +162,8 @@ namespace
       note.setDeltaOffset(deltaOffset);
       note.setBakedDeltaPitch(bakedDeltaPitch);
       note.setDeltaPitch(deltaPitch);
+      note.setOriginalMidiNote(originalMidiNote);
+      note.setOriginalDeltaPitch(originalDeltaPitch);
       note.markDirty();
       note.markSynthDirty();
     }
@@ -185,6 +198,8 @@ namespace
            current.deltaScale != defaults.deltaScale ||
            current.deltaOffset != defaults.deltaOffset ||
            current.bakedDeltaPitch != defaults.bakedDeltaPitch ||
+           current.originalMidiNote != defaults.originalMidiNote ||
+           current.originalDeltaPitch != defaults.originalDeltaPitch ||
            hasUnrenderedDeltaEdit(note, current, defaults);
   }
 
@@ -4364,6 +4379,10 @@ void PianoRollComponent::showResetMenu(Note &note)
   const bool formantChanged = anyTarget(hasFormantEdits);
   const bool amplitudeChanged = anyTarget(hasAmplitudeEdits);
   const bool timingChanged = anyTarget(hasTimingEdits);
+  const bool separationChanged =
+      noteSplitter &&
+      std::any_of(targets.begin(), targets.end(), [this](const Note* n)
+                  { return n && noteSplitter->canRestoreSeparation(*n); });
   const bool anyChanged =
       pitchChanged || formantChanged || amplitudeChanged || timingChanged;
 
@@ -4380,6 +4399,7 @@ void PianoRollComponent::showResetMenu(Note &note)
   addItem(3, TR("restore.formant"), formantChanged);
   addItem(4, TR("restore.amplitude"), amplitudeChanged);
   addItem(2, TR("restore.timing"), timingChanged);
+  addItem(6, TR("restore.separation"), separationChanged);
   menu.addSeparator();
   addItem(5, TR("restore.all"), anyChanged);
 
@@ -4405,7 +4425,54 @@ void PianoRollComponent::showResetMenu(Note &note)
       safeThis->resetNoteEdits(*notePtr, NoteRestoreMode::Amplitude);
     else if (result == 5)
       safeThis->resetNoteEdits(*notePtr, NoteRestoreMode::All);
+    else if (result == 6)
+      safeThis->applyRestoreAction(
+          safeThis->createRestoreSeparationAction(*notePtr));
   });
+}
+
+std::unique_ptr<UndoableAction>
+PianoRollComponent::createRestoreSeparationAction(Note &note)
+{
+  if (!project || !noteSplitter)
+    return {};
+
+  // The groups first: recutting one moves the notes the others point at.
+  std::vector<NoteSplitter::SeparationGroup> groups;
+  for (auto *target : getResetTargetNotes(note))
+  {
+    if (!target)
+      continue;
+    auto group = noteSplitter->separationGroupFor(*target);
+    if (!group || group->currentCuts == group->targetCuts)
+      continue;
+    const bool seen = std::any_of(groups.begin(), groups.end(),
+                                  [&](const auto &g)
+                                  { return g.srcStart == group->srcStart; });
+    if (!seen)
+      groups.push_back(std::move(*group));
+  }
+  if (groups.empty())
+    return {};
+
+  std::vector<Note> before, after;
+  for (const auto &group : groups)
+  {
+    std::vector<Note> recut;
+    if (!noteSplitter->restoreSeparation(group, recut))
+      continue;
+    before.insert(before.end(), group.notes.begin(), group.notes.end());
+    after.insert(after.end(), recut.begin(), recut.end());
+  }
+  if (after.empty())
+    return {};
+
+  // Put the notes back as they were: applyRestoreAction() applies the action
+  // (redo), so the edit and its history entry happen together.
+  auto action = std::make_unique<NoteSeparationAction>(project, before, after);
+  action->undo();
+  setHoveredNote(nullptr);
+  return action;
 }
 
 std::unique_ptr<UndoableAction> PianoRollComponent::createResetTimingAction(Note &note)

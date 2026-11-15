@@ -322,5 +322,6 @@
   "command.zoom_to_selection.desp": "選択したノートに水平・垂直ともズームします。未選択時は playhead を中心に水平ズームイン（ショートカット: Shift＋S）",
   "command.zoom_to_full_length": "全体を表示",
   "command.zoom_to_full_length.desp": "オーディオ全体に水平ズームします（ショートカット: Shift＋F）",
-  "canvas.warp": "ワープ"
+  "canvas.warp": "ワープ",
+  "restore.separation": "ノートの分割"
 }

@@ -3,6 +3,9 @@
 #include "UndoableAction.h"
 #include "../Models/Note.h"
 #include "../Models/Project.h"
+#include "../Utils/PitchCurveProcessor.h"
+#include <algorithm>
+#include <limits>
 #include <vector>
 #include <functional>
 
@@ -412,4 +415,49 @@ private:
     Note secondNote;
     Note mergedNote;
     std::function<void()> onChanged;
+};
+
+/**
+ * "Restore note separation": the notes of a span replaced by the notes the
+ * analysis cut there (NoteSplitter::restoreSeparation).
+ */
+class NoteSeparationAction : public UndoableAction
+{
+public:
+    NoteSeparationAction(Project *proj, std::vector<Note> beforeNotes,
+                         std::vector<Note> afterNotes)
+        : project(proj), before(std::move(beforeNotes)), after(std::move(afterNotes)) {}
+
+    void undo() override { swap(after, before); }
+    void redo() override { swap(before, after); }
+    juce::String getName() const override { return "Restore Note Separation"; }
+    // The restored notes get their analysed pitch back.
+    bool requiresAudioResynthesis() const override { return true; }
+
+private:
+    void swap(const std::vector<Note> &out, const std::vector<Note> &in)
+    {
+        if (!project)
+            return;
+        for (const auto &note : out)
+            project->removeNoteByStartFrame(note.getStartFrame());
+        int first = std::numeric_limits<int>::max();
+        int last = std::numeric_limits<int>::min();
+        for (auto note : in)
+        {
+            note.markDirty();
+            note.markSynthDirty();
+            first = std::min(first, note.getStartFrame());
+            last = std::max(last, note.getEndFrame());
+            project->addNote(std::move(note));
+        }
+        project->setModified(true);
+        PitchCurveProcessor::rebuildBaseFromNotes(*project);
+        if (first <= last)
+            project->markNoteEditDirtyRange(first, last);
+    }
+
+    Project *project;
+    std::vector<Note> before;
+    std::vector<Note> after;
 };

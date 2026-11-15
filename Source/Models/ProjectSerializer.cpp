@@ -1015,6 +1015,22 @@ juce::var ProjectSerializer::noteToJson(const Note& note,
     obj->setProperty("endFrame", note.getEndFrame());
     obj->setProperty("srcStartFrame", note.getSrcStartFrame());
     obj->setProperty("srcEndFrame", note.getSrcEndFrame());
+    if (!note.getAnalysisSpans().empty()) {
+        juce::Array<juce::var> spans;
+        for (const auto& span : note.getAnalysisSpans())
+        {
+            juce::Array<juce::var> entry{span.first, span.second, span.midi};
+            if (!span.originalDelta.empty())
+            {
+                juce::Array<juce::var> curve;
+                for (const float v : span.originalDelta)
+                    curve.add(v);
+                entry.add(curve);
+            }
+            spans.add(entry);
+        }
+        obj->setProperty("analysisSpans", spans);
+    }
     obj->setProperty("midiNote", note.getMidiNote());
     obj->setProperty("lastNonMacroMidiNote", note.getLastNonMacroMidiNote());
     obj->setProperty("macroPitchCenter", note.getMacroPitchCenter());
@@ -1078,6 +1094,23 @@ bool ProjectSerializer::noteFromJson(Note& note, const juce::var& json,
     // Backward compat: if srcStartFrame/srcEndFrame not in file, default to startFrame/endFrame
     note.setSrcStartFrame(static_cast<int>(json.getProperty("srcStartFrame", startFrame)));
     note.setSrcEndFrame(static_cast<int>(json.getProperty("srcEndFrame", endFrame)));
+    // The analysed notes this one covers ("Restore note separation"). Absent
+    // in projects saved before it was kept.
+    if (const auto* spans = json.getProperty("analysisSpans", juce::var()).getArray()) {
+        std::vector<Note::SourceSpan> loaded;
+        for (const auto& span : *spans)
+            if (span.isArray() && span.size() >= 3)
+            {
+                Note::SourceSpan entry{static_cast<int>(span[0]), static_cast<int>(span[1]),
+                                       static_cast<float>(static_cast<double>(span[2])), {}};
+                if (span.size() >= 4)
+                    if (const auto* curve = span[3].getArray())
+                        for (const auto& v : *curve)
+                            entry.originalDelta.push_back(static_cast<float>(static_cast<double>(v)));
+                loaded.push_back(std::move(entry));
+            }
+        note.setAnalysisSpans(std::move(loaded));
+    }
     const float midiNote =
         static_cast<float>(json.getProperty("midiNote", 60.0));
     note.setMidiNote(midiNote);
