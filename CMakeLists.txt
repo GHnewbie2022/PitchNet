@@ -274,7 +274,7 @@ juce_add_gui_app(PitchNet
     ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/Resources/images/icon.png"
     MICROPHONE_PERMISSION_ENABLED TRUE
     FILE_SHARING_ENABLED TRUE
-    DOCUMENT_EXTENSIONS "wav;mp3;flac;ogg")
+    DOCUMENT_EXTENSIONS "wav;mp3;flac;ogg;pitchnet")
 
 # AAX SDK configuration (bundled in third_party/, with env/cache override support)
 set(PITCHNET_BUNDLED_AAX_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/AAX_SDK")

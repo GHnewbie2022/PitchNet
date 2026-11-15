@@ -182,6 +182,9 @@ public:
 
       if (fileToOpen != juce::File{})
         mainWindow->openFile(fileToOpen);
+      else if (pendingOpenFile != juce::File{})
+        mainWindow->openFile(pendingOpenFile);
+      pendingOpenFile = juce::File{};
     });
   }
 
@@ -198,8 +201,27 @@ public:
       quit();
   }
 
+  // macOS hands a document opened from Finder (double-click, Open With, a
+  // drop on the Dock icon) here, as a quoted path - also at launch, possibly
+  // before the main window exists.
   void anotherInstanceStarted(const juce::String &commandLine) override {
-    juce::ignoreUnused(commandLine);
+    juce::StringArray args;
+    args.addTokens(commandLine, true);
+    for (const auto &arg : args) {
+      const auto path = arg.unquoted().trim();
+      if (path.isEmpty() || path.startsWithChar('-') ||
+          !juce::File::isAbsolutePath(path))
+        continue;
+      const juce::File file(path);
+      if (!file.existsAsFile())
+        continue;
+      LOG("Open document: " + file.getFullPathName());
+      if (mainWindow != nullptr)
+        mainWindow->openFile(file);
+      else
+        pendingOpenFile = file;
+      return;
+    }
   }
 
   class MainWindow : public juce::DocumentWindow {
@@ -311,6 +333,7 @@ public:
 
 private:
   std::unique_ptr<MainWindow> mainWindow;
+  juce::File pendingOpenFile; // opened from Finder before the window exists
 #if JUCE_STANDALONE_APPLICATION
   std::unique_ptr<SplashWindow> splashWindow;
 #endif
