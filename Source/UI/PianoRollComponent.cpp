@@ -2286,19 +2286,13 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e)
     return;
   }
 
-  // A click on the ruler sets the playhead, like Shift + Alt + click: running
-  // playback carries on.
+  // Pressing on the ruler grabs the playhead like Shift + Alt + click: it
+  // follows the pointer while held and is set on release; running playback
+  // carries on.
   if (e.y < timelineHeight && e.x >= pianoKeysWidth)
   {
-    double time = std::max(getTimelineStart(), xToTime(adjustedX));
-    if (onSetPlayhead)
-      onSetPlayhead(time);
-    else
-    {
-      setCursorTime(time);
-      if (onSeek)
-        onSeek(time);
-    }
+    playheadDragActive = true;
+    previewPlayheadDrag(std::max(getTimelineStart(), xToTime(adjustedX)));
     return;
   }
 
