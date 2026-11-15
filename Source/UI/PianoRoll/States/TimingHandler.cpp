@@ -2,7 +2,9 @@
 
 #include "../../PianoRollComponent.h"
 #include "../../../Utils/Constants.h"
-#include "../../../Utils/TimingRegionUtils.h"
+#include "../../../Audio/WarpLayer.h"
+#include "../../../Undo/WarpAction.h"
+#include "../../../Utils/PitchCurveProcessor.h"
 #include "../../../Utils/UI/Theme.h"
 
 #include <algorithm>
@@ -94,7 +96,11 @@ std::vector<TimingHandler::Boundary> TimingHandler::buildBoundaries() const
   return result;
 }
 
-int TimingHandler::findBoundary(float worldX, float,
+// Boundaries are drawn on their notes' rows only (full-height lines belong to
+// the warp anchors), so they are grabbed there too, with a little slack.
+constexpr float kBoundaryRowSlack = 6.0f;
+
+int TimingHandler::findBoundary(float worldX, float worldY,
                                 const std::vector<Boundary>& boundaries) const
 {
   constexpr float hitPadding = 6.0f;
@@ -103,6 +109,9 @@ int TimingHandler::findBoundary(float worldX, float,
   for (size_t i = 0; i < boundaries.size(); ++i)
   {
     const auto& boundary = boundaries[i];
+    if (worldY < boundary.top - kBoundaryRowSlack ||
+        worldY > boundary.bottom + kBoundaryRowSlack)
+      continue;
     const float x = static_cast<float>(framesToSeconds(boundary.frame) *
                                        owner_.pixelsPerSecond);
     const float distance = std::abs(worldX - x);
@@ -115,164 +124,91 @@ int TimingHandler::findBoundary(float worldX, float,
   return best;
 }
 
-std::vector<Note*> TimingHandler::collectAffectedNotes(
-    const Boundary& boundary) const
+bool TimingHandler::hitsBoundary(float worldX, float worldY) const
 {
-  std::vector<Note*> notes;
-  for (auto* note : {boundary.left, boundary.right, boundary.restCompanion})
-    if (note && std::find(notes.begin(), notes.end(), note) == notes.end())
-      notes.push_back(note);
-  return notes;
+  return owner_.project && findBoundary(worldX, worldY, buildBoundaries()) >= 0;
 }
 
-std::vector<Note*> TimingHandler::collectAffectedNotes(
-    const std::vector<Boundary>& boundaries) const
+/**
+ * Spec sections 4 and 5. Dragging a note boundary is a shortcut for the warp
+ * layer: the boundary gets an anchor (or the anchor already there is used),
+ * and each side gets a fixed point -
+ *
+ *   left  the start of the note left of the boundary, or across a gap the
+ *         end of the previous note (the start of the track if there is none)
+ *   right the end of the note right of the boundary, or across a gap the
+ *         start of the next note (the end of the track)
+ *
+ * unless an anchor already lies between the boundary and that point: then
+ * the nearest such anchor is the fixed point and nothing is added. Only the
+ * two segments next to the dragged anchor stretch; everything else stays.
+ */
+void TimingHandler::prepareDragAnchors(const std::vector<Boundary>& boundaries)
 {
-  std::vector<Note*> notes;
-  for (const auto& boundary : boundaries)
-    for (auto* note : collectAffectedNotes(boundary))
-      if (std::find(notes.begin(), notes.end(), note) == notes.end())
-        notes.push_back(note);
-  return notes;
-}
+  auto& audioData = owner_.project->getAudioData();
+  warp::fitToProject(audioData);
+  beforeMap = audioData.warpMap;
+  dragMap = beforeMap;
+  dragAnchors.clear();
+  const double length = dragMap.length();
 
-std::vector<NoteTimingState> TimingHandler::captureAffected(
-    const std::vector<Boundary>& boundaries) const
-{
-  std::vector<NoteTimingState> states;
-  for (auto* note : collectAffectedNotes(boundaries))
-    states.push_back(NoteTimingState::capture(*note));
-  return states;
-}
-
-std::pair<float, float> TimingHandler::getGroupDeltaRange(
-    const std::vector<Boundary>& boundaries) const
-{
-  if (!owner_.project || boundaries.empty())
-    return {0.0f, 0.0f};
-
-  const auto movesStart = [&](const Note* note)
+  auto anchorBetween = [&](double from, double to)
   {
-    return std::any_of(boundaries.begin(), boundaries.end(),
-                       [note](const Boundary& boundary)
-                       { return boundary.right == note; });
+    const double low = std::min(from, to);
+    const double high = std::max(from, to);
+    for (const auto& anchor : dragMap.anchors())
+      if (anchor.destination > low + 1.0e-6 &&
+          anchor.destination < high - 1.0e-6)
+        return true;
+    return false;
   };
-  const auto movesEnd = [&](const Note* note)
-  {
-    return std::any_of(boundaries.begin(), boundaries.end(),
-                       [note](const Boundary& boundary)
-                       { return boundary.left == note; });
-  };
-
-  const float frameCount = static_cast<float>(
-      owner_.project->getAudioData().getNumFrames());
-  float minimum = std::numeric_limits<float>::lowest();
-  float maximum = std::numeric_limits<float>::max();
 
   for (const auto& boundary : boundaries)
   {
-    minimum = std::max(minimum, -boundary.frame);
-    maximum = std::min(maximum, frameCount - boundary.frame);
+    const double point = boundary.frame;
+    double leftTarget = 0.0;
+    if (boundary.left)
+      leftTarget = boundary.left->getStartFrame();
+    else if (boundary.restCompanion)
+      leftTarget = boundary.restCompanion->getEndFrame();
+    double rightTarget = length;
+    if (boundary.right)
+      rightTarget = boundary.right->getEndFrame();
+    else if (boundary.restCompanion)
+      rightTarget = boundary.restCompanion->getStartFrame();
 
-    if (boundary.left && !movesStart(boundary.left))
-      minimum = std::max(
-          minimum,
-          boundary.left->getVisualStartFrame() + 1.0f - boundary.frame);
-    if (boundary.right && !movesEnd(boundary.right))
-      maximum = std::min(
-          maximum,
-          boundary.right->getVisualEndFrame() - 1.0f - boundary.frame);
+    if (!anchorBetween(leftTarget, point))
+      dragMap.addAnchorAtDestination(leftTarget);
+    if (!anchorBetween(point, rightTarget))
+      dragMap.addAnchorAtDestination(rightTarget);
 
-    // A boundary next to a rest may approach the neighboring region/note, but
-    // never cross it or remove the required one-frame rest. If both sides are
-    // selected, their shared translation preserves the rest length.
-    if (!boundary.left && boundary.restCompanion &&
-        !movesEnd(boundary.restCompanion))
-      minimum = std::max(
-          minimum,
-          boundary.restCompanion->getVisualEndFrame() + 1.0f -
-              boundary.frame);
-    if (!boundary.right && boundary.restCompanion &&
-        !movesStart(boundary.restCompanion))
-      maximum = std::min(
-          maximum,
-          boundary.restCompanion->getVisualStartFrame() - 1.0f -
-              boundary.frame);
-
-    // The unpitched audio attached to a region's first/last note moves without
-    // changing length. Constraints between two selected regions cancel out;
-    // only the project edge or an unselected neighboring region limits them.
-    if (boundary.right &&
-        timingRegions::isFirstNote(*owner_.project, *boundary.right))
-    {
-      const auto region =
-          timingRegions::getSourceRegion(*owner_.project, *boundary.right);
-      const float leadLength = static_cast<float>(
-          boundary.right->getSrcStartFrame() - region.start);
-      float earliestRegionStart = 0.0f;
-      if (region.index > 0)
-      {
-        const auto previousRegion =
-            timingRegions::regionAt(*owner_.project, region.index - 1);
-        const auto* previousLast =
-            timingRegions::lastNote(*owner_.project, previousRegion);
-        if (!previousLast || !movesEnd(previousLast))
-          earliestRegionStart =
-              timingRegions::visualEnd(*owner_.project, previousRegion) +
-              1.0f;
-      }
-      minimum = std::max(
-          minimum,
-          earliestRegionStart + leadLength - boundary.frame);
-    }
-
-    if (boundary.left &&
-        timingRegions::isLastNote(*owner_.project, *boundary.left))
-    {
-      const auto region =
-          timingRegions::getSourceRegion(*owner_.project, *boundary.left);
-      const float tailLength = static_cast<float>(
-          region.end - boundary.left->getSrcEndFrame());
-      float latestRegionEnd = frameCount;
-      if (region.index + 1 < timingRegions::regionCount(*owner_.project))
-      {
-        const auto nextRegion =
-            timingRegions::regionAt(*owner_.project, region.index + 1);
-        const auto* nextFirst =
-            timingRegions::firstNote(*owner_.project, nextRegion);
-        if (!nextFirst || !movesStart(nextFirst))
-          latestRegionEnd =
-              timingRegions::visualStart(*owner_.project, nextRegion) -
-              1.0f;
-      }
-      maximum = std::min(
-          maximum,
-          latestRegionEnd - tailLength - boundary.frame);
-    }
+    const int index = dragMap.addAnchorAtDestination(point);
+    if (index < 0)
+      continue;
+    const auto& anchor = dragMap.anchors()[static_cast<size_t>(index)];
+    dragAnchors.push_back({anchor.source, anchor.destination});
   }
+}
 
-  return minimum <= maximum ? std::pair<float, float>{minimum, maximum}
-                            : std::pair<float, float>{0.0f, 0.0f};
+void TimingHandler::showMap(const warp::WarpMap& map)
+{
+  auto& audioData = owner_.project->getAudioData();
+  warp::rememberCompositeMap(audioData);
+  audioData.warpMap = map;
+  warp::syncNotes(*owner_.project);
+  PitchCurveProcessor::rebuildBaseFromNotes(*owner_.project);
+  owner_.invalidateBasePitchCache();
 }
 
 void TimingHandler::applyPreviewDelta(float delta)
 {
-  previewDelta = std::clamp(delta, minimumDelta, maximumDelta);
-  for (const auto& boundary : dragBoundaries)
-  {
-    const float frame = boundary.frame + previewDelta;
-    if (boundary.left)
-      boundary.left->setTimingPreviewEndFrame(frame);
-    if (boundary.right)
-      boundary.right->setTimingPreviewStartFrame(frame);
-  }
+  previewDelta = delta;
+  auto map = dragMap;
+  for (const auto& drag : dragAnchors)
+    map.moveAnchor(map.findAnchorAtSource(drag.source),
+                   drag.startDestination + delta);
+  showMap(map);
   owner_.repaint();
-}
-
-void TimingHandler::clearAffectedPreviews()
-{
-  for (auto* note : collectAffectedNotes(dragBoundaries))
-    note->clearTimingPreview();
 }
 
 TimingHandler::BoundaryKey TimingHandler::keyFor(const Boundary& boundary)
@@ -319,22 +255,6 @@ std::vector<TimingHandler::Boundary> TimingHandler::resolveSelection(
   return result;
 }
 
-void TimingHandler::updateMarqueeSelection(float worldX)
-{
-  selectionCurrentX = worldX;
-  selectedBoundaries = selectionBaseline;
-  const float left = std::min(selectionStartX, selectionCurrentX);
-  const float right = std::max(selectionStartX, selectionCurrentX);
-  for (const auto& boundary : buildBoundaries())
-  {
-    const float x = static_cast<float>(framesToSeconds(boundary.frame) *
-                                       owner_.pixelsPerSecond);
-    if (x >= left && x <= right)
-      addSelected(boundary);
-  }
-  owner_.repaint();
-}
-
 bool TimingHandler::mouseDown(const juce::MouseEvent& e, float worldX,
                               float worldY)
 {
@@ -343,17 +263,9 @@ bool TimingHandler::mouseDown(const juce::MouseEvent& e, float worldX,
 
   const auto boundaries = buildBoundaries();
   const int index = findBoundary(worldX, worldY, boundaries);
+  // Away from a boundary the Warp tool places an anchor instead.
   if (index < 0)
-  {
-    selecting = true;
-    selectionStartX = selectionCurrentX = worldX;
-    selectionBaseline = e.mods.isShiftDown()
-                            ? selectedBoundaries
-                            : std::vector<BoundaryKey>{};
-    selectedBoundaries = selectionBaseline;
-    owner_.repaint();
-    return true;
-  }
+    return false;
 
   activeBoundary = boundaries[static_cast<size_t>(index)];
   if (e.mods.isShiftDown() && isSelected(activeBoundary))
@@ -367,10 +279,7 @@ bool TimingHandler::mouseDown(const juce::MouseEvent& e, float worldX,
     selectedBoundaries.clear();
   addSelected(activeBoundary);
   dragBoundaries = resolveSelection(boundaries);
-  before = captureAffected(dragBoundaries);
-  const auto deltaRange = getGroupDeltaRange(dragBoundaries);
-  minimumDelta = deltaRange.first;
-  maximumDelta = deltaRange.second;
+  prepareDragAnchors(dragBoundaries);
   previewDelta = 0.0f;
   dragging = true;
   owner_.repaint();
@@ -379,16 +288,12 @@ bool TimingHandler::mouseDown(const juce::MouseEvent& e, float worldX,
 
 bool TimingHandler::mouseDrag(const juce::MouseEvent&, float worldX, float)
 {
-  if (selecting)
-  {
-    updateMarqueeSelection(worldX);
-    return true;
-  }
   if (!dragging || !owner_.project)
     return false;
 
   const float seconds = worldX / std::max(1.0f, owner_.pixelsPerSecond);
-  const float frame = seconds * SAMPLE_RATE / static_cast<float>(HOP_SIZE);
+  const float frame = static_cast<float>(owner_.snapWarpFrame(
+      seconds * SAMPLE_RATE / static_cast<double>(HOP_SIZE)));
   applyPreviewDelta(frame - activeBoundary.frame);
   if (owner_.onPitchEdited)
     owner_.onPitchEdited();
@@ -397,66 +302,40 @@ bool TimingHandler::mouseDrag(const juce::MouseEvent&, float worldX, float)
 
 bool TimingHandler::mouseUp(const juce::MouseEvent&, float, float)
 {
-  if (selecting)
-  {
-    selecting = false;
-    selectionBaseline.clear();
-    owner_.repaint();
-    return true;
-  }
   if (!dragging || !owner_.project)
     return false;
 
   dragging = false;
-  const float snappedDelta = std::clamp(
-      static_cast<float>(std::lround(previewDelta)), minimumDelta,
-      maximumDelta);
-  clearAffectedPreviews();
-  for (const auto& boundary : dragBoundaries)
-  {
-    const int committedFrame = static_cast<int>(
-        std::lround(boundary.frame + snappedDelta));
-    if (boundary.left)
-      boundary.left->setEndFrame(committedFrame);
-    if (boundary.right)
-      boundary.right->setStartFrame(committedFrame);
-  }
-  auto after = captureAffected(dragBoundaries);
-  bool changed = before.size() == after.size();
-  if (changed)
-  {
-    changed = false;
-    for (size_t i = 0; i < before.size(); ++i)
-      if (before[i].startFrame != after[i].startFrame ||
-          before[i].endFrame != after[i].endFrame)
+  auto& audioData = owner_.project->getAudioData();
+  const auto after = audioData.warpMap;
+  const bool changed = std::any_of(
+      dragAnchors.begin(), dragAnchors.end(), [&](const DragAnchor& drag)
       {
-        changed = true;
-        break;
-      }
-  }
+        const int index = after.findAnchorAtSource(drag.source);
+        return index >= 0 &&
+               std::abs(after.anchors()[static_cast<size_t>(index)].destination -
+                        drag.startDestination) > 1.0e-6;
+      });
 
   if (changed)
   {
-    // Preview commits stage the snapped frames directly on the notes. Restore
-    // the captured state first so applyNoteTimingStates can distinguish notes
-    // that actually moved from unchanged rest companions. Otherwise a prior
-    // inward region edit can clear audio written by this edit.
-    for (const auto& state : before)
-    {
-      if (!state.note)
-        continue;
-      state.note->setStartFrame(state.startFrame);
-      state.note->setEndFrame(state.endFrame);
-    }
-    applyNoteTimingStates(*owner_.project, after);
+    // The drag previewed the map in place; apply() compares against the map
+    // before the drag to decide whether the sound has to be laid out again.
+    audioData.warpMap = beforeMap;
+    warp::apply(*owner_.project, after);
     owner_.invalidateBasePitchCache();
     if (owner_.undoManager)
-      owner_.undoManager->addAction(std::make_unique<TimingAction>(
-          *owner_.project, before, after));
+      owner_.undoManager->addAction(
+          std::make_unique<WarpAction>(*owner_.project, beforeMap, after));
+  }
+  else
+  {
+    // Nothing moved: drop the anchors this drag added.
+    showMap(beforeMap);
   }
   if (changed && owner_.onPitchEditFinished)
     owner_.onPitchEditFinished();
-  before.clear();
+  dragAnchors.clear();
   dragBoundaries.clear();
   owner_.repaint();
   return true;
@@ -465,73 +344,55 @@ bool TimingHandler::mouseUp(const juce::MouseEvent&, float, float)
 void TimingHandler::mouseMove(const juce::MouseEvent& e, float worldX,
                               float worldY)
 {
-  if (!owner_.isCanvasPoint(e))
+  // Hover only; the Warp tool decides the cursor.
+  float nextHover = -1.0f;
+  if (owner_.isCanvasPoint(e))
   {
-    if (hoveredBoundaryFrame >= 0.0f)
-    {
-      hoveredBoundaryFrame = -1.0f;
-      owner_.repaint();
-    }
-    owner_.setMouseCursor(juce::MouseCursor::NormalCursor);
-    return;
+    const auto boundaries = buildBoundaries();
+    const int index = findBoundary(worldX, worldY, boundaries);
+    if (index >= 0)
+      nextHover = boundaries[static_cast<size_t>(index)].frame;
   }
-
-  const auto boundaries = buildBoundaries();
-  const int index = findBoundary(worldX, worldY, boundaries);
-  const float nextHover = index >= 0
-                              ? boundaries[static_cast<size_t>(index)].frame
-                              : -1.0f;
   if (std::abs(nextHover - hoveredBoundaryFrame) > 0.001f)
   {
     hoveredBoundaryFrame = nextHover;
     owner_.repaint();
   }
-  owner_.setMouseCursor(index >= 0
-                            ? juce::MouseCursor::LeftRightResizeCursor
-                            : juce::MouseCursor::NormalCursor);
 }
 
 void TimingHandler::draw(juce::Graphics& g)
 {
+  // Only the boundary under the pointer and the selected ones: the anchors
+  // are the warp layer's full-height lines, and every note edge drawn at
+  // once would bury them.
   const float canvasHeight =
       (MAX_MIDI_NOTE - MIN_MIDI_NOTE + 1) * owner_.pixelsPerSemitone;
   for (const auto& boundary : buildBoundaries())
   {
-    const float x = static_cast<float>(framesToSeconds(boundary.frame) *
-                                       owner_.pixelsPerSecond);
     const bool selected = isSelected(boundary);
     const bool hovered = std::abs(boundary.frame -
                                   hoveredBoundaryFrame) < 0.001f;
-    const bool highlighted = hovered || (dragging && selected);
-    g.setColour(highlighted
-                    ? juce::Colour(0xFFFFFFFFu)
-                    : selected ? juce::Colour(0xFFFFFFFFu)
-                               : APP_COLOR_TEXT_PRIMARY.withAlpha(0.72f));
-    const float width = highlighted || selected ? 2.0f : 1.0f;
-    g.fillRect(x - width * 0.5f, 0.0f, width, canvasHeight);
-  }
-
-  if (selecting)
-  {
-    const float left = std::min(selectionStartX, selectionCurrentX);
-    const float width = std::abs(selectionCurrentX - selectionStartX);
-    g.setColour(juce::Colours::white.withAlpha(0.12f));
-    g.fillRect(left, 0.0f, width, canvasHeight);
-    g.setColour(juce::Colours::white.withAlpha(0.75f));
-    g.drawRect(left, 0.0f, width, canvasHeight, 1.0f);
+    if (!hovered && !selected)
+      continue;
+    const float x = static_cast<float>(framesToSeconds(boundary.frame) *
+                                       owner_.pixelsPerSecond);
+    g.setColour(juce::Colour(0xFFFFFFFFu));
+    // On the notes' rows only.
+    const float top = std::max(0.0f, boundary.top - 2.0f);
+    const float bottom = std::min(canvasHeight, boundary.bottom + 2.0f);
+    if (bottom > top)
+      g.fillRect(x - 1.0f, top, 2.0f, bottom - top);
   }
 }
 
 void TimingHandler::cancel()
 {
   if (dragging && owner_.project)
-    clearAffectedPreviews();
+    showMap(beforeMap);
   dragging = false;
-  selecting = false;
-  before.clear();
+  dragAnchors.clear();
   dragBoundaries.clear();
   selectedBoundaries.clear();
-  selectionBaseline.clear();
   hoveredBoundaryFrame = -1.0f;
   owner_.repaint();
 }

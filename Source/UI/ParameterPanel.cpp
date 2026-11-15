@@ -42,7 +42,8 @@ constexpr int kSynthesisCardHeight =
 constexpr int kRenderDeviceRowExtraHeight = (kRowGap + 1) + kControlRowHeight;
 constexpr int kTimeCardHeight =
     kInnerPadY + kSectionLabelHeight + kSectionLabelGap + kTimelineModeRowHeight +
-    (kRowGap + 1) + kControlRowHeight + kRowGap + kControlRowHeight + kInnerPadY;
+    (kRowGap + 1) + kControlRowHeight + kRowGap + kControlRowHeight +
+    kRowGap + kControlRowHeight + kInnerPadY;
 constexpr int kPitchCardHeight =
     kInnerPadY + kSectionLabelHeight + kSectionLabelGap + kRadioRowHeight +
     ((kRowGap + 1) + kControlRowHeight) * 3 + kInnerPadY;
@@ -329,7 +330,8 @@ ParameterPanel::ParameterPanel()
     languageSelectorButton.addListener(this);
     selectedLanguageCode = Localization::getInstance().getPersistedLanguageCode();
 
-    for (auto* toggle : { &snapToSemitonesToggle, &timelineSnapCycleToggle })
+    for (auto* toggle : { &snapToSemitonesToggle, &timelineSnapCycleToggle,
+                          &timelineSnapWarpToggle })
     {
         addAndMakeVisible(toggle);
         toggle->setClickingTogglesState(true);
@@ -463,6 +465,7 @@ ParameterPanel::ParameterPanel()
     dragSnapModeButton.setButtonText(getDragSnapModeLabel(dragSnapMode));
     dragSnapModeButton.setEnabled(snapToSemitones);
     timelineSnapCycleToggle.setToggleState(timelineSnapCycle, juce::dontSendNotification);
+    timelineSnapWarpToggle.setToggleState(timelineSnapWarp, juce::dontSendNotification);
 
     const std::array<juce::Component*, 9> pitchComponents {{
         &pitchSectionLabel, &chromaticToggle, &scaleToggle,
@@ -681,6 +684,12 @@ void ParameterPanel::resized()
     gridRow.removeFromLeft(10);
     timelineSnapCycleToggle.setBounds(gridRow);
 
+    // Warp anchors snap to the same grid (spec section 3).
+    bounds.removeFromTop(rowGap);
+    auto warpSnapRow = bounds.removeFromTop(kControlRowHeight);
+    warpSnapRow.removeFromLeft(38 + 44 + 10);
+    timelineSnapWarpToggle.setBounds(warpSnapRow);
+
     int timeCardBottom = bounds.getY() + innerPadY;
     timeCardBounds = juce::Rectangle<int>(cardArea.getX(), timeCardStart,
                                            cardArea.getWidth(), timeCardBottom - timeCardStart);
@@ -829,6 +838,11 @@ void ParameterPanel::buttonClicked(juce::Button* button)
         setTimelineSnapCycleInternal(timelineSnapCycleToggle.getToggleState(), true);
         return;
     }
+    if (button == &timelineSnapWarpToggle)
+    {
+        setTimelineSnapWarpInternal(timelineSnapWarpToggle.getToggleState(), true);
+        return;
+    }
     if (button == &beatsTimelineToggle)
     {
         if (beatsTimelineToggle.getToggleState())
@@ -964,6 +978,7 @@ void ParameterPanel::refreshLocalisedText()
     timelineTempoSlider.setName(TR("param.tempo"));
     timelineGridLabel.setText(TR("param.grid"), juce::dontSendNotification);
     timelineSnapCycleToggle.setButtonText(TR("param.snap_cycle"));
+    timelineSnapWarpToggle.setButtonText(TR("param.snap_warp"));
 
     // Values whose text is itself a translated word.
     dragSnapModeButton.setButtonText(getDragSnapModeLabel(dragSnapMode));
@@ -1214,6 +1229,7 @@ void ParameterPanel::updateGlobalSliders()
         timelineTempoBpm = project->getTimelineTempoBpm();
         timelineGridDivision = project->getTimelineGridDivision();
         timelineSnapCycle = project->getTimelineSnapCycle();
+        timelineSnapWarp = project->getTimelineSnapWarp();
     }
     else
     {
@@ -1228,6 +1244,7 @@ void ParameterPanel::updateGlobalSliders()
         timelineTempoBpm = 120.0;
         timelineGridDivision = TimelineGridDivision::Quarter;
         timelineSnapCycle = false;
+        timelineSnapWarp = false;
     }
 
     referenceSlider.setValue(pitchReferenceHz, juce::dontSendNotification);
@@ -1239,6 +1256,7 @@ void ParameterPanel::updateGlobalSliders()
     timelineTempoSlider.setValue(timelineTempoBpm, juce::dontSendNotification);
     timelineGridButton.setButtonText(getTimelineGridLabel(timelineGridDivision));
     timelineSnapCycleToggle.setToggleState(timelineSnapCycle, juce::dontSendNotification);
+    timelineSnapWarpToggle.setToggleState(timelineSnapWarp, juce::dontSendNotification);
 
     refreshModeToggles();
     refreshTimelineModeToggles();
@@ -1511,6 +1529,19 @@ void ParameterPanel::setTimelineGridDivisionInternal(TimelineGridDivision divisi
 
     if (notify && changed && onTimelineGridDivisionChanged)
         onTimelineGridDivisionChanged(division);
+}
+
+void ParameterPanel::setTimelineSnapWarpInternal(bool enabled, bool notify)
+{
+    const bool changed = timelineSnapWarp != enabled;
+    timelineSnapWarp = enabled;
+    timelineSnapWarpToggle.setToggleState(enabled, juce::dontSendNotification);
+
+    if (project != nullptr)
+        project->setTimelineSnapWarp(enabled);
+
+    if (notify && changed && onTimelineSnapWarpChanged)
+        onTimelineSnapWarpChanged(enabled);
 }
 
 void ParameterPanel::setTimelineSnapCycleInternal(bool enabled, bool notify)

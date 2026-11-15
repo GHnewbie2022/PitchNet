@@ -5,6 +5,35 @@
 #include "../Utils/UI/TimecodeFont.h"
 #include "BinaryData.h"
 
+namespace
+{
+// The warp tool's icon, drawn like the PNG sprites the other tools use:
+// four 22 px rows at 2x (off, off hovered, on, on hovered). A warp anchor -
+// a vertical line under a tab - with arrows pointing both ways.
+juce::Image makeWarpToolImage()
+{
+    constexpr int width = 46, row = 22;
+    juce::Image image(juce::Image::ARGB, width, row * 4, true);
+    juce::Graphics g(image);
+    const juce::Colour colours[] = { juce::Colour(0xFF9A9A9Au), juce::Colour(0xFFFFFFFFu),
+                                     juce::Colour(0xFFFF5600u), juce::Colour(0xFFF9855Du) };
+    for (int i = 0; i < 4; ++i)
+    {
+        const float top = static_cast<float>(i * row);
+        g.setColour(colours[i]);
+        juce::Path tab;
+        tab.addTriangle(16.0f, top + 1.5f, 30.0f, top + 1.5f, 23.0f, top + 8.5f);
+        g.fillPath(tab);
+        g.fillRect(21.5f, top + 6.0f, 3.0f, 15.0f);
+        juce::Path arrows;
+        arrows.addArrow({ 18.0f, top + 14.0f, 3.0f, top + 14.0f }, 2.6f, 8.0f, 6.0f);
+        arrows.addArrow({ 28.0f, top + 14.0f, 43.0f, top + 14.0f }, 2.6f, 8.0f, 6.0f);
+        g.fillPath(arrows);
+    }
+    return image;
+}
+} // namespace
+
 ToolbarComponent::ToolbarComponent()
 {
     auto loadImage = [](const void *data, int size)
@@ -23,7 +52,7 @@ ToolbarComponent::ToolbarComponent()
     selectModeButton.setImage(loadImage(BinaryData::select_png, BinaryData::select_pngSize));
     splitModeButton.setImage(loadImage(BinaryData::split_png, BinaryData::split_pngSize));
     pitchDrawingModeButton.setImage(loadImage(BinaryData::drawing_png, BinaryData::drawing_pngSize));
-    timingModeButton.setImage(loadImage(BinaryData::timing_png, BinaryData::timing_pngSize));
+    warpModeButton.setImage(makeWarpToolImage());
     logoImage = loadImage(BinaryData::logo_png, BinaryData::logo_pngSize);
 
     followButton.setImage(loadImage(BinaryData::scroll_png, BinaryData::scroll_pngSize));
@@ -40,7 +69,7 @@ ToolbarComponent::ToolbarComponent()
     addAndMakeVisible(selectModeButton);
     addAndMakeVisible(splitModeButton);
     addAndMakeVisible(pitchDrawingModeButton);
-    addAndMakeVisible(timingModeButton);
+    addAndMakeVisible(warpModeButton);
     addAndMakeVisible(followButton);
     addAndMakeVisible(scaleSelectionButton);
     addAndMakeVisible(quantizeButton);
@@ -58,7 +87,7 @@ ToolbarComponent::ToolbarComponent()
     selectModeButton.addListener(this);
     splitModeButton.addListener(this);
     pitchDrawingModeButton.addListener(this);
-    timingModeButton.addListener(this);
+    warpModeButton.addListener(this);
     followButton.addListener(this);
     quantizeButton.addListener(this);
     auditionButton.addListener(this);
@@ -310,10 +339,10 @@ void ToolbarComponent::resized()
                                toolContainerBounds.getCentreY() - editToolSlotSize / 2,
                                editToolSlotSize, editToolSlotSize);
     editToolX += editToolSlotSize + editToolGap;
-    timingModeButton.setVisible(true);
-    timingModeButton.setBounds(editToolX,
-                               toolContainerBounds.getCentreY() - editToolSlotSize / 2,
-                               editToolSlotSize, editToolSlotSize);
+    warpModeButton.setVisible(true);
+    warpModeButton.setBounds(editToolX,
+                             toolContainerBounds.getCentreY() - editToolSlotSize / 2,
+                             editToolSlotSize, editToolSlotSize);
 
     // Hide the remaining controls that have been removed from the toolbar.
     timeLabel.setVisible(false);
@@ -393,7 +422,7 @@ void ToolbarComponent::refreshLocalisedText()
     selectModeButton.setTooltip(TR("tooltip.select_tool"));
     splitModeButton.setTooltip(TR("tooltip.split_tool"));
     pitchDrawingModeButton.setTooltip(TR("tooltip.pitch_drawing_tool"));
-    timingModeButton.setTooltip(TR("tooltip.timing_tool"));
+    warpModeButton.setTooltip(TR("tooltip.warp_tool"));
     followButton.setTooltip(TR("tooltip.auto_scroll"));
     quantizeButton.setTooltip(TR("tooltip.quantize_macro"));
     auditionButton.setTooltip(TR("tooltip.live_audition"));
@@ -462,11 +491,11 @@ void ToolbarComponent::buttonClicked(juce::Button *button)
         if (onEditModeChanged)
             onEditModeChanged(EditMode::PitchDrawing);
     }
-    else if (button == &timingModeButton)
+    else if (button == &warpModeButton)
     {
-        setEditMode(EditMode::Timing);
+        setEditMode(EditMode::Warp);
         if (onEditModeChanged)
-            onEditModeChanged(EditMode::Timing);
+            onEditModeChanged(EditMode::Warp);
     }
     else if (button == &followButton)
     {
@@ -556,7 +585,7 @@ void ToolbarComponent::setToolGroupEnabled(bool enabled)
     selectModeButton.setEnabled(enabled);
     splitModeButton.setEnabled(enabled);
     pitchDrawingModeButton.setEnabled(enabled);
-    timingModeButton.setEnabled(enabled);
+    warpModeButton.setEnabled(enabled);
 }
 
 void ToolbarComponent::setProject(Project* project)
@@ -588,8 +617,8 @@ void ToolbarComponent::setEditMode(EditMode mode)
                                    juce::dontSendNotification);
     pitchDrawingModeButton.setToggleState(mode == EditMode::PitchDrawing,
                                     juce::dontSendNotification);
-    timingModeButton.setToggleState(mode == EditMode::Timing,
-                                    juce::dontSendNotification);
+    warpModeButton.setToggleState(mode == EditMode::Warp,
+                                  juce::dontSendNotification);
     resized();
 }
 

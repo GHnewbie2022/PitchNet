@@ -13,7 +13,7 @@
 #include "../Utils/UI/Theme.h"
 #include "../Utils/PitchCurveProcessor.h"
 #include "../Utils/ScaleUtils.h"
-#include "../Utils/TimingRegionUtils.h"
+#include "../Undo/WarpAction.h"
 #include "PianoRoll/BreathSibilanceRenderer.h"
 #include "PianoRoll/PianoRollViewHelpers.h"
 #include "PianoRoll/VisualWaveformEnvelope.h"
@@ -21,7 +21,7 @@
 #include "PianoRoll/States/SelectHandler.h"
 #include "PianoRoll/States/SplitHandler.h"
 #include "PianoRoll/States/PitchDrawingHandler.h"
-#include "PianoRoll/States/TimingHandler.h"
+#include "PianoRoll/States/WarpHandler.h"
 #include "PianoRoll/PitchDrawingConfirmationPanel.h"
 #include "Components/PitchPopupMenu.h"
 #include "Components/CanvasPopupMenu.h"
@@ -285,7 +285,7 @@ PianoRollComponent::PianoRollComponent()
   selectHandler_ = std::make_unique<SelectHandler>(*this);
   splitHandler_ = std::make_unique<SplitHandler>(*this);
   pitchDrawingHandler_ = std::make_unique<PitchDrawingHandler>(*this);
-  timingHandler_ = std::make_unique<TimingHandler>(*this);
+  warpHandler_ = std::make_unique<WarpHandler>(*this);
   currentHandler_ = selectHandler_.get();
 
   // Wire up components
@@ -584,6 +584,12 @@ void PianoRollComponent::paint(juce::Graphics &g)
                              .getSmallestIntegerContainer());
     }
 
+    // The warp layer stays visible in every tool: anchors and the tint of
+    // stretched segments, behind the notes. The Warp tool draws its own,
+    // interactive copy (with the ratio strip) through its handler.
+    if (editMode != EditMode::Warp)
+      WarpHandler::drawLayer(g, getInteractionContext(), -1, false, -1, false);
+
     drawGameChunksDebugOverlay(g);
     drawMidiReference(g);
     drawBreathNotes(g);
@@ -613,9 +619,6 @@ void PianoRollComponent::paint(juce::Graphics &g)
   drawTimeline(g);
   drawLoopTimeline(g);
 
-  // Timing boundaries use the full canvas height. Hide the stationary
-  // playhead in Timing mode so it cannot be mistaken for an editable edge.
-  if (editMode != EditMode::Timing || playbackActive)
   {
     float x = static_cast<float>(pianoKeysWidth) + timeToX(cursorTime) -
               static_cast<float>(scrollX);
@@ -1907,6 +1910,22 @@ double PianoRollComponent::snapTimeToTimelineGrid(double timeSeconds) const
   return std::max(getTimelineStart(), snapped);
 }
 
+bool PianoRollComponent::shouldSnapWarpToGrid() const
+{
+  return timelineDisplayMode == TimelineDisplayMode::Beats &&
+         timelineSnapWarp && getTimelineGridSeconds() > 1.0e-6;
+}
+
+double PianoRollComponent::snapWarpFrameToGrid(double frame) const
+{
+  if (!shouldSnapWarpToGrid())
+    return frame;
+  const double seconds = frame * HOP_SIZE / static_cast<double>(SAMPLE_RATE);
+  const double snapped = coordMapper->snapProjectTimeToTimelineGrid(
+      seconds, getTimelineGridSeconds());
+  return snapped * SAMPLE_RATE / static_cast<double>(HOP_SIZE);
+}
+
 bool PianoRollComponent::isCanvasPoint(const juce::MouseEvent &e) const
 {
   return e.x >= pianoKeysWidth && e.y >= headerHeight &&
@@ -2224,7 +2243,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e)
       else if (*choice >= 2 && *choice <= 5)
       {
         const EditMode modes[] = { EditMode::Select, EditMode::Split,
-                                   EditMode::PitchDrawing, EditMode::Timing };
+                                   EditMode::PitchDrawing, EditMode::Warp };
         const auto mode = modes[*choice - 2];
         if (safeThis->onEditModeRequested)
           safeThis->onEditModeRequested(mode);
@@ -2671,9 +2690,9 @@ void PianoRollComponent::mouseMove(const juce::MouseEvent &e)
                          ? juce::MouseCursor::CrosshairCursor
                          : juce::MouseCursor::NormalCursor);
   }
-  else if (editMode == EditMode::Timing)
+  else if (editMode == EditMode::Warp)
   {
-    // TimingHandler owns edge-specific cursor arbitration.
+    // WarpHandler owns its cursor arbitration.
   }
 }
 
@@ -2826,6 +2845,14 @@ void PianoRollComponent::mouseDoubleClick(const juce::MouseEvent &e)
       currentHandler_->mouseDoubleClick(e, adjustedX, adjustedY);
       return;
     }
+  }
+
+  // The warp layer's ratio strip edits a segment by double-click.
+  if (editMode == EditMode::Warp && warpHandler_ &&
+      warpHandler_->handlesDoubleClickAt(adjustedX, adjustedY))
+  {
+    warpHandler_->mouseDoubleClick(e, adjustedX, adjustedY);
+    return;
   }
 
   // Keep note-specific double-click interactions with their edit handlers.
@@ -3070,6 +3097,7 @@ void PianoRollComponent::setProject(Project *proj)
                              ? project->getTimelineGridDivision()
                              : TimelineGridDivision::Quarter;
   timelineSnapCycle = project != nullptr ? project->getTimelineSnapCycle() : false;
+  timelineSnapWarp = project != nullptr ? project->getTimelineSnapWarp() : false;
   previewScaleRootNote.reset();
   previewScaleMode.reset();
 
@@ -3287,6 +3315,16 @@ void PianoRollComponent::setTimelineSnapCycle(bool enabled)
   timelineSnapCycle = enabled;
   if (project != nullptr)
     project->setTimelineSnapCycle(enabled);
+}
+
+void PianoRollComponent::setTimelineSnapWarp(bool enabled)
+{
+  if (timelineSnapWarp == enabled)
+    return;
+
+  timelineSnapWarp = enabled;
+  if (project != nullptr)
+    project->setTimelineSnapWarp(enabled);
 }
 
 void PianoRollComponent::setCycleEditEnabled(bool enabled)
@@ -3779,9 +3817,8 @@ void PianoRollComponent::setEditMode(EditMode mode)
   {
     pitchDrawingHandler_->cancel();
   }
-  if (previousMode == EditMode::Timing && mode != EditMode::Timing &&
-      timingHandler_)
-    timingHandler_->cancel();
+  if (previousMode == EditMode::Warp && mode != EditMode::Warp && warpHandler_)
+    warpHandler_->cancel();
   editMode = mode;
 
   if (mode == EditMode::PitchDrawing)
@@ -3807,8 +3844,8 @@ void PianoRollComponent::setEditMode(EditMode mode)
   case EditMode::PitchDrawing:
     currentHandler_ = pitchDrawingHandler_.get();
     break;
-  case EditMode::Timing:
-    currentHandler_ = timingHandler_.get();
+  case EditMode::Warp:
+    currentHandler_ = warpHandler_.get();
     break;
   }
 
@@ -3846,10 +3883,6 @@ void PianoRollComponent::updateMouseCursorForEditMode()
                          : juce::MouseCursor::CrosshairCursor);
     else
       setMouseCursor(juce::MouseCursor::NormalCursor);
-  }
-  else if (editMode == EditMode::Timing)
-  {
-    setMouseCursor(juce::MouseCursor::NormalCursor);
   }
   else
   {
@@ -4088,7 +4121,7 @@ void PianoRollComponent::updatePreviewButtonBounds()
 
   const bool supportsNoteHoverControls =
       editMode == EditMode::Select || editMode == EditMode::Split ||
-      editMode == EditMode::Timing;
+      editMode == EditMode::Warp;
   if (!hoveredNote || !project || !supportsNoteHoverControls ||
       isChangingPitch)
   {
@@ -4271,65 +4304,31 @@ std::unique_ptr<UndoableAction> PianoRollComponent::createResetTimingAction(Note
   if (!project)
     return {};
 
-  auto& notes = project->getNotes();
-  const auto targets = getResetTargetNotes(note);
-  std::unordered_set<Note*> targetSet(targets.begin(), targets.end());
-  std::unordered_map<Note*, NoteTimingState> desired;
-  auto ensureDesired = [&](Note* candidate) -> NoteTimingState&
-  {
-    auto [it, inserted] = desired.emplace(
-        candidate, NoteTimingState::capture(*candidate));
-    juce::ignoreUnused(inserted);
-    return it->second;
-  };
-
-  // Selected notes restore their own immutable ranges. Shared-boundary
-  // companions outside the selection follow the restored selected edge.
-  for (auto* target : targets)
+  // Restoring timing removes the warp anchors over the notes' recorded
+  // frames, edges included; the segments around them re-stretch evenly
+  // between the anchors that remain (WarpMap::removeAnchor).
+  auto& audioData = project->getAudioData();
+  warp::fitToProject(audioData);
+  const auto before = audioData.warpMap;
+  auto after = before;
+  for (auto* target : getResetTargetNotes(note))
   {
     if (!target)
       continue;
-
-    Note* previous = nullptr;
-    Note* next = nullptr;
-    for (auto& candidate : notes)
+    const double first = target->getSrcStartFrame();
+    const double last = target->getSrcEndFrame();
+    for (int index = static_cast<int>(after.anchors().size()) - 1; index >= 0;
+         --index)
     {
-      if (&candidate == target || candidate.isRest())
-        continue;
-      if (candidate.getEndFrame() <= target->getStartFrame() &&
-          (!previous || candidate.getEndFrame() > previous->getEndFrame()))
-        previous = &candidate;
-      if (candidate.getStartFrame() >= target->getEndFrame() &&
-          (!next || candidate.getStartFrame() < next->getStartFrame()))
-        next = &candidate;
+      const double source = after.anchors()[static_cast<size_t>(index)].source;
+      if (source >= first - 1.0e-6 && source <= last + 1.0e-6)
+        after.removeAnchor(index);
     }
-
-    const bool sharesLeftBoundary =
-        previous && previous->getEndFrame() == target->getStartFrame();
-    const bool sharesRightBoundary =
-        next && next->getStartFrame() == target->getEndFrame();
-
-    auto& targetState = ensureDesired(target);
-    targetState.startFrame = target->getSrcStartFrame();
-    targetState.endFrame = target->getSrcEndFrame();
-    if (sharesLeftBoundary && targetSet.count(previous) == 0)
-      ensureDesired(previous).endFrame = targetState.startFrame;
-    if (sharesRightBoundary && targetSet.count(next) == 0)
-      ensureDesired(next).startFrame = targetState.endFrame;
   }
-
-  std::vector<NoteTimingState> before;
-  std::vector<NoteTimingState> after;
-  before.reserve(desired.size());
-  after.reserve(desired.size());
-  for (const auto& [affectedNote, targetState] : desired)
-  {
-    before.push_back(NoteTimingState::capture(*affectedNote));
-    after.push_back(targetState);
-  }
-
-  return std::make_unique<TimingAction>(
-      *project, std::move(before), std::move(after), "Restore Timing");
+  if (after == before)
+    return {};
+  return std::make_unique<WarpAction>(*project, before, after,
+                                      "Restore Timing");
 }
 
 void PianoRollComponent::resetNoteTiming(Note &note)
@@ -4349,34 +4348,10 @@ void PianoRollComponent::triggerPreviewForNote(Note &note)
   if (it == notes.end())
     return;
 
-  const auto sourceRegion = timingRegions::getSourceRegion(*project, note);
-
-  auto isInSameRegion = [&](const Note &candidate)
-  {
-    return timingRegions::belongsTo(candidate, sourceRegion);
-  };
-
+  // Spec: like Cubase, only the clicked note plays, start to end, as
+  // rendered.
   Note *startNote = &note;
   Note *endNote = &note;
-
-  for (auto prev = it; prev != notes.begin();)
-  {
-    --prev;
-    if (!prev->isRest() && isInSameRegion(*prev))
-    {
-      startNote = &(*prev);
-      break;
-    }
-  }
-
-  for (auto next = std::next(it); next != notes.end(); ++next)
-  {
-    if (!next->isRest() && isInSameRegion(*next))
-    {
-      endNote = &(*next);
-      break;
-    }
-  }
 
   const int startFrame = std::max(0, startNote->getStartFrame());
   const int endFrame = std::max(startFrame, endNote->getEndFrame());

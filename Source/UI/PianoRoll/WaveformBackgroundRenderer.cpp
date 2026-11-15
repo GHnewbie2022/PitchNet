@@ -2,6 +2,7 @@
 #include "VisualWaveformEnvelope.h"
 #include "../../Utils/Constants.h"
 #include "../../Utils/UI/Theme.h"
+#include "../../Audio/WarpLayer.h"
 
 #include <cmath>
 #include <limits>
@@ -37,6 +38,48 @@ void WaveformBackgroundRenderer::appendLiveWaveform(
                           buffer.getNumSamples());
   liveNumSamples = required;
   invalidateCache();
+}
+
+/**
+ * The composite (laid out for audio.compositeMap) moved to where warpMap puts
+ * it, sample by sample: each output sample reads the composite at the
+ * position relayout() maps it back to. Nearest sample, which is enough for
+ * an envelope drawn a pixel at a time.
+ */
+const float *WaveformBackgroundRenderer::relaidOutComposite(const AudioData &audio)
+{
+  const int numSamples = audio.waveform.getNumSamples();
+  const float *composite = audio.waveform.getReadPointer(0);
+  relaidOut.assign(static_cast<size_t>(numSamples), 0.0f);
+  const double samplesPerFrame =
+      audio.sampleRate * static_cast<double>(HOP_SIZE) / SAMPLE_RATE;
+  if (!(samplesPerFrame > 0.0))
+    return composite;
+
+  const auto breaks = warp::WarpMap::relayout(audio.compositeMap, audio.warpMap);
+  size_t segment = 0;
+  for (int i = 0; i < numSamples; ++i)
+  {
+    const double frame = static_cast<double>(i) / samplesPerFrame;
+    double from = frame; // outside the map: 1:1
+    if (breaks.size() >= 2 && frame >= breaks.front().destination &&
+        frame <= breaks.back().destination)
+    {
+      while (segment + 2 < breaks.size() &&
+             frame >= breaks[segment + 1].destination)
+        ++segment;
+      const auto &a = breaks[segment];
+      const auto &b = breaks[segment + 1];
+      const double span = b.destination - a.destination;
+      from = span > 0.0 ? a.source + (frame - a.destination) *
+                                         (b.source - a.source) / span
+                        : a.source;
+    }
+    const auto j = static_cast<long long>(std::llround(from * samplesPerFrame));
+    if (j >= 0 && j < numSamples)
+      relaidOut[static_cast<size_t>(i)] = composite[j];
+  }
+  return relaidOut.data();
 }
 
 void WaveformBackgroundRenderer::timerCallback()
@@ -83,6 +126,19 @@ void WaveformBackgroundRenderer::draw(juce::Graphics &g,
   // below with the gain it will apply - smoothed edges included.
   const auto *activeGainPreview = gainPreview ? gainPreview() : nullptr;
   const bool amplitudePreview = activeGainPreview != nullptr;
+
+  // A warp edit not laid out yet: redraw whenever either map changes.
+  const bool relayout = projectAudio && warp::compositeLagsMap(*projectAudio);
+  if (projectAudio &&
+      (relayout != cachedRelayout ||
+       (relayout && (projectAudio->warpMap != cachedWarpMap ||
+                     projectAudio->compositeMap != cachedCompositeMap))))
+  {
+    cacheDirty = true;
+    cachedRelayout = relayout;
+    cachedWarpMap = projectAudio->warpMap;
+    cachedCompositeMap = projectAudio->compositeMap;
+  }
 
   const bool cacheUsable = waveformCache.isValid() && !cacheDirty &&
                            cachedAmplitudePreview == amplitudePreview &&
@@ -232,7 +288,8 @@ void WaveformBackgroundRenderer::draw(juce::Graphics &g,
 
   // Keep completed captures visible while a new region is being recorded.
   if (drawingProject && projectAudio->waveform.getNumChannels() > 0)
-    drawWaveform(projectAudio->waveform.getReadPointer(0),
+    drawWaveform(relayout ? relaidOutComposite(*projectAudio)
+                          : projectAudio->waveform.getReadPointer(0),
                  projectAudio->waveform.getNumSamples(),
                  projectAudio->sampleRate, 0.0, true,
                  projectDrawRange ? projectDrawRange->first

@@ -42,7 +42,8 @@ namespace CommandIDs
         activateMainTool    = 0x2042,
         activateSplitTool   = 0x2043,
         activatePitchDrawingTool  = 0x2044,
-        activateTimingTool  = 0x2045,
+        // 0x2045 was the Timing tool, folded into the Warp tool.
+        activateWarpTool    = 0x2046,
         
         // Pitch Tool Commands (0x2050-0x205F)
         fourierFilter       = 0x2050

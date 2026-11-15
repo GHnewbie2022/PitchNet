@@ -37,7 +37,7 @@ class LoopDragHandler;
 class SelectHandler;
 class SplitHandler;
 class PitchDrawingHandler;
-class TimingHandler;
+class WarpHandler;
 class PitchDrawingConfirmationPanel;
 
 /**
@@ -147,6 +147,7 @@ public:
   void setTimelineTempoBpm(double bpm);
   void setTimelineGridDivision(TimelineGridDivision division);
   void setTimelineSnapCycle(bool enabled);
+  void setTimelineSnapWarp(bool enabled);
 
   // Enable/disable cycle (loop) range editing on the timeline strip.
   // Turned off in non-ARA plugin mode, where the host transport is not ours
@@ -338,6 +339,8 @@ private:
   double getTimelineGridSeconds() const;
   bool shouldSnapCycleToGrid() const;
   double snapTimeToTimelineGrid(double timeSeconds) const;
+  bool shouldSnapWarpToGrid() const;
+  double snapWarpFrameToGrid(double frame) const;
   bool isCanvasPoint(const juce::MouseEvent &e) const;
   bool isModifierZoomDrag(const juce::MouseEvent &e) const;
   void applyModifierZoomDrag(const juce::MouseEvent &e);
@@ -526,6 +529,7 @@ private:
   double &timelineTempoBpm = viewState.timelineTempoBpm;
   TimelineGridDivision &timelineGridDivision = viewState.timelineGridDivision;
   bool &timelineSnapCycle = viewState.timelineSnapCycle;
+  bool &timelineSnapWarp = viewState.timelineSnapWarp;
   bool &cycleEditEnabled = viewState.cycleEditEnabled;
   ScaleMode &selectedScaleMode = viewState.selectedScaleMode;
   int &selectedScaleRootNote = viewState.selectedScaleRootNote;
@@ -537,7 +541,7 @@ private:
   std::unique_ptr<SelectHandler> selectHandler_;
   std::unique_ptr<SplitHandler> splitHandler_;
   std::unique_ptr<PitchDrawingHandler> pitchDrawingHandler_;
-  std::unique_ptr<TimingHandler> timingHandler_;
+  std::unique_ptr<WarpHandler> warpHandler_;
   InteractionHandler *currentHandler_ = nullptr;
 
   std::unique_ptr<PitchDrawingConfirmationPanel> pitchDrawingConfirmationPanel;

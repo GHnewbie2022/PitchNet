@@ -338,5 +338,18 @@
   "update.download_now": "Download Now",
   "update.message": "A new version of PitchNet is available. Would you like to download it?",
   "update.skip_version": "Skip This Version",
-  "update.title": "Update Available"
+  "update.title": "Update Available",
+  "command.warp_tool": "Warp Tool",
+  "command.warp_tool.desp": "Activate the warp layer: place, drag and delete warp anchors, and drag note boundaries",
+  "tooltip.warp_tool": "Warp Tool (Shortcut: 4)\nClick: place anchor   Drag an anchor or a note edge: stretch   Alt+Click an anchor: delete   Double-click a ratio at the top: type a value",
+  "param.snap_warp": "Snap Anchors",
+  "warp.limit.min_length": "Shortest length reached (at least 1 frame, about 11.61 ms)",
+  "warp.limit.min_ratio": "Minimum ratio 12.50% reached",
+  "warp.limit.max_ratio": "Maximum ratio 800.00% reached",
+  "warp.limit.too_close": "Too close to another anchor or an end of the track (at least 1 frame)",
+  "warp.limit.fixed": "Both ends of this segment are the ends of the track; there is no anchor to move",
+  "warp.limit.left": "Left segment: {reason}",
+  "warp.limit.right": "Right segment: {reason}",
+  "warp.input.tooltip": "Type a ratio (e.g. 112.35%) or a length (e.g. 1.57 s); Enter applies, Esc cancels",
+  "canvas.warp": "Warp"
 }

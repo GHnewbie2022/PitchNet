@@ -11,7 +11,11 @@ enum class EditMode
   // Value 1 belonged to the removed freehand tool.
   Split = 2,
   PitchDrawing = 3,
-  Timing = 4
+  // Value 4 belonged to the Timing tool, folded into Warp (note boundaries
+  // drag there).
+  // The warp layer (spec section 3): place, drag and delete warp anchors,
+  // and drag note boundaries (spec section 4).
+  Warp = 5
 };
 
 struct PianoRollViewState
@@ -46,6 +50,8 @@ struct PianoRollViewState
   double timelineTempoBpm = 120.0;
   TimelineGridDivision timelineGridDivision = TimelineGridDivision::Quarter;
   bool timelineSnapCycle = false;
+  // Warp anchors snap to the timeline grid (spec section 3).
+  bool timelineSnapWarp = false;
 
   // Cycle (loop) range editing on the timeline. Disabled when the plugin
   // cannot drive the host transport (non-ARA plugin mode).

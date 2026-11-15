@@ -158,7 +158,7 @@ private:
     ToggleButton selectModeButton;
     ToggleButton splitModeButton;
     ToggleButton pitchDrawingModeButton;
-    ToggleButton timingModeButton;
+    ToggleButton warpModeButton;
     ToggleButton followButton;
     ScaleSelectionControl scaleSelectionButton;
     Button quantizeButton;

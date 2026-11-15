@@ -78,6 +78,7 @@ public:
     std::function<void(double)> onTimelineTempoChanged;
     std::function<void(TimelineGridDivision)> onTimelineGridDivisionChanged;
     std::function<void(bool)> onTimelineSnapCycleChanged;
+    std::function<void(bool)> onTimelineSnapWarpChanged;
     std::function<void(double)> onUiBrightnessChanged;
     std::function<void(bool)> onNoiseVisibilityChanged;
     std::function<void(SynthesisEngineType)> onSynthesisEngineChanged;
@@ -122,6 +123,7 @@ private:
     void setTimelineTempoBpmInternal(double bpm, bool notify);
     void setTimelineGridDivisionInternal(TimelineGridDivision division, bool notify);
     void setTimelineSnapCycleInternal(bool enabled, bool notify);
+    void setTimelineSnapWarpInternal(bool enabled, bool notify);
 
     Project* project = nullptr;
     Note* selectedNote = nullptr;
@@ -188,6 +190,7 @@ private:
     juce::Label timelineGridLabel;
     CompactSelectionButton timelineGridButton { "1/4" };
     StyledToggleButton timelineSnapCycleToggle;
+    StyledToggleButton timelineSnapWarpToggle;
     juce::Label brightnessLabel;
     FloatingZoomSliderLookAndFeel brightnessSliderLookAndFeel;
     juce::Slider brightnessSlider;
@@ -205,6 +208,7 @@ private:
     double timelineTempoBpm = 120.0;
     TimelineGridDivision timelineGridDivision = TimelineGridDivision::Quarter;
     bool timelineSnapCycle = false;
+    bool timelineSnapWarp = false;
     double uiBrightnessPercent = 100.0;
     SynthesisEngineType synthesisEngine = defaultSynthesisEngineType();
     bool aiResynthesisAvailable = true;

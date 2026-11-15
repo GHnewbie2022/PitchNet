@@ -95,5 +95,13 @@ private:
   double liveSampleRate = 0.0;
   double liveTimelineOffsetSeconds = 0.0;
 
+  // The composite redrawn where the current warp map puts it, while it is
+  // still laid out for an older map (an anchor drag, a render not done yet).
+  const float *relaidOutComposite(const AudioData &audio);
+  std::vector<float> relaidOut;
+  warp::WarpMap cachedWarpMap;
+  warp::WarpMap cachedCompositeMap;
+  bool cachedRelayout = false;
+
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(WaveformBackgroundRenderer)
 };

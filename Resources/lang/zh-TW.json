@@ -296,5 +296,18 @@
   "update.download_now": "立即下載",
   "update.message": "PitchNet 有新版本可用，是否下載？",
   "update.skip_version": "跳過此版本",
-  "update.title": "有可用更新"
+  "update.title": "有可用更新",
+  "command.warp_tool": "伸縮工具",
+  "command.warp_tool.desp": "啟用伸縮層：放置、拖動、刪除伸縮錨點，拖音符邊界",
+  "tooltip.warp_tool": "伸縮工具（快速鍵：4）\n單擊：放錨點　拖動錨點或音符邊緣：伸縮　Alt＋單擊錨點：刪除　雙擊上方比例：輸入數值",
+  "param.snap_warp": "錨點吸附",
+  "warp.limit.min_length": "已到最短長度（每段至少 1 格，約 11.61 ms）",
+  "warp.limit.min_ratio": "已到最小比例 12.50%",
+  "warp.limit.max_ratio": "已到最大比例 800.00%",
+  "warp.limit.too_close": "離其他錨點或音軌兩端太近（每段至少 1 格）",
+  "warp.limit.fixed": "這段的兩端是音軌的起點和終點，沒有可移動的錨點",
+  "warp.limit.left": "左段：{reason}",
+  "warp.limit.right": "右段：{reason}",
+  "warp.input.tooltip": "輸入比例（例如 112.35%）或長度（例如 1.57 s），按 Enter 套用、Esc 取消",
+  "canvas.warp": "伸縮"
 }

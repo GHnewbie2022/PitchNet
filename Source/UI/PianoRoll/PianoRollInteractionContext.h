@@ -62,6 +62,13 @@ public:
   float timeToX(double time) const;
   double xToTime(float x) const;
   double snapTimeToTimelineGrid(double timeSeconds) const;
+  /** Snaps a timeline frame to the grid when warp snapping is on. */
+  double snapWarpFrame(double frame) const;
+  double projectToTimeline(double projectSeconds) const;
+  /** The part of the canvas on screen, in world coordinates. */
+  juce::Rectangle<float> getVisibleWorldArea() const;
+  juce::Point<int> worldToComponent(float worldX, float worldY) const;
+  juce::Component &getComponent();
   bool isCanvasPoint(const juce::MouseEvent &e) const;
 
   Note *findNoteAt(float x, float y);

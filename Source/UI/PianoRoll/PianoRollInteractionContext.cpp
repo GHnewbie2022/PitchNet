@@ -64,6 +64,39 @@ double PianoRollInteractionContext::snapTimeToTimelineGrid(
   return component.snapTimeToTimelineGrid(timeSeconds);
 }
 
+double PianoRollInteractionContext::snapWarpFrame(double frame) const
+{
+  return component.snapWarpFrameToGrid(frame);
+}
+
+double PianoRollInteractionContext::projectToTimeline(
+    double projectSeconds) const
+{
+  return component.projectToTimeline(projectSeconds);
+}
+
+juce::Rectangle<float> PianoRollInteractionContext::getVisibleWorldArea() const
+{
+  return {static_cast<float>(component.scrollX),
+          static_cast<float>(component.scrollY),
+          static_cast<float>(component.getVisibleContentWidth()),
+          static_cast<float>(component.getVisibleContentHeight())};
+}
+
+juce::Point<int> PianoRollInteractionContext::worldToComponent(
+    float worldX, float worldY) const
+{
+  return {juce::roundToInt(worldX - static_cast<float>(component.scrollX)) +
+              PianoRollComponent::pianoKeysWidth,
+          juce::roundToInt(worldY - static_cast<float>(component.scrollY)) +
+              PianoRollComponent::headerHeight};
+}
+
+juce::Component &PianoRollInteractionContext::getComponent()
+{
+  return component;
+}
+
 bool PianoRollInteractionContext::isCanvasPoint(
     const juce::MouseEvent &e) const
 {

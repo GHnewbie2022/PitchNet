@@ -1184,6 +1184,11 @@ MainComponent::MainComponent(bool enableAudioDevice)
     pianoRoll.setTimelineSnapCycle(enabled);
     notifyProjectDataChanged();
   };
+  parameterPanel.onTimelineSnapWarpChanged = [this](bool enabled)
+  {
+    pianoRoll.setTimelineSnapWarp(enabled);
+    notifyProjectDataChanged();
+  };
   parameterPanel.setProject(getProject());
 
   // Sync toolbar toggle with panel visibility
@@ -2628,16 +2633,12 @@ void MainComponent::play()
     return;
 
   const auto &loopRange = project->getLoopRange();
-  if (loopRange.isValid())
-  {
-    double position = audioEngine->getPosition();
-    if (position < loopRange.startSeconds || position >= loopRange.endSeconds)
-    {
-      audioEngine->seek(loopRange.startSeconds);
-      pianoRoll.setCursorTime(loopRange.startSeconds);
-      toolbar.setCurrentTime(loopRange.startSeconds);
-    }
-  }
+  if (loopRange.isValid() &&
+      (start < loopRange.startSeconds || start >= loopRange.endSeconds))
+    start = loopRange.startSeconds;
+  audioEngine->seek(start);
+  pianoRoll.setCursorTime(start);
+  toolbar.setCurrentTime(start);
 
   isPlaying = true;
   toolbar.setPlaying(true);
@@ -4204,8 +4205,8 @@ void MainComponent::getCommandInfo(juce::CommandID commandID,
     result.setTicked(pianoRoll.getEditMode() == EditMode::PitchDrawing);
     break;
 
-  case CommandIDs::activateTimingTool:
-    result.setInfo(TR("command.timing_tool"), TR("command.timing_tool.desp"),
+  case CommandIDs::activateWarpTool:
+    result.setInfo(TR("command.warp_tool"), TR("command.warp_tool.desp"),
                    TR("category.edit_mode"), 0);
     result.addDefaultKeypress('4', juce::ModifierKeys::noModifiers);
     result.setActive(project != nullptr && toolGroupEnabled);
@@ -4348,7 +4349,7 @@ bool MainComponent::perform(const ApplicationCommandTarget::InvocationInfo &info
       setEditMode(EditMode::PitchDrawing);
     return true;
 
-  case CommandIDs::activateTimingTool:
+  case CommandIDs::activateWarpTool:
     if (toolGroupEnabled)
       setEditMode(EditMode::Timing);
     return true;

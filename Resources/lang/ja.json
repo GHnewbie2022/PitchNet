@@ -296,5 +296,18 @@
   "update.download_now": "今すぐダウンロード",
   "update.message": "PitchNet の新しいバージョンがあります。ダウンロードしますか？",
   "update.skip_version": "このバージョンをスキップ",
-  "update.title": "アップデートがあります"
+  "update.title": "アップデートがあります",
+  "command.warp_tool": "ワープツール",
+  "command.warp_tool.desp": "ワープレイヤーを有効にします：ワープアンカーの配置、ドラッグ、削除、ノート境界のドラッグ",
+  "tooltip.warp_tool": "ワープツール（ショートカット: 4）\nクリック: アンカー配置　アンカーやノートの端をドラッグ: 伸縮　Alt＋アンカーをクリック: 削除　上部の比率をダブルクリック: 数値入力",
+  "param.snap_warp": "アンカーをスナップ",
+  "warp.limit.min_length": "最短の長さです（各区間は 1 フレーム以上、約 11.61 ms）",
+  "warp.limit.min_ratio": "最小比率 12.50% です",
+  "warp.limit.max_ratio": "最大比率 800.00% です",
+  "warp.limit.too_close": "他のアンカーまたはトラックの端に近すぎます（各区間は 1 フレーム以上）",
+  "warp.limit.fixed": "この区間の両端はトラックの始点と終点で、動かせるアンカーがありません",
+  "warp.limit.left": "左の区間: {reason}",
+  "warp.limit.right": "右の区間: {reason}",
+  "warp.input.tooltip": "比率（例: 112.35%）または長さ（例: 1.57 s）を入力。Enter で適用、Esc で取消",
+  "canvas.warp": "ワープ"
 }
