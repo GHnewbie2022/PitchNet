@@ -889,6 +889,367 @@ void mergeCheck(Project &project)
   std::printf("merge check: %d failure(s)\n", failures);
 }
 
+
+// The drawing tool without a confirmation: each click is applied and is one
+// undo step; Esc ends the curve and keeps it; undo walks back one step at a
+// time to the pitch before the curve.
+void drawCheck(Project &project)
+{
+  auto &audio = project.getAudioData();
+  PianoRollComponent roll;
+  PitchUndoManager undo;
+  roll.setSize(1400, 900);
+  roll.setProject(&project);
+  roll.setUndoManager(&undo);
+  roll.setPixelsPerSecond(400.0f);
+  roll.setEditMode(EditMode::PitchDrawing);
+
+  const Note *longest = nullptr;
+  for (const auto &note : project.getNotes())
+    if (!note.isRest() && (!longest || note.getDurationFrames() > longest->getDurationFrames()))
+      longest = &note;
+  const int start = longest->getStartFrame(), end = longest->getEndFrame();
+  const float target = std::round(longest->getAdjustedMidiNote()) + 2.0f;
+  roll.setScrollX(framesToSeconds(start) * 400.0 - 100.0);
+  roll.centerOnPitchRange(target - 4.0f, target + 4.0f);
+
+  const auto pitchAt = [&](int f)
+  { return audio.basePitch[static_cast<size_t>(f)] + audio.deltaPitch[static_cast<size_t>(f)]; };
+  const auto screen = [&](int frame, float midi)
+  {
+    const float x = PianoRollComponent::pianoKeysWidth +
+                    static_cast<float>(framesToSeconds(frame) * roll.getPixelsPerSecond() -
+                                       roll.getScrollX());
+    const float y = PianoRollComponent::headerHeight +
+                    (MAX_MIDI_NOTE - midi) * roll.getPixelsPerSemitone() +
+                    roll.getPixelsPerSemitone() * 0.5f - static_cast<float>(roll.getScrollY());
+    return juce::Point<float>(x, y);
+  };
+  const auto press = [&](juce::Point<float> at, juce::Point<float> to, bool alt)
+  {
+    auto source = juce::Desktop::getInstance().getMainMouseSource();
+    const auto now = juce::Time::getCurrentTime();
+    const auto mods = juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier |
+                                         (alt ? juce::ModifierKeys::altModifier : 0));
+    juce::MouseEvent down(source, at, mods, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, &roll, &roll,
+                          now, at, now, 1, false);
+    roll.mouseDown(down);
+    if (to != at)
+    {
+      juce::MouseEvent drag(source, to, mods, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, &roll, &roll,
+                            now, at, now, 1, true);
+      roll.mouseDrag(drag);
+    }
+    juce::MouseEvent up(source, to, juce::ModifierKeys(), 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                        &roll, &roll, now, at, now, 1, to != at);
+    roll.mouseUp(up);
+  };
+  const auto click = [&](juce::Point<float> at) { press(at, at, false); };
+  const auto curves = [&]() { return project.getDrawnCurves(); };
+
+  const int a = start + (end - start) / 4, b = start + 3 * (end - start) / 4;
+  const int mid = (a + b) / 2;
+  const float original = pitchAt(mid);
+  int failures = 0;
+  const auto expect = [&](bool ok, const char *what)
+  {
+    std::printf("  %-52s %s\n", what, ok ? "ok" : "FAIL");
+    failures += ok ? 0 : 1;
+  };
+
+  click(screen(a, target));
+  expect(undo.canUndo(), "first click is applied and undoable at once");
+  click(screen(b, target));
+  expect(std::abs(pitchAt(mid) - target) < 0.05f, "two anchors draw the curve");
+  roll.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+  expect(std::abs(pitchAt(mid) - target) < 0.05f, "Esc ends the curve and keeps it");
+  expect(curves().size() == 1 && curves()[0].anchorFrames.size() == 2,
+         "the anchors stay on the line after Esc");
+  roll.cancelPitchDrawingPreview(); // as MainComponent::undo does
+  undo.undo();
+  expect(std::abs(pitchAt(mid) - target) > 0.05f && curves()[0].anchorFrames.size() == 1,
+         "one undo takes back the second anchor only");
+  roll.cancelPitchDrawingPreview(); // as MainComponent::undo does
+  undo.undo();
+  expect(std::abs(pitchAt(mid) - original) < 0.002f && curves().empty(),
+         "second undo restores the pitch and drops the curve");
+  roll.cancelPitchDrawingPreview();
+  undo.redo();
+  roll.cancelPitchDrawingPreview();
+  undo.redo();
+  expect(std::abs(pitchAt(mid) - target) < 0.05f && curves().size() == 1,
+         "redo brings the curve and its anchors back");
+
+  // Later: drag a kept anchor to reshape the curve. Anchors are where the
+  // clicks landed after rounding to frames.
+  const int anchorA = curves()[0].anchorFrames.front();
+  const int anchorB = curves()[0].anchorFrames.back();
+  press(screen(anchorB, pitchAt(anchorB)), screen(anchorB, target + 1.0f), false);
+  expect(std::abs(pitchAt(anchorB) - (target + 1.0f)) < 0.05f && curves().size() == 1 &&
+             curves()[0].anchorFrames.size() == 2,
+         "a kept anchor can be dragged again later");
+  roll.cancelPitchDrawingPreview(); // as MainComponent::undo does
+  undo.undo();
+  expect(std::abs(pitchAt(anchorB) - target) < 0.05f, "undo takes the drag back");
+
+  // Saved and opened again: the curve is still there.
+  {
+    Project reopened;
+    ProjectSerializer::fromJson(reopened, ProjectSerializer::toJson(project));
+    const auto &kept = reopened.getDrawnCurves();
+    expect(kept.size() == 1 && kept[0].anchorFrames == curves()[0].anchorFrames &&
+               kept[0].underDiff.size() == curves()[0].underDiff.size(),
+           "the curve is saved with the project");
+  }
+
+  // Dragging the note moves its anchors with it (they sit on the pitch).
+  {
+    Note *note = nullptr;
+    for (auto &n : project.getNotes())
+      if (n.getStartFrame() == start)
+        note = &n;
+    const float before = pitchAt(a);
+    note->setMidiNote(note->getMidiNote() + 1.0f);
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+    expect(std::abs(pitchAt(a) - (before + 1.0f)) < 0.01f,
+           "dragging the note moves the drawn shape and anchors");
+    note->setMidiNote(note->getMidiNote() - 1.0f);
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+  }
+
+  // Alt + click deletes anchors; the last one gives the pitch back.
+  press(screen(anchorB, pitchAt(anchorB)), screen(anchorB, pitchAt(anchorB)), true);
+  expect(curves().size() == 1 && curves()[0].anchorFrames.size() == 1,
+         "Alt + click deletes an anchor");
+  press(screen(anchorA, pitchAt(anchorA)), screen(anchorA, pitchAt(anchorA)), true);
+  roll.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+  expect(curves().empty() && std::abs(pitchAt(mid) - original) < 0.002f,
+         "deleting the last anchor gives the pitch back");
+  {
+    bool pristine = true;
+    for (const auto &n : project.getNotes())
+      if (n.getStartFrame() == start)
+        pristine = !n.hasBakedDeltaPitch();
+    expect(pristine, "and the note plays the recording again");
+  }
+
+  // The nearest frame no note covers, brought on screen with the note.
+  const auto covered = [&project](int f)
+  {
+    return std::any_of(project.getNotes().begin(), project.getNotes().end(),
+                       [f](const Note &n)
+                       { return !n.isRest() && n.getStartFrame() <= f && n.getEndFrame() > f; });
+  };
+  int gap = -1;
+  for (int d = 1; d < 2000 && gap < 0; ++d)
+  {
+    if (end - 1 + d < static_cast<int>(audio.f0.size()) && !covered(end - 1 + d))
+      gap = end - 1 + d;
+    else if (start - d >= 0 && !covered(start - d))
+      gap = start - d;
+  }
+  {
+    int lo = gap, hi = gap;
+    while (lo > 0 && !covered(lo - 1)) --lo;
+    while (hi + 1 < static_cast<int>(audio.f0.size()) && !covered(hi + 1)) ++hi;
+    gap = (lo + hi) / 2;
+  }
+  const int left = std::min(gap, start), right = std::max(gap, end);
+  roll.setPixelsPerSecond(static_cast<float>(1000.0 / framesToSeconds(right - left + 10)));
+  roll.setScrollX(framesToSeconds(left - 5) * roll.getPixelsPerSecond());
+  click(screen(a, target - 1.0f));
+  const float atMidOneAnchor = pitchAt(mid);
+  click(screen(gap, target));
+  click(screen(b, target + 1.0f));
+  // Had the curve gone on, a..b would be one curve and the middle would move.
+  expect(gap >= 0 && std::abs(pitchAt(mid) - atMidOneAnchor) < 0.002f && curves().size() == 2,
+         "an empty click ends the curve; the next starts anew");
+  // Cmd selects (Cubase); Alt + drag in empty space zooms (Melodyne).
+  {
+    roll.setEditMode(EditMode::Select);
+    roll.setPixelsPerSecond(300.0f);
+    roll.setPixelsPerSemitone(30.0f);
+    std::vector<Note *> picks;
+    for (auto &n : project.getNotes())
+      if (!n.isRest() && n.getStartFrame() > 300 && n.getDurationFrames() > 15 &&
+          (picks.empty() || n.getStartFrame() > picks.back()->getEndFrame() + 5))
+        picks.push_back(&n);
+    Note *a = picks[0], *b = picks[1];
+    roll.setScrollX(framesToSeconds(a->getStartFrame()) * 300.0 - 50.0);
+    roll.centerOnPitchRange(std::min(a->getMidiNote(), b->getMidiNote()) - 4.0f,
+                            std::max(a->getMidiNote(), b->getMidiNote()) + 4.0f);
+    const auto at = [&](const Note *n)
+    {
+      const double t = framesToSeconds((n->getStartFrame() + n->getEndFrame()) / 2);
+      const float pps = roll.getPixelsPerSecond(), semi = roll.getPixelsPerSemitone();
+      return juce::Point<float>(
+          PianoRollComponent::pianoKeysWidth + static_cast<float>(t * pps - roll.getScrollX()),
+          PianoRollComponent::headerHeight + (MAX_MIDI_NOTE - n->getAdjustedMidiNote()) * semi +
+              semi * 0.5f - static_cast<float>(roll.getScrollY()));
+    };
+    auto source = juce::Desktop::getInstance().getMainMouseSource();
+    const auto now = juce::Time::getCurrentTime();
+    const auto gesture = [&](juce::Point<float> from, juce::Point<float> to, int mods)
+    {
+      const juce::ModifierKeys down(juce::ModifierKeys::leftButtonModifier | mods);
+      roll.mouseMove(juce::MouseEvent(source, from, juce::ModifierKeys(mods), 0, 0, 0, 0, 0,
+                                      &roll, &roll, now, from, now, 0, false));
+      roll.mouseDown(juce::MouseEvent(source, from, down, 0, 0, 0, 0, 0, &roll, &roll, now,
+                                      from, now, 1, false));
+      if (to != from)
+        roll.mouseDrag(juce::MouseEvent(source, to, down, 0, 0, 0, 0, 0, &roll, &roll, now,
+                                        from, now, 1, true));
+      roll.mouseUp(juce::MouseEvent(source, to, juce::ModifierKeys(mods), 0, 0, 0, 0, 0, &roll,
+                                    &roll, now, from, now, 1, to != from));
+    };
+    // A plain click on a note drags it and leaves the selection alone (as
+    // before); Cmd + click is what selects.
+    project.deselectAllNotes();
+    gesture(at(a), at(a), juce::ModifierKeys::commandModifier);
+    const bool onlyA = a->isSelected() && !b->isSelected();
+    gesture(at(b), at(b), juce::ModifierKeys::commandModifier);
+    const bool both = a->isSelected() && b->isSelected();
+    gesture(at(a), at(a), juce::ModifierKeys::commandModifier);
+    const bool onlyB = !a->isSelected() && b->isSelected();
+    std::printf("  select: onlyA %d both %d onlyB %d\n", onlyA, both, onlyB);
+    expect(onlyA && both && onlyB, "Cmd + click adds a note to the selection and takes it out");
+
+    // Cmd + box in empty space adds to the selection.
+    const auto above = juce::Point<float>(at(a).x - 20.0f, 4.0f + PianoRollComponent::headerHeight);
+    const auto below = juce::Point<float>(at(a).x + 20.0f, at(a).y + 40.0f);
+    gesture(above, below, juce::ModifierKeys::commandModifier);
+    expect(a->isSelected() && b->isSelected(), "Cmd + box adds to the selection");
+
+    // Cmd no longer zooms; Alt + drag in empty space does, and leaves the
+    // selection alone.
+    const float pps = roll.getPixelsPerSecond();
+    const auto empty = juce::Point<float>(at(a).x, PianoRollComponent::headerHeight + 6.0f);
+    gesture(empty, empty + juce::Point<float>(80.0f, -40.0f), juce::ModifierKeys::commandModifier);
+    const bool cmdZoomed = std::abs(roll.getPixelsPerSecond() - pps) > 0.5f;
+    gesture(empty, empty + juce::Point<float>(80.0f, -40.0f), juce::ModifierKeys::altModifier);
+    const bool altZoomed = std::abs(roll.getPixelsPerSecond() - pps) > 0.5f;
+    std::printf("  zoom: Cmd %d, Alt %d (%.0f -> %.0f px/s)\n", cmdZoomed, altZoomed, pps,
+                roll.getPixelsPerSecond());
+    expect(!cmdZoomed && altZoomed && a->isSelected() && b->isSelected(),
+           "Alt + drag in empty space zooms; Cmd does not");
+    // Alt on a note is not a zoom (the note keeps its own Alt).
+    const float pps2 = roll.getPixelsPerSecond();
+    roll.setPixelsPerSecond(300.0f);
+    roll.setPixelsPerSemitone(30.0f);
+    roll.setScrollX(framesToSeconds(a->getStartFrame()) * 300.0 - 50.0);
+    roll.centerOnPitchRange(std::min(a->getMidiNote(), b->getMidiNote()) - 4.0f,
+                            std::max(a->getMidiNote(), b->getMidiNote()) + 4.0f);
+    gesture(at(b), at(b) + juce::Point<float>(60.0f, 0.0f), juce::ModifierKeys::altModifier);
+    expect(std::abs(roll.getPixelsPerSecond() - 300.0f) < 0.5f, "Alt on a note does not zoom");
+    juce::ignoreUnused(pps2);
+    roll.setEditMode(EditMode::PitchDrawing);
+  }
+
+  // Restore all edits includes the note separation: a split, tilted note
+  // goes back to one analysed note; one undo brings the split and tilt back.
+  {
+    roll.setEditMode(EditMode::Select);
+    Note *note = nullptr;
+    for (auto &n : project.getNotes())
+      if (!n.isRest() && n.getStartFrame() > 40 && !n.hasBakedDeltaPitch() &&
+          n.getAnalysisSpans().size() == 1 && n.exactAnalysisSpan() &&
+          (!note || n.getDurationFrames() > note->getDurationFrames()))
+        note = &n;
+    const int s0 = note->getStartFrame(), e0 = note->getEndFrame(), cut = (s0 + e0) / 2;
+    const auto pristine = [&]()
+    {
+      std::vector<float> p;
+      for (int f = s0; f < e0; ++f)
+        p.push_back(pitchAt(f));
+      return p;
+    }();
+    NoteSplitter splitter;
+    splitter.setProject(&project);
+    splitter.setUndoManager(&undo);
+    splitter.splitNoteAtFrame(note, cut);
+    Note *left = nullptr;
+    for (auto &n : project.getNotes())
+      if (n.getStartFrame() == s0)
+        left = &n;
+    left->setTiltLeft(1.0f);
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+    const auto countIn = [&]()
+    {
+      int count = 0;
+      for (const auto &n : project.getNotes())
+        if (!n.isRest() && n.getStartFrame() < e0 && n.getEndFrame() > s0)
+          ++count;
+      return count;
+    };
+    roll.resetNoteEdits(*left, PianoRollComponent::NoteRestoreMode::All);
+    float worst = 0.0f;
+    for (int f = s0; f < e0; ++f)
+      worst = std::max(worst, std::abs(pitchAt(f) - pristine[static_cast<size_t>(f - s0)]));
+    expect(countIn() == 1 && worst < 0.002f,
+           "All Edits also restores the note separation and pitch");
+    undo.undo();
+    bool tiltBack = false;
+    for (const auto &n : project.getNotes())
+      if (n.getStartFrame() == s0 && std::abs(n.getTiltLeft() - 1.0f) < 1.0e-4f)
+        tiltBack = true;
+    expect(countIn() == 2 && tiltBack, "one undo brings the split and tilt back");
+    roll.setEditMode(EditMode::PitchDrawing);
+  }
+
+  // Moving the tilt pivot of a tilted note leaves its curve as it is.
+  {
+    roll.setEditMode(EditMode::Select);
+    roll.setPixelsPerSecond(500.0f);
+    roll.setPixelsPerSemitone(40.0f);
+    Note *note = nullptr;
+    for (auto &n : project.getNotes())
+      if (!n.isRest() && n.getStartFrame() != start && !n.hasBakedDeltaPitch() &&
+          (!note || n.getDurationFrames() > note->getDurationFrames()))
+        note = &n;
+    note->setTiltLeft(1.0f);
+    note->setTiltRight(-0.5f);
+    note->setTiltPivot(0.3f);
+    note->setMidiNote(note->getMidiNote() + note->getTiltMean());
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+    std::vector<float> before;
+    for (int f = note->getStartFrame(); f < note->getEndFrame(); ++f)
+      before.push_back(pitchAt(f));
+    roll.setScrollX(framesToSeconds(note->getStartFrame()) * 500.0 - 200.0);
+    roll.centerOnPitchRange(note->getMidiNote() - 3.0f, note->getMidiNote() + 3.0f);
+    auto source = juce::Desktop::getInstance().getMainMouseSource();
+    const auto now = juce::Time::getCurrentTime();
+    const auto event = [&](juce::Point<float> at, juce::ModifierKeys mods, juce::Point<float> down)
+    { return juce::MouseEvent(source, at, mods, 0, 0, 0, 0, 0, &roll, &roll, now, down, now, 1, at != down); };
+    const auto pivotSeconds = framesToSeconds(note->getStartFrame()) +
+                              0.3 * framesToSeconds(note->getDurationFrames());
+    const float x = PianoRollComponent::pianoKeysWidth +
+                    static_cast<float>(pivotSeconds * 500.0 - roll.getScrollX());
+    const float noteY = PianoRollComponent::headerHeight +
+                        (MAX_MIDI_NOTE - note->getMidiNote()) * 40.0f -
+                        static_cast<float>(roll.getScrollY());
+    bool moved = false;
+    for (float dy = 0.0f; dy < 140.0f && !moved; dy += 2.0f)
+    {
+      const juce::Point<float> at(x, noteY - dy);
+      roll.mouseMove(event({x, noteY + 20.0f}, {}, {}));
+      roll.mouseMove(event(at, {}, {}));
+      roll.mouseDown(event(at, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier), at));
+      roll.mouseDrag(event(at + juce::Point<float>(80.0f, 0.0f),
+                           juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier), at));
+      roll.mouseUp(event(at + juce::Point<float>(80.0f, 0.0f), {}, at));
+      moved = std::abs(note->getTiltPivot() - 0.3f) > 0.01f;
+    }
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+    float worst = 0.0f;
+    for (int f = note->getStartFrame(); f < note->getEndFrame(); ++f)
+      worst = std::max(worst, std::abs(pitchAt(f) - before[static_cast<size_t>(f - note->getStartFrame())]));
+    std::printf("  pivot 0.30 -> %.2f, pitch moved by at most %.4f\n", note->getTiltPivot(), worst);
+    expect(moved && worst < 0.002f, "moving the tilt pivot keeps the tilted curve");
+    roll.setEditMode(EditMode::PitchDrawing);
+  }
+  std::printf("draw check: %d failure(s)\n", failures);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -905,7 +1266,7 @@ int main(int argc, char **argv)
       juce::String::fromUTF8(argv[2]));
   juce::String anchorsArg, engine = "vocoder", detector = "fcpe", snapshotPrefix;
   double shift = 0.0, shiftFrom = 0.0, shiftTo = 1.0e9;
-  bool dumpNotes = false, separationTest = false, benchPaint = false, testMerge = false;
+  bool dumpNotes = false, separationTest = false, benchPaint = false, testMerge = false, testDraw = false;
   for (int i = 3; i < argc; ++i)
   {
     const juce::String arg = juce::String::fromUTF8(argv[i]);
@@ -924,6 +1285,7 @@ int main(int argc, char **argv)
     else if (arg == "--separation-test") separationTest = true;
     else if (arg == "--paint-bench") benchPaint = true;
     else if (arg == "--merge-test") testMerge = true;
+    else if (arg == "--draw-test") testDraw = true;
     else if (arg == "--snapshot") { snapshotPrefix = next; ++i; }
   }
 
@@ -1025,6 +1387,12 @@ int main(int argc, char **argv)
   if (separationTest)
   {
     separationCheck(project);
+    controller.requestShutdown();
+    return 0;
+  }
+  if (testDraw)
+  {
+    drawCheck(project);
     controller.requestShutdown();
     return 0;
   }

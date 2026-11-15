@@ -198,6 +198,10 @@ public:
 
   // Edit mode
   void setEditMode(EditMode mode);
+
+  // The restore menu's actions (also used by tests).
+  enum class NoteRestoreMode { Pitch, Formant, Amplitude, All };
+  void resetNoteEdits(Note &note, NoteRestoreMode mode = NoteRestoreMode::Pitch);
   EditMode getEditMode() const { return editMode; }
 
   // Cancel any transient pitch edit before undo/redo changes project history.
@@ -386,8 +390,6 @@ private:
   void updatePreviewButtonBounds();
   void triggerPreviewForNote(Note &note);
   std::vector<Note *> getResetTargetNotes(Note &note) const;
-  enum class NoteRestoreMode { Pitch, Formant, Amplitude, All };
-  void resetNoteEdits(Note &note, NoteRestoreMode mode = NoteRestoreMode::Pitch);
   std::unique_ptr<UndoableAction> createResetTimingAction(Note &note);
   // Recuts the note (and the selected notes) the way the analysis cut them.
   std::unique_ptr<UndoableAction> createRestoreSeparationAction(Note &note);

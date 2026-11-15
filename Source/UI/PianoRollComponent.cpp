@@ -217,19 +217,54 @@ namespace
            note.getEndFrame() != note.getSrcEndFrame();
   }
 
+  // Several actions as one history step: redone in order, undone backwards.
+  class SequenceAction final : public UndoableAction
+  {
+  public:
+    SequenceAction(std::vector<std::unique_ptr<UndoableAction>> stepsToRun,
+                   juce::String actionName)
+        : steps(std::move(stepsToRun)), name(std::move(actionName)) {}
+    void undo() override
+    {
+      for (auto it = steps.rbegin(); it != steps.rend(); ++it)
+        (*it)->undo();
+    }
+    void redo() override
+    {
+      for (auto &step : steps)
+        step->redo();
+    }
+    juce::String getName() const override { return name; }
+    bool requiresAudioResynthesis() const override
+    {
+      return std::any_of(steps.begin(), steps.end(),
+                         [](const auto &step) { return step->requiresAudioResynthesis(); });
+    }
+
+  private:
+    std::vector<std::unique_ptr<UndoableAction>> steps;
+    juce::String name;
+  };
+
   class ResetNoteEditsAction final : public UndoableAction
   {
   public:
     ResetNoteEditsAction(Project& project, std::vector<Note*> notes,
                          bool pitch, bool formant, bool amplitude,
                          juce::String name, std::unique_ptr<UndoableAction> timing = {})
-        : project(project), notes(std::move(notes)), name(std::move(name)),
+        : project(project), notes(noteref::refs(notes)), name(std::move(name)),
           timing(std::move(timing))
     {
-      before.reserve(this->notes.size());
-      after.reserve(this->notes.size());
-      for (const auto* note : this->notes)
+      before.reserve(notes.size());
+      after.reserve(notes.size());
+      // Resetting pitch drops the drawn curves on those notes.
+      curvesBefore = project.getDrawnCurves();
+      curvesAfter = curvesBefore;
+      for (const auto* note : notes)
       {
+        if (pitch)
+          curvesAfter = drawncurve::without(curvesAfter, note->getStartFrame(),
+                                            note->getEndFrame());
         before.push_back(NoteEditState::capture(*note));
         auto state = pitch ? NoteEditState::defaultsFor(*note) : before.back();
         state.formantShift = formant ? 0.0f : before.back().formantShift;
@@ -239,33 +274,42 @@ namespace
       }
     }
 
-    void undo() override { if (timing) timing->undo(); apply(before); }
-    void redo() override { apply(after); if (timing) timing->redo(); }
+    void undo() override { if (timing) timing->undo(); apply(before, curvesBefore); }
+    void redo() override { apply(after, curvesAfter); if (timing) timing->redo(); }
     juce::String getName() const override { return name; }
 
   private:
-    void apply(const std::vector<NoteEditState>& states)
+    void apply(const std::vector<NoteEditState>& states,
+               const std::vector<DrawnCurve>& curves)
     {
+      project.getDrawnCurves() = curves;
+      const auto resolved = noteref::resolve(notes);
       int dirtyStart = std::numeric_limits<int>::max();
       int dirtyEnd = std::numeric_limits<int>::min();
-      for (size_t i = 0; i < notes.size() && i < states.size(); ++i)
+      for (size_t i = 0; i < resolved.size() && i < states.size(); ++i)
       {
-        if (!notes[i])
+        if (!resolved[i])
           continue;
-        states[i].applyTo(*notes[i]);
-        dirtyStart = std::min(dirtyStart, notes[i]->getStartFrame());
-        dirtyEnd = std::max(dirtyEnd, notes[i]->getEndFrame());
+        states[i].applyTo(*resolved[i]);
+        dirtyStart = std::min(dirtyStart, resolved[i]->getStartFrame());
+        dirtyEnd = std::max(dirtyEnd, resolved[i]->getEndFrame());
       }
       project.setModified(true);
       PitchCurveProcessor::rebuildBaseFromNotes(project);
+      // Restored notes sing the recording again: their curve is the recorded
+      // pitch over the base as it is now, edited neighbours included.
+      if (&states == &after && dirtyStart < dirtyEnd)
+        PitchCurveProcessor::refitUntouchedCurves(project, dirtyStart, dirtyEnd);
       // Same range the edit and its undo mark (Project::markNoteEditDirtyRange).
       project.markNoteEditDirtyRange(dirtyStart, dirtyEnd);
     }
 
     Project& project;
-    std::vector<Note*> notes;
+    std::vector<NoteRef> notes;
     std::vector<NoteEditState> before;
     std::vector<NoteEditState> after;
+    std::vector<DrawnCurve> curvesBefore;
+    std::vector<DrawnCurve> curvesAfter;
     juce::String name;
     std::unique_ptr<UndoableAction> timing;
   };
@@ -4408,6 +4452,40 @@ void PianoRollComponent::resetNoteEdits(Note &note, NoteRestoreMode mode)
   }
 
   const bool all = mode == NoteRestoreMode::All;
+  if (all)
+  {
+    // All edits includes the note separation: put the analysed cuts back
+    // first, then restore everything on the notes those cuts give.
+    auto timing = createResetTimingAction(note);
+    int first = std::numeric_limits<int>::max();
+    int last = std::numeric_limits<int>::min();
+    for (const auto *target : targets)
+    {
+      first = std::min(first, target->getStartFrame());
+      last = std::max(last, target->getEndFrame());
+    }
+    if (auto separation = createRestoreSeparationAction(note))
+    {
+      separation->redo();
+      std::vector<Note *> recut;
+      for (auto &candidate : project->getNotes())
+        if (!candidate.isRest() && candidate.getStartFrame() < last &&
+            candidate.getEndFrame() > first)
+          recut.push_back(&candidate);
+      auto reset = std::make_unique<ResetNoteEditsAction>(
+          *project, recut, true, true, true, "Restore All Edits", std::move(timing));
+      separation->undo();
+      std::vector<std::unique_ptr<UndoableAction>> steps;
+      steps.push_back(std::move(separation));
+      steps.push_back(std::move(reset));
+      applyRestoreAction(std::make_unique<SequenceAction>(std::move(steps),
+                                                          "Restore All Edits"));
+      return;
+    }
+    applyRestoreAction(std::make_unique<ResetNoteEditsAction>(
+        *project, targets, true, true, true, "Restore All Edits", std::move(timing)));
+    return;
+  }
   applyRestoreAction(std::make_unique<ResetNoteEditsAction>(
       *project, targets, all || mode == NoteRestoreMode::Pitch,
       all || mode == NoteRestoreMode::Formant, all,
@@ -4473,8 +4551,8 @@ void PianoRollComponent::showResetMenu(Note &note)
       noteSplitter &&
       std::any_of(targets.begin(), targets.end(), [this](const Note* n)
                   { return n && noteSplitter->canRestoreSeparation(*n); });
-  const bool anyChanged =
-      pitchChanged || formantChanged || amplitudeChanged || timingChanged;
+  const bool anyChanged = pitchChanged || formantChanged || amplitudeChanged ||
+                          timingChanged || separationChanged;
 
   const auto addItem = [&menu](int id, const juce::String& label, bool enabled)
   {
