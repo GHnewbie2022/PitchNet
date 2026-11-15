@@ -323,5 +323,6 @@
   "command.zoom_to_full_length": "全体を表示",
   "command.zoom_to_full_length.desp": "オーディオ全体に水平ズームします（ショートカット: Shift＋F）",
   "canvas.warp": "ワープ",
-  "restore.separation": "ノートの分割"
+  "restore.separation": "ノートの分割",
+  "tooltip.playhead_time": "再生ヘッドの時間。クリックで入力・コピー"
 }

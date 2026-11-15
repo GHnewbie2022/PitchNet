@@ -365,5 +365,6 @@
   "command.zoom_to_full_length": "Zoom to Full Length",
   "command.zoom_to_full_length.desp": "Fit the whole audio horizontally (Shortcut: Shift+F)",
   "canvas.warp": "Warp",
-  "restore.separation": "Note Separation"
+  "restore.separation": "Note Separation",
+  "tooltip.playhead_time": "Playhead time. Click to type a time or copy it"
 }

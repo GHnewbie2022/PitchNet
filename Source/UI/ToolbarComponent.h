@@ -116,6 +116,8 @@ public:
     void setStatusMessage(const juce::String &message);
 
     std::function<void()> onPlay;
+    // A time typed into the time field, in seconds.
+    std::function<void(double)> onTimeEntered;
     std::function<void()> onPause;
     std::function<void()> onStop;
     std::function<void(float)> onZoomChanged;

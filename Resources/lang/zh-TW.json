@@ -323,5 +323,6 @@
   "command.zoom_to_full_length": "顯示完整長度",
   "command.zoom_to_full_length.desp": "水平縮放到整段音訊（快速鍵：Shift＋F）",
   "canvas.warp": "伸縮",
-  "restore.separation": "音符切點"
+  "restore.separation": "音符切點",
+  "tooltip.playhead_time": "Playhead 時間：點一下可輸入或複製"
 }

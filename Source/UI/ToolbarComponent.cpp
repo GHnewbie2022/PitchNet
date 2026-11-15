@@ -1,4 +1,5 @@
 #include "ToolbarComponent.h"
+#include "../Utils/TimecodeParse.h"
 #include "PianoRollComponent.h" // For EditMode enum
 #include "StyledComponents.h"
 #include "../Utils/Localization.h"
@@ -143,7 +144,35 @@ ToolbarComponent::ToolbarComponent()
     timeLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_PRIMARY);
     timeLabel.setJustificationType(juce::Justification::centredLeft);
     timeLabel.setFont(TimecodeFont::getBoldFont(17.0f).withHorizontalScale(0.92f));
-    timeLabel.setInterceptsMouseClicks(false, false);
+    // Click to edit: the time is selected, ready to copy (Cmd+C) or to type
+    // over. Return sets the playhead there; Escape or an unreadable time
+    // puts the current time back.
+    timeLabel.setEditable(true, false, true);
+    timeLabel.setTooltip(TR("tooltip.playhead_time"));
+    timeLabel.setColour(juce::Label::textWhenEditingColourId,
+                        juce::Colour(APP_COLOR_TEXT_PRIMARY));
+    timeLabel.setColour(juce::Label::backgroundWhenEditingColourId,
+                        juce::Colours::black.withAlpha(0.35f));
+    timeLabel.setColour(juce::Label::outlineWhenEditingColourId,
+                        juce::Colour(0xFFFF5600u).withAlpha(0.6f));
+    timeLabel.onEditorShow = [this]()
+    {
+        if (auto *editor = timeLabel.getCurrentTextEditor())
+        {
+            editor->setFont(timeLabel.getFont());
+            editor->setJustification(juce::Justification::centredLeft);
+            editor->setInputRestrictions(12, "0123456789:. ");
+            editor->selectAll();
+        }
+    };
+    timeLabel.onTextChange = [this]()
+    {
+        const auto typed =
+            timecode::parse(timeLabel.getText().toStdString());
+        if (typed && onTimeEntered)
+            onTimeEntered(*typed);
+        updateTimeDisplay();
+    };
 
     // Zoom slider
     addAndMakeVisible(zoomLabel);
@@ -430,6 +459,7 @@ void ToolbarComponent::resized()
 
 void ToolbarComponent::refreshLocalisedText()
 {
+    timeLabel.setTooltip(TR("tooltip.playhead_time"));
     selectModeButton.setTooltip(TR("tooltip.select_tool"));
     splitModeButton.setTooltip(TR("tooltip.split_tool"));
     pitchDrawingModeButton.setTooltip(TR("tooltip.pitch_drawing_tool"));
@@ -751,6 +781,9 @@ void ToolbarComponent::setStatusMessage(const juce::String &message)
 
 void ToolbarComponent::updateTimeDisplay()
 {
+    // Don't overwrite a time being typed.
+    if (timeLabel.isBeingEdited())
+        return;
     timeLabel.setText(formatTime(pluginMode ? currentTime : playheadTime),
                       juce::dontSendNotification);
 }

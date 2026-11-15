@@ -1038,6 +1038,15 @@ MainComponent::MainComponent(bool enableAudioDevice)
   { setPlayhead(time); };
   pianoRoll.onPlayheadChanged = [this](double time)
   { toolbar.setPlayheadTime(time); };
+  // A time typed into the toolbar sets the playhead like Shift + Alt + click.
+  toolbar.onTimeEntered = [this](double time)
+  {
+    double end = time;
+    if (auto *project = getProject())
+      end = project->getAudioData().getDuration();
+    if (pianoRoll.onSetPlayhead)
+      pianoRoll.onSetPlayhead(juce::jlimit(0.0, std::max(0.0, end), time));
+  };
   pianoRoll.onSetPlayhead = [this](double time)
   {
     // While playing, only the start point moves; playback carries on and
