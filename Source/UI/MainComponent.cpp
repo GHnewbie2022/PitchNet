@@ -1036,6 +1036,8 @@ MainComponent::MainComponent(bool enableAudioDevice)
   };
   pianoRoll.onSeek = [this](double time)
   { setPlayhead(time); };
+  pianoRoll.onPlayheadChanged = [this](double time)
+  { toolbar.setPlayheadTime(time); };
   pianoRoll.onSetPlayhead = [this](double time)
   {
     // While playing, only the start point moves; playback carries on and

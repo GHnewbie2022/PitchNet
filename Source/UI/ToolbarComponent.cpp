@@ -139,10 +139,11 @@ ToolbarComponent::ToolbarComponent()
 
     // Time label with app font (larger and bold for readability)
     addAndMakeVisible(timeLabel);
-    timeLabel.setText("00:00.000 / 00:00.000", juce::dontSendNotification);
+    timeLabel.setText("00:00:000", juce::dontSendNotification);
     timeLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_PRIMARY);
-    timeLabel.setJustificationType(juce::Justification::centred);
-    timeLabel.setFont(TimecodeFont::getBoldFont(21.0f).withHorizontalScale(0.92f));
+    timeLabel.setJustificationType(juce::Justification::centredLeft);
+    timeLabel.setFont(TimecodeFont::getBoldFont(17.0f).withHorizontalScale(0.92f));
+    timeLabel.setInterceptsMouseClicks(false, false);
 
     // Zoom slider
     addAndMakeVisible(zoomLabel);
@@ -345,7 +346,6 @@ void ToolbarComponent::resized()
                              editToolSlotSize, editToolSlotSize);
 
     // Hide the remaining controls that have been removed from the toolbar.
-    timeLabel.setVisible(false);
     zoomLabel.setVisible(false);
     zoomSlider.setVisible(false);
     timeCapsuleBounds = {};
@@ -415,6 +415,17 @@ void ToolbarComponent::resized()
     slotX += transportSlotStride;
     setButtonInSlot(followButton, slotX);
     followButton.setBounds(followButton.getBounds().translated(5, 0));
+
+    // The playhead's time (the cursor's in plugin mode), to the millisecond,
+    // in the gap between the transport and the edit tools.
+    {
+        const int left = transportCapsuleBounds.getRight() + 14;
+        const int right = toolContainerBounds.getX() - 10;
+        const int width = std::min(120, right - left);
+        timeLabel.setVisible(width >= 90);
+        timeLabel.setBounds(left, transportCapsuleY, std::max(0, width),
+                            transportCapsuleH);
+    }
 }
 
 void ToolbarComponent::refreshLocalisedText()
@@ -599,6 +610,13 @@ void ToolbarComponent::setProject(Project* project)
 void ToolbarComponent::setCurrentTime(double time)
 {
     currentTime = time;
+    if (pluginMode)
+        updateTimeDisplay();
+}
+
+void ToolbarComponent::setPlayheadTime(double time)
+{
+    playheadTime = time;
     updateTimeDisplay();
 }
 
@@ -730,17 +748,18 @@ void ToolbarComponent::setStatusMessage(const juce::String &message)
 
 void ToolbarComponent::updateTimeDisplay()
 {
-    timeLabel.setText(formatTime(currentTime) + " / " + formatTime(totalTime),
+    timeLabel.setText(formatTime(pluginMode ? currentTime : playheadTime),
                       juce::dontSendNotification);
 }
 
 juce::String ToolbarComponent::formatTime(double seconds)
 {
-    int mins = static_cast<int>(seconds) / 60;
-    int secs = static_cast<int>(seconds) % 60;
-    int ms = static_cast<int>((seconds - std::floor(seconds)) * 1000);
-
-    return juce::String::formatted("%02d:%02d.%03d", mins, secs, ms);
+    // MM:SS:mmm, rounded to the millisecond.
+    const long long total = std::max(0LL, std::llround(seconds * 1000.0));
+    const int mins = static_cast<int>(total / 60000);
+    const int secs = static_cast<int>((total / 1000) % 60);
+    const int ms = static_cast<int>(total % 1000);
+    return juce::String::formatted("%02d:%02d:%03d", mins, secs, ms);
 }
 
 void ToolbarComponent::mouseDown(const juce::MouseEvent &e)

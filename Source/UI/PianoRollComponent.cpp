@@ -3040,7 +3040,11 @@ void PianoRollComponent::setProject(Project *proj)
   liveTimelineEndSeconds = 0.0;
   liveRecordingSampleRate = 0.0;
   if (proj != project)
+  {
     playheadTime = 0.0;
+    if (onPlayheadChanged)
+      onPlayheadChanged(playheadTime);
+  }
   project = proj;
   hoveredNote = nullptr;
   hoveredBreath = -1;
@@ -3531,6 +3535,8 @@ void PianoRollComponent::setPlayheadTime(double time)
 {
   playheadTime = time;
   playheadMarkerVisible = true;
+  if (onPlayheadChanged)
+    onPlayheadChanged(playheadTime);
   repaint();
 }
 

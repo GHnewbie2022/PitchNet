@@ -86,6 +86,8 @@ public:
     bool isHostTransportAvailable() const { return hostTransportAvailable; }
     void setToolGroupEnabled(bool enabled);
     void setCurrentTime(double time);
+    // Where playback starts (standalone); shown beside the transport.
+    void setPlayheadTime(double time);
     void setTotalTime(double time);
     void setEditMode(EditMode mode);
     void setZoom(float pixelsPerSecond); // Update zoom slider without triggering callback
@@ -190,6 +192,7 @@ private:
     bool parametersVisible = false;
 
     double currentTime = 0.0;
+    double playheadTime = 0.0;
     double totalTime = 0.0;
     bool isPlaying = false;
     bool followPlayback = true;

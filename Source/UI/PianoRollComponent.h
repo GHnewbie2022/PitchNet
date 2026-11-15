@@ -275,6 +275,8 @@ public:
   std::function<void()> onPianoKeyAuditionFinished;
   std::function<void()> onCursorMoved;
   std::function<void(double)> onSeek;
+  // The playhead moved (setPlayheadTime, or a new project).
+  std::function<void(double)> onPlayheadChanged;
   // Ruler click or Shift + Alt + click: move the playhead only. While playing, playback
   // keeps going; falls back to onSeek when unset.
   std::function<void(double)> onSetPlayhead;
