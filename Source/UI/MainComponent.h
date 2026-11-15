@@ -301,6 +301,12 @@ private:
   // scrollToCursor=false leaves the view where it is (used when stop/finish
   // rewinds the cursor while Auto Scroll is off).
   void seek(double time, bool scrollToCursor = true);
+  // The playhead is where playback starts (standalone): set by a timeline
+  // click, Shift+Alt+click on the canvas and the transport jumps. Playback
+  // runs from it and returns to it on pause and stop; it does not follow
+  // playback. Moves the playback position there too. In plugin mode the
+  // host owns the transport, and this only seeks it.
+  void setPlayhead(double time, bool scrollToCursor = true);
   void previewNoteRegion(int startFrame, int endFrame);
   void finishPreviewRegion(bool restorePosition);
   void auditionDraggedNote(const Note &note);

@@ -115,6 +115,10 @@ public:
   // Cursor
   void setCursorTime(double time);
   void setPlaybackActive(bool active);
+  // Where playback starts (MainComponent::setPlayhead). Drawn as a marker on
+  // the ruler once set; reset to 0 when another project is shown.
+  void setPlayheadTime(double time);
+  double getPlayheadTime() const { return playheadTime; }
   double getCursorTime() const { return cursorTime; }
 
   // Zoom with optional center point
@@ -509,6 +513,9 @@ private:
 
   double &cursorTime = viewState.cursorTime;
   bool playbackActive = false;
+  double playheadTime = 0.0;
+  bool playheadMarkerVisible = false;
+  void drawPlayheadMarker(juce::Graphics &g);
   double &scrollX = viewState.scrollX;
   double &scrollY = viewState.scrollY;
 

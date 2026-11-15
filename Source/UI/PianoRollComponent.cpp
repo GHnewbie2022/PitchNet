@@ -618,6 +618,7 @@ void PianoRollComponent::paint(juce::Graphics &g)
   // Draw timeline (above grid, scrolls horizontally)
   drawTimeline(g);
   drawLoopTimeline(g);
+  drawPlayheadMarker(g);
 
   {
     float x = static_cast<float>(pianoKeysWidth) + timeToX(cursorTime) -
@@ -2253,26 +2254,14 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e)
     return;
   }
 
-  if (isCanvasPoint(e) && e.mods.isAltDown() && trackViewMode)
-  {
-    if (const auto* region = findTrackRegionAtPointer(e.position, true)) {
-      const double offset = region->projectHostOffsetSeconds - framesToSeconds(region->sourceFirstFrame);
-      const auto* boundWindow = findActiveRegionPreview();
-      if (onInactiveRegionClicked && (region->sourceProject != project ||
-          !juce::approximatelyEqual(offset, projectToTimeline(0.0)) ||
-          !boundWindow || boundWindow->key != region->key)) {
-        const auto key = region->key;
-        onInactiveRegionClicked(key);
-        adjustedX = e.x - pianoKeysWidth + static_cast<float>(scrollX);
-        adjustedY = e.y - headerHeight + static_cast<float>(scrollY);
-      }
-    }
-  }
-  // In Select mode, Alt inverts note-drag snapping. Keep Alt-drag panning
-  // available when the gesture begins anywhere else on the canvas.
-  const bool altNoteDrag =
-      editMode == EditMode::Select && findNoteAt(adjustedX, adjustedY) != nullptr;
-  if (isCanvasPoint(e) && isModifierPanDrag(e) && !altNoteDrag)
+  // Alt has no canvas-wide meaning (the Alt-drag pan was removed: trackpad
+  // and Magic Mouse scrolling cover it). In Select mode it inverts note-drag
+  // snapping; in Warp mode Alt + click on an anchor deletes it.
+
+  // Shift + Alt + click anywhere on the canvas sets the playhead, like a
+  // click on the ruler. It takes the whole gesture: no tool sees it.
+  if (isCanvasPoint(e) && e.mods.isShiftDown() && e.mods.isAltDown() &&
+      !e.mods.isCommandDown() && !e.mods.isCtrlDown())
   {
     swallowGestureUntilMouseUp = true;
     const double time = std::max(getTimelineStart(), xToTime(adjustedX));
@@ -3023,6 +3012,8 @@ void PianoRollComponent::setProject(Project *proj)
     pitchDrawingHandler_->cancel();
   liveTimelineEndSeconds = 0.0;
   liveRecordingSampleRate = 0.0;
+  if (proj != project)
+    playheadTime = 0.0;
   project = proj;
   hoveredNote = nullptr;
   hoveredBreath = -1;
@@ -3507,6 +3498,41 @@ void PianoRollComponent::setCursorTime(double time)
 
   if (onCursorMoved)
     onCursorMoved();
+}
+
+void PianoRollComponent::setPlayheadTime(double time)
+{
+  playheadTime = time;
+  playheadMarkerVisible = true;
+  repaint();
+}
+
+void PianoRollComponent::drawPlayheadMarker(juce::Graphics &g)
+{
+  if (!playheadMarkerVisible)
+    return;
+  const float x = static_cast<float>(pianoKeysWidth) + timeToX(playheadTime) -
+                  static_cast<float>(scrollX);
+  const float right =
+      static_cast<float>(getWidth() - APP_SCROLLBAR_THICKNESS);
+  if (x < pianoKeysWidth - 6.0f || x > right + 6.0f)
+    return;
+  const juce::Colour colour(0xFFFF5600u);
+  juce::Graphics::ScopedSaveState state(g);
+  g.reduceClipRegion(pianoKeysWidth, 0, getWidth() - pianoKeysWidth,
+                     getHeight());
+  // While playing, a faint line shows where playback will return to.
+  if (playbackActive)
+  {
+    g.setColour(colour.withAlpha(0.45f));
+    g.fillRect(x - 0.5f, static_cast<float>(headerHeight), 1.0f,
+               static_cast<float>(getHeight() - headerHeight));
+  }
+  juce::Path flag;
+  flag.addTriangle(x - 6.0f, 1.0f, x + 6.0f, 1.0f, x,
+                   static_cast<float>(timelineHeight) - 3.0f);
+  g.setColour(colour);
+  g.fillPath(flag);
 }
 
 void PianoRollComponent::setPlaybackActive(bool active)

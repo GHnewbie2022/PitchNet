@@ -1035,10 +1035,10 @@ MainComponent::MainComponent(bool enableAudioDevice)
     regionActivationFromCanvas = wasFromCanvas;
   };
   pianoRoll.onSeek = [this](double time)
-  { seek(time); };
+  { setPlayhead(time); };
   pianoRoll.onCanvasEmptyDoubleClick = [this](double time)
   {
-    seek(time);
+    setPlayhead(time);
     if (isPlaying)
       pause();
     else
@@ -1230,13 +1230,17 @@ MainComponent::MainComponent(bool enableAudioDevice)
       safeThis->isPlaying = false;
       safeThis->toolbar.setPlaying(false);
       safeThis->pianoRoll.setPlaybackActive(false);
-      // With Auto Scroll off, don't jump the view back to the start.
-      safeThis->seek(0.0, safeThis->toolbar.isFollowPlayback()); });
+      // Back to the playhead. With Auto Scroll off, don't move the view.
+      safeThis->seek(safeThis->pianoRoll.getPlayheadTime(),
+                     safeThis->toolbar.isFollowPlayback()); });
   }
 
   // Set initial project
   pianoRoll.setProject(getProject());
   pianoRollView.setProject(getProject());
+  // Standalone owns its transport: show the playhead from the start.
+  if (!isPluginMode())
+    pianoRoll.setPlayheadTime(0.0);
 
   // Register commands with the command manager
   commandManager->registerAllCommandsForTarget(this);
@@ -2632,6 +2636,9 @@ void MainComponent::play()
   if (!audioEngine)
     return;
 
+  // Playback always starts at the playhead (or the loop start when the
+  // playhead lies outside an active loop).
+  double start = pianoRoll.getPlayheadTime();
   const auto &loopRange = project->getLoopRange();
   if (loopRange.isValid() &&
       (start < loopRange.startSeconds || start >= loopRange.endSeconds))
@@ -2673,6 +2680,8 @@ void MainComponent::pause()
   toolbar.setPlaying(false);
   pianoRoll.setPlaybackActive(false);
   audioEngine->pause();
+  // The playback position returns to the playhead; the view stays put.
+  seek(pianoRoll.getPlayheadTime(), false);
 }
 
 void MainComponent::stop()
@@ -2702,8 +2711,15 @@ void MainComponent::stop()
   toolbar.setPlaying(false);
   pianoRoll.setPlaybackActive(false);
   audioEngine->stop();
-  // With Auto Scroll off, don't jump the view back to the start.
-  seek(0.0, toolbar.isFollowPlayback());
+  // Back to the playhead. With Auto Scroll off, don't move the view.
+  seek(pianoRoll.getPlayheadTime(), toolbar.isFollowPlayback());
+}
+
+void MainComponent::setPlayhead(double time, bool scrollToCursor)
+{
+  if (!isPluginMode())
+    pianoRoll.setPlayheadTime(std::max(0.0, time));
+  seek(time, scrollToCursor);
 }
 
 void MainComponent::seek(double time, bool scrollToCursor)
@@ -3067,7 +3083,7 @@ void MainComponent::jumpTransport(bool forward)
                      : (std::ceil(currentTime / 2.0 - epsilon) - 1.0) * 2.0;
   }
 
-  seek(juce::jlimit(0.0, duration, targetTime));
+  setPlayhead(juce::jlimit(0.0, duration, targetTime));
 }
 
 void MainComponent::resynthesizeIncremental()
@@ -4374,13 +4390,13 @@ bool MainComponent::perform(const ApplicationCommandTarget::InvocationInfo &info
 
   case CommandIDs::goToStart:
     if (auto *project = getProject())
-      seek(std::max(0.0, project->getAudioData().timelineOffsetSeconds));
+      setPlayhead(std::max(0.0, project->getAudioData().timelineOffsetSeconds));
     return true;
 
   case CommandIDs::goToEnd:
     if (auto *project = getProject())
     {
-      seek(project->getAudioData().getDuration());
+      setPlayhead(project->getAudioData().getDuration());
     }
     return true;
 
