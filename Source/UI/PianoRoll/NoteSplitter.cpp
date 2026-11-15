@@ -59,6 +59,93 @@ void rebasePitchDeviation(Note& note, float amount)
         note.setBakedDeltaPitch(std::move(delta));
     }
 }
+
+// The pitch sung over [start, end): base + delta per frame. Empty when the
+// curves do not cover it.
+std::vector<float> sungPitch(const AudioData& audio, int start, int end)
+{
+    std::vector<float> pitch;
+    for (int f = start; f < end; ++f)
+    {
+        const auto i = static_cast<size_t>(f);
+        if (f < 0 || i >= audio.basePitch.size() || i >= audio.deltaPitch.size())
+            return {};
+        pitch.push_back(audio.basePitch[i] + audio.deltaPitch[i]);
+    }
+    return pitch;
+}
+
+// No pitch tool, drag or drawn curve on the note: it sings what the
+// analysis gave it.
+bool pitchUntouched(const Note& n)
+{
+    constexpr float eps = 0.001f;
+    return std::abs(n.getMidiNote() - n.getOriginalMidiNote()) <= eps &&
+           std::abs(n.getPitchOffset()) <= eps && !n.hasBakedDeltaPitch() &&
+           std::abs(n.getTiltLeft()) <= eps && std::abs(n.getTiltRight()) <= eps &&
+           std::abs(n.getVibrato() - 1.0f) <= eps &&
+           std::abs(n.getPitchDrift() - 1.0f) <= eps &&
+           n.getSmoothLeftFrames() == 0 && n.getSmoothRightFrames() == 0 &&
+           std::abs(n.getDeltaScale() - 1.0f) <= eps &&
+           std::abs(n.getDeltaOffset()) <= eps;
+}
+
+Note* noteStartingAt(Project& project, int start)
+{
+    for (auto& note : project.getNotes())
+        if (!note.isRest() && note.getStartFrame() == start)
+            return &note;
+    return nullptr;
+}
+
+/**
+ * A split or merge re-centres the notes it makes, the base pitch bends
+ * differently at the new boundary, and pitch tools (drift, vibrato, tilt,
+ * smoothing) work over each note's own length - so the notes no longer sing
+ * what they did. When that happened, commit `before` (the pitch over
+ * [start, end) before the edit) as each note's own contour, as a drawn curve
+ * is, with its pitch tools at neutral. Notes are given by start frame.
+ */
+void keepSungPitch(Project& project, const std::vector<int>& starts, int start,
+                   int end, const std::vector<float>& before)
+{
+    if (before.empty())
+        return;
+    const auto after = sungPitch(project.getAudioData(), start, end);
+    bool changed = after.size() != before.size();
+    for (size_t i = 0; i < after.size() && !changed; ++i)
+        changed = std::abs(after[i] - before[i]) > 0.001f;
+    if (!changed)
+        return;
+
+    // Neutral tools first: tilt also moves a note's base pitch, so the
+    // contour is measured against the base each note will keep.
+    for (const int noteStart : starts)
+        if (auto* note = noteStartingAt(project, noteStart))
+        {
+            note->setTiltLeft(0.0f);
+            note->setTiltRight(0.0f);
+            note->setVibrato(1.0f);
+            note->setPitchDrift(1.0f);
+            note->setSmoothLeftFrames(0);
+            note->setSmoothRightFrames(0);
+            note->setDeltaScale(1.0f);
+            note->setDeltaOffset(0.0f);
+        }
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+    const auto& base = project.getAudioData().basePitch;
+    for (const int noteStart : starts)
+        if (auto* note = noteStartingAt(project, noteStart))
+        {
+            std::vector<float> contour;
+            for (int f = note->getStartFrame(); f < note->getEndFrame(); ++f)
+                contour.push_back(before[static_cast<size_t>(f - start)] -
+                                  base[static_cast<size_t>(f)]);
+            note->setBakedDeltaPitch(contour);
+            note->setDeltaPitch(contour);
+        }
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+}
 }
 
 Note* NoteSplitter::findNoteAt(float x, float y) {
@@ -99,6 +186,11 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
 
     // Store original note data for undo
     Note originalNote = *note;
+    // What the note sings now, which the split keeps (see keepSungPitch).
+    const auto pitchBefore =
+        pitchUntouched(originalNote)
+            ? std::vector<float>{}
+            : sungPitch(project->getAudioData(), startFrame, endFrame);
 
     // Create the second note (right part)
     Note secondNote;
@@ -260,23 +352,25 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
     secondNote.setSynthDirty(sourceIsSynthDirty);
     secondNote.setRenderedEdit(sourceHasRenderedEdit);
 
-    // Save first note BEFORE addNote (addNote may invalidate note pointer due to vector reallocation)
-    Note firstNote = *note;
-
-    // Add the second note to project
+    // Add the second note to project (this may move `note`: find both
+    // halves by start frame from here on).
     project->addNote(secondNote);
+
+    // Rebuild the drawn pitch curve from the new notes (pitch-neutral edit:
+    // the audio already matches), keeping what an edited note sang.
+    PitchCurveProcessor::rebuildBaseFromNotes(*project);
+    keepSungPitch(*project, {startFrame, splitFrame}, startFrame, endFrame,
+                  pitchBefore);
 
     // Create undo action - don't pass callback to avoid lifetime issues
     // UI refresh is handled by UndoManager's onUndoRedo callback
     if (undoManager) {
-        auto action = std::make_unique<NoteSplitAction>(
-            project, originalNote, firstNote, secondNote, nullptr);
-        undoManager->addAction(std::move(action));
+        const Note* left = noteStartingAt(*project, startFrame);
+        const Note* right = noteStartingAt(*project, splitFrame);
+        if (left && right)
+            undoManager->addAction(std::make_unique<NoteSplitAction>(
+                project, originalNote, *left, *right, nullptr));
     }
-
-    // Rebuild the drawn pitch curve from the new notes (pitch-neutral edit:
-    // the audio already matches).
-    PitchCurveProcessor::rebuildBaseFromNotes(*project);
     if (onNoteSplit)
         onNoteSplit();
 
