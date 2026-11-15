@@ -360,6 +360,8 @@ private:
   double snapWarpFrameToGrid(double frame) const;
   bool isCanvasPoint(const juce::MouseEvent &e) const;
   bool isModifierZoomDrag(const juce::MouseEvent &e) const;
+  // No note, handle, anchor or breath at this world point.
+  bool isEmptyCanvasAt(float worldX, float worldY) const;
   void applyModifierZoomDrag(const juce::MouseEvent &e);
   void updateMouseCursorForEditMode();
 

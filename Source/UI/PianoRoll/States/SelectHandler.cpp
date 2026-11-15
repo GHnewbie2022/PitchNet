@@ -95,6 +95,21 @@ bool SelectHandler::mouseDown(const juce::MouseEvent &e, float worldX,
   // Check if clicking on a note
   Note *note = owner_.findNoteAt(worldX, worldY);
 
+  // Cmd (Ctrl elsewhere), as in Cubase: click a note to add it to the
+  // selection or take it out; drag in empty space to box-select more.
+#if JUCE_MAC
+  const bool addToSelection = e.mods.isCommandDown();
+#else
+  const bool addToSelection = e.mods.isCtrlDown();
+#endif
+  if (note && addToSelection)
+  {
+    note->setSelected(!note->isSelected());
+    owner_.updatePitchToolHandlesFromSelection();
+    owner_.repaint();
+    return true;
+  }
+
   if (note)
   {
     // Check if clicking on an already selected note (for multi-note drag)
@@ -124,8 +139,13 @@ bool SelectHandler::mouseDown(const juce::MouseEvent &e, float worldX,
   }
   else
   {
-    // Clicked on empty area - start box selection
-    project->deselectAllNotes();
+    // Clicked on empty area - start box selection (adding to the
+    // selection with Cmd)
+    boxBaseSelection.clear();
+    if (addToSelection)
+      boxBaseSelection = project->getSelectedNotes();
+    else
+      project->deselectAllNotes();
     owner_.updatePitchToolHandlesFromSelection();
     owner_.boxSelector->startSelection(worldX, worldY);
     owner_.repaint();
@@ -354,6 +374,8 @@ bool SelectHandler::mouseDrag(const juce::MouseEvent &e, float worldX,
   {
     owner_.boxSelector->updateSelection(worldX, worldY);
     project->deselectAllNotes();
+    for (auto *kept : boxBaseSelection)
+      kept->setSelected(true);
     auto notesInRect = owner_.boxSelector->getNotesInRect(
         project, owner_.coordMapper.get());
     for (auto *note : notesInRect)
@@ -641,6 +663,7 @@ bool SelectHandler::mouseUp(const juce::MouseEvent &e, float worldX,
     }
     owner_.boxSelector->setLastSelectionFromBox(!notesInRect.empty());
     owner_.boxSelector->endSelection();
+    boxBaseSelection.clear();
     owner_.updatePitchToolHandlesFromSelection();
     owner_.repaint();
     return true;
@@ -1083,14 +1106,12 @@ void SelectHandler::mouseDoubleClick(const juce::MouseEvent &e,
           if (note)
           {
             const float oldTiltMean =
-                (note->getTiltLeft() + note->getTiltRight()) /
-                2.0f;
+                note->getTiltMean();
             const float baseline =
                 note->getMidiNote() - oldTiltMean;
             note->setTiltLeft(0.0f);
             const float newTiltMean =
-                (note->getTiltLeft() + note->getTiltRight()) /
-                2.0f;
+                note->getTiltMean();
             note->setMidiNote(baseline + newTiltMean);
             note->markDirty();
           }
@@ -1135,14 +1156,12 @@ void SelectHandler::mouseDoubleClick(const juce::MouseEvent &e,
           if (note)
           {
             const float oldTiltMean =
-                (note->getTiltLeft() + note->getTiltRight()) /
-                2.0f;
+                note->getTiltMean();
             const float baseline =
                 note->getMidiNote() - oldTiltMean;
             note->setTiltRight(0.0f);
             const float newTiltMean =
-                (note->getTiltLeft() + note->getTiltRight()) /
-                2.0f;
+                note->getTiltMean();
             note->setMidiNote(baseline + newTiltMean);
             note->markDirty();
           }

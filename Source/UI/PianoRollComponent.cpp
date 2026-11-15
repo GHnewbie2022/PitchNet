@@ -1950,11 +1950,43 @@ bool PianoRollComponent::isCanvasPoint(const juce::MouseEvent &e) const
 
 bool PianoRollComponent::isModifierZoomDrag(const juce::MouseEvent &e) const
 {
-#if JUCE_MAC
-  return e.mods.isCommandDown();
-#else
-  return e.mods.isCtrlDown();
-#endif
+  // Alt + drag in empty space zooms (Melodyne's magnifier); Cmd is left to
+  // selection, as in Cubase. Shift + Alt sets the playhead, and Alt on a
+  // note, handle or anchor belongs to the tool.
+  if (!e.mods.isAltDown() || e.mods.isShiftDown() || e.mods.isCommandDown() ||
+      e.mods.isCtrlDown())
+    return false;
+  return isEmptyCanvasAt(e.x - pianoKeysWidth + static_cast<float>(scrollX),
+                         e.y - headerHeight + static_cast<float>(scrollY));
+}
+
+bool PianoRollComponent::isEmptyCanvasAt(float worldX, float worldY) const
+{
+  if (!project)
+    return true;
+  if (editMode == EditMode::Select && pitchToolHandles &&
+      pitchToolHandles->hitTest(worldX, worldY) >= 0)
+    return false;
+  if (findBreathAt(worldX, worldY) >= 0)
+    return false;
+  if (editMode == EditMode::Warp && warpHandler_ &&
+      (warpHandler_->isOverAnchor(worldX, worldY) ||
+       warpHandler_->handlesDoubleClickAt(worldX, worldY)))
+    return false;
+  if (editMode == EditMode::PitchDrawing && pitchDrawingHandler_ &&
+      pitchDrawingHandler_->hasAnchorAt(worldX, worldY))
+    return false;
+  // A note's whole blob counts, not only its row.
+  const double time = xToTime(worldX);
+  for (const auto &note : project->getNotes())
+  {
+    if (note.isRest() || framesToSeconds(note.getEndFrame()) < time - 0.05 ||
+        framesToSeconds(note.getStartFrame()) > time + 0.05)
+      continue;
+    if (getNoteHoverShadowBounds(note).contains(worldX, worldY))
+      return false;
+  }
+  return true;
 }
 
 void PianoRollComponent::applyModifierZoomDrag(const juce::MouseEvent &e)
@@ -2679,13 +2711,15 @@ void PianoRollComponent::modifierKeysChanged(
       mousePosition.x < pianoKeysWidth + getVisibleContentWidth() &&
       mousePosition.y < headerHeight + getVisibleContentHeight();
 
-#if JUCE_MAC
-  const bool zoomModifierDown = modifiers.isCommandDown();
-#else
-  const bool zoomModifierDown = modifiers.isCtrlDown();
-#endif
+  // Alt alone over empty canvas: the zoom magnifier (isModifierZoomDrag).
+  const bool zoomModifierDown = modifiers.isAltDown() && !modifiers.isShiftDown() &&
+                                !modifiers.isCommandDown() && !modifiers.isCtrlDown() &&
+                                mouseOverCanvas &&
+                                isEmptyCanvasAt(
+                                    mousePosition.x - pianoKeysWidth + static_cast<float>(scrollX),
+                                    mousePosition.y - headerHeight + static_cast<float>(scrollY));
 
-  if (zoomModifierDown && mouseOverCanvas)
+  if (zoomModifierDown)
     setMouseCursor(zoomMouseCursor);
   else if (editMode == EditMode::Warp && warpHandler_)
     warpHandler_->modifiersChanged(modifiers);

@@ -68,6 +68,10 @@ private:
   void applyDragBasePreview(float pitchOffsetSemitones);
   void restoreDragBasePreview();
 
+  // Notes already selected when a Cmd box selection began: the box adds to
+  // them instead of replacing them.
+  std::vector<Note *> boxBaseSelection;
+
   // Single note drag state
   bool isDragging = false;
   bool fineDrag = false;
