@@ -6,6 +6,7 @@
 #include "FCPEPitchDetector.h"
 #include "SwiftF0PitchDetector.h"
 #include "PitchDetectorType.h"
+#include <array>
 #include "RMVPEPitchDetector.h"
 #include "GAMEDetector.h"
 #include "Synthesis/IncrementalSynthesizer.h"
@@ -77,6 +78,12 @@ public:
 
   void reloadInferenceModels(bool async);
   bool isSelectedPitchDetectorLoaded() const;
+  // Diagnostics: RMVPE, FCPE and SwiftF0 F0 on their own frame grids, from
+  // the last Ensemble analysis (empty after a single-detector one).
+  const std::array<std::vector<float>, 3> &getLastEnsembleSource() const
+  {
+    return lastEnsembleSource;
+  }
   bool isInferenceBusy() const;
   bool isLoading() const { return isLoadingAudio.load(); }
 
@@ -162,7 +169,8 @@ private:
   juce::File rmvpeModelPath;
   juce::File swiftF0ModelPath;
   juce::File gameModelDir;
-  PitchDetectorType pitchDetectorType = PitchDetectorType::SwiftF0;
+  PitchDetectorType pitchDetectorType = PitchDetectorType::Ensemble;
+  std::array<std::vector<float>, 3> lastEnsembleSource;
   SynthesisEngineType synthesisEngineType = defaultSynthesisEngineType();
   juce::String device = "CPU";
   int deviceId = 0;

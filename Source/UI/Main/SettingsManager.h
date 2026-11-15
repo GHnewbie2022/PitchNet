@@ -145,7 +145,7 @@ private:
   juce::String device = "CPU";
   bool hasStoredDeviceSetting = false;
   int threads = 0;
-  PitchDetectorType pitchDetectorType = PitchDetectorType::SwiftF0;
+  PitchDetectorType pitchDetectorType = PitchDetectorType::Ensemble;
   SynthesisEngineType synthesisEngineType = defaultSynthesisEngineType();
   int gpuDeviceId = 0;
   bool hasStoredGpuDeviceIdSetting = false;

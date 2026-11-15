@@ -4,7 +4,7 @@
 //
 //   WarpRender <in.wav> <out.wav> [--anchors s:d,s:d,...] [--shift semitones]
 //              [--shift-range from:to] [--engine vocoder|psola]
-//              [--detector fcpe|swift|rmvpe] [--dump-notes]
+//              [--detector fcpe|swift|rmvpe|ensemble] [--dump-notes]
 //              [--snapshot prefix]
 //
 // Anchors are source:timeline positions in seconds. --shift moves the pitch
@@ -12,6 +12,7 @@
 // the whole file). Run from the repository root so Resources/models is found.
 // --snapshot draws the piano roll in the Warp and Timing tools to
 // <prefix>_*.png, with a drag of the first anchor pushed past its limit.
+#include "../../Source/Audio/PitchEnsemble.h"
 #include "../../Source/Audio/EditorController.h"
 #include "../../Source/Audio/WarpLayer.h"
 #include "../../Source/Utils/Constants.h"
@@ -1252,6 +1253,120 @@ void drawCheck(Project &project)
 
 } // namespace
 
+// Ensemble analysis: how late RMVPE and SwiftF0 report against FCPE (lag
+// search, 1 ms steps, on a 2 ms grid), then how often each one is outvoted.
+void ensembleCheck(EditorController &controller, const AudioData &audioData)
+{
+  const auto &source = controller.getLastEnsembleSource();
+  const char *names[3] = {"RMVPE", "FCPE", "SwiftF0"};
+  for (int d = 0; d < 3; ++d)
+    if (source[static_cast<size_t>(d)].empty())
+    {
+      std::printf("ensemble: %s produced nothing\n", names[d]);
+      return;
+    }
+
+  auto semis = [](float hz) { return 12.0f * std::log2(hz / 440.0f) + 69.0f; };
+  const double fine = 0.002;
+  const double seconds = source[1].size() * pitchensemble::kFrameTime[1];
+  const int fineFrames = static_cast<int>(seconds / fine);
+  const auto reference =
+      pitchensemble::resample(source[1], pitchensemble::kFrameTime[1],
+                              pitchensemble::kOffset[1], fineFrames, fine);
+  for (int d : {0, 2})
+  {
+    double bestLag = 0.0, bestErr = 1.0e9;
+    for (int ms = -40; ms <= 40; ++ms)
+    {
+      const auto c = pitchensemble::resample(
+          source[static_cast<size_t>(d)], pitchensemble::kFrameTime[d],
+          ms * 0.001, fineFrames, fine);
+      double sum = 0.0;
+      int n = 0;
+      for (int i = 0; i < fineFrames; ++i)
+      {
+        if (!c.voiced[static_cast<size_t>(i)] || !reference.voiced[static_cast<size_t>(i)])
+          continue;
+        const double diff = std::abs(semis(c.f0[static_cast<size_t>(i)]) -
+                                     semis(reference.f0[static_cast<size_t>(i)]));
+        if (diff < 1.0)
+        {
+          sum += diff;
+          ++n;
+        }
+      }
+      const double err = n > 0 ? sum / n : 1.0e9;
+      if (err < bestErr)
+      {
+        bestErr = err;
+        bestLag = ms * 0.001;
+      }
+    }
+    std::printf("ensemble: %s best lag %+.3f s (mean |diff| %.4f st), "
+                "offset in use %+.3f s\n",
+                names[d], bestLag, bestErr, pitchensemble::kOffset[d]);
+  }
+
+  // On the analysis grid, with the offsets in use.
+  const int frames = audioData.getNumFrames();
+  const double frameTime = static_cast<double>(HOP_SIZE) / SAMPLE_RATE;
+  std::vector<pitchensemble::Curve> curves;
+  for (int d = 0; d < 3; ++d)
+    curves.push_back(pitchensemble::resample(
+        source[static_cast<size_t>(d)], pitchensemble::kFrameTime[d],
+        pitchensemble::kOffset[d], frames, frameTime));
+  const auto combined = pitchensemble::combine(curves);
+  int allVoiced = 0, agree = 0, outvoted[3] = {0, 0, 0}, noPair = 0;
+  for (int i = 0; i < frames; ++i)
+  {
+    float v[3];
+    bool all = true;
+    for (int d = 0; d < 3; ++d)
+    {
+      all = all && curves[static_cast<size_t>(d)].voiced[static_cast<size_t>(i)];
+      v[d] = semis(curves[static_cast<size_t>(d)].f0[static_cast<size_t>(i)]);
+    }
+    if (!all)
+      continue;
+    ++allVoiced;
+    const bool ab = std::abs(v[0] - v[1]) <= 0.3f, ac = std::abs(v[0] - v[2]) <= 0.3f,
+               bc = std::abs(v[1] - v[2]) <= 0.3f;
+    if (ab && ac && bc)
+      ++agree;
+    else if (bc && !ab && !ac)
+      ++outvoted[0];
+    else if (ac && !ab && !bc)
+      ++outvoted[1];
+    else if (ab && !ac && !bc)
+      ++outvoted[2];
+    else if (!ab && !ac && !bc)
+      ++noPair;
+  }
+  std::printf("ensemble: %d frames all voiced, %d agree within 0.3 st; lone "
+              "outlier RMVPE %d, FCPE %d, SwiftF0 %d; no two agree %d\n",
+              allVoiced, agree, outvoted[0], outvoted[1], outvoted[2], noPair);
+
+  // The SwiftF0 dip at 12.50 s.
+  const int from = static_cast<int>(12.40 / frameTime), to = static_cast<int>(12.62 / frameTime);
+  std::printf("frame   RMVPE    FCPE  SwiftF0  result  (semitones)\n");
+  for (int i = from; i <= to && i < frames; ++i)
+  {
+    std::printf("%5d", i);
+    for (int d = 0; d < 3; ++d)
+    {
+      const auto &c = curves[static_cast<size_t>(d)];
+      if (c.voiced[static_cast<size_t>(i)])
+        std::printf(" %7.2f", semis(c.f0[static_cast<size_t>(i)]));
+      else
+        std::printf("       -");
+    }
+    if (combined.voiced[static_cast<size_t>(i)])
+      std::printf(" %7.2f\n", semis(combined.f0[static_cast<size_t>(i)]));
+    else
+      std::printf("       -\n");
+  }
+}
+
 int main(int argc, char **argv)
 {
   juce::ScopedJuceInitialiser_GUI juce;
@@ -1266,7 +1381,7 @@ int main(int argc, char **argv)
       juce::String::fromUTF8(argv[2]));
   juce::String anchorsArg, engine = "vocoder", detector = "fcpe", snapshotPrefix;
   double shift = 0.0, shiftFrom = 0.0, shiftTo = 1.0e9;
-  bool dumpNotes = false, separationTest = false, benchPaint = false, testMerge = false, testDraw = false;
+  bool ensembleLag = false, dumpNotes = false, separationTest = false, benchPaint = false, testMerge = false, testDraw = false;
   for (int i = 3; i < argc; ++i)
   {
     const juce::String arg = juce::String::fromUTF8(argv[i]);
@@ -1286,6 +1401,7 @@ int main(int argc, char **argv)
     else if (arg == "--paint-bench") benchPaint = true;
     else if (arg == "--merge-test") testMerge = true;
     else if (arg == "--draw-test") testDraw = true;
+    else if (arg == "--ensemble-lag") ensembleLag = true;
     else if (arg == "--snapshot") { snapshotPrefix = next; ++i; }
   }
 
@@ -1299,6 +1415,7 @@ int main(int argc, char **argv)
   EditorController controller(false);
   controller.setPitchDetectorType(detector == "swift" ? PitchDetectorType::SwiftF0
                                   : detector == "rmvpe" ? PitchDetectorType::RMVPE
+                                  : detector == "ensemble" ? PitchDetectorType::Ensemble
                                                         : PitchDetectorType::FCPE);
   controller.setSynthesisEngineType(engine == "psola" ? SynthesisEngineType::Psola
                                                       : SynthesisEngineType::Vocoder);
@@ -1334,6 +1451,11 @@ int main(int argc, char **argv)
   const double framesPerSecond = static_cast<double>(SAMPLE_RATE) / HOP_SIZE;
   std::printf("analysed: %d frames, %d notes\n", audioData.getNumFrames(),
               static_cast<int>(project.getNotes().size()));
+  if (ensembleLag)
+  {
+    ensembleCheck(controller, audioData);
+    return 0;
+  }
 
   // Warp anchors.
   warp::fitToProject(audioData);

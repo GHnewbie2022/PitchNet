@@ -9,7 +9,8 @@ enum class PitchDetectorType
 {
     RMVPE = 0,  // Robust Model for Vocal Pitch Estimation
     FCPE,       // Fast Context-aware Pitch Estimation
-    SwiftF0     // Default - SwiftF0 (lars76/swift-f0), CPU-only, 16 ms hop
+    SwiftF0,    // Default - SwiftF0 (lars76/swift-f0), CPU-only, 16 ms hop
+    Ensemble    // All three, frame-by-frame median (PitchEnsemble.h)
 };
 
 /**
@@ -22,6 +23,7 @@ inline const char* pitchDetectorTypeToString(PitchDetectorType type)
         case PitchDetectorType::RMVPE: return "RMVPE";
         case PitchDetectorType::FCPE:  return "FCPE";
         case PitchDetectorType::SwiftF0: return "SwiftF0";
+        case PitchDetectorType::Ensemble: return "Ensemble";
         default: return "SwiftF0";
     }
 }
@@ -31,7 +33,9 @@ inline const char* pitchDetectorTypeToString(PitchDetectorType type)
  */
 inline PitchDetectorType stringToPitchDetectorType(const juce::String& str)
 {
+    if (str == "RMVPE") return PitchDetectorType::RMVPE;
     if (str == "FCPE")  return PitchDetectorType::FCPE;
+    if (str == "Ensemble") return PitchDetectorType::Ensemble;
     if (str == "SwiftF0") return PitchDetectorType::SwiftF0;
     return PitchDetectorType::SwiftF0;  // Default
 }

@@ -1,6 +1,7 @@
 #include "EditorController.h"
 #include "BreathSibilanceAnalysis.h"
 #include "NoteEdges.h"
+#include "PitchEnsemble.h"
 #include "../Utils/NoteAmplitude.h"
 #include "../Utils/AudioResampler.h"
 #include "../Utils/SHA256Utils.h"
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <climits>
+#include <future>
 #include <cmath>
 #include <map>
 #include <mutex>
@@ -82,6 +84,9 @@ std::unique_lock<std::mutex> lockShared(std::mutex &mutex,
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   return lock;
 }
+
+static_assert(pitchensemble::kFrameTime[2] == SwiftF0PitchDetector::FRAME_TIME,
+              "SwiftF0 frame time changed");
 
 // Locks the set's mutex only when the detector really belongs to the set; a
 // private DirectML-to-CPU fallback detector needs no cross-controller lock.
@@ -466,6 +471,12 @@ bool EditorController::isSelectedPitchDetectorLoaded() const
     return rmvpePitchDetector && rmvpePitchDetector->isLoaded();
   if (pitchDetectorType == PitchDetectorType::SwiftF0)
     return swiftF0PitchDetector && swiftF0PitchDetector->isLoaded();
+  if (pitchDetectorType == PitchDetectorType::Ensemble)
+    // RMVPE may be absent (then SwiftF0 alone runs).
+    return swiftF0PitchDetector && swiftF0PitchDetector->isLoaded() &&
+           fcpePitchDetector && fcpePitchDetector->isLoaded() &&
+           (!rmvpeModelPath.existsAsFile() ||
+            (rmvpePitchDetector && rmvpePitchDetector->isLoaded()));
   return false;
 }
 
@@ -969,7 +980,21 @@ void EditorController::analyzeAudioImpl(
     swiftF0Model = swiftF0PitchDetector;
   }
 
-  if (pitchDetectorType == PitchDetectorType::RMVPE)
+  // Ensemble runs all three detectors; without all three it is SwiftF0 alone.
+  PitchDetectorType detectorType = pitchDetectorType;
+  if (detectorType == PitchDetectorType::Ensemble)
+  {
+    const bool allThree =
+        rmvpeModel && rmvpeModel->isLoaded() && fcpeModel &&
+        fcpeModel->isLoaded() && swiftF0Model && swiftF0Model->isLoaded();
+    if (!allThree)
+    {
+      LOG("Ensemble needs RMVPE, FCPE and SwiftF0; using SwiftF0 alone");
+      detectorType = PitchDetectorType::SwiftF0;
+    }
+  }
+
+  if (detectorType == PitchDetectorType::RMVPE)
   {
     if (!rmvpeModelPath.existsAsFile())
     {
@@ -982,7 +1007,7 @@ void EditorController::analyzeAudioImpl(
       return;
     }
   }
-  else if (pitchDetectorType == PitchDetectorType::FCPE)
+  else if (detectorType == PitchDetectorType::FCPE)
   {
     if (!fcpeModelPath.existsAsFile())
     {
@@ -1005,7 +1030,7 @@ void EditorController::analyzeAudioImpl(
       return;
     }
   }
-  else if (pitchDetectorType == PitchDetectorType::SwiftF0)
+  else if (detectorType == PitchDetectorType::SwiftF0)
   {
     if (!swiftF0ModelPath.existsAsFile())
     {
@@ -1021,7 +1046,7 @@ void EditorController::analyzeAudioImpl(
 
   LOG("========== PITCH DETECTOR SELECTION ==========");
   LOG("Selected detector: " +
-      juce::String(pitchDetectorTypeToString(pitchDetectorType)));
+      juce::String(pitchDetectorTypeToString(detectorType)));
   LOG("RMVPE loaded: " +
       juce::String(
           rmvpeModel && rmvpeModel->isLoaded() ? "YES" : "NO"));
@@ -1031,7 +1056,10 @@ void EditorController::analyzeAudioImpl(
 
   std::vector<float> extractedF0;
   juce::String pitchInferenceError;
-  if (pitchDetectorType == PitchDetectorType::RMVPE)
+  auto &ensembleSource = lastEnsembleSource;
+  for (auto &f0 : ensembleSource)
+    f0.clear();
+  if (detectorType == PitchDetectorType::RMVPE)
   {
     const auto modelLock =
         lockModel(models, rmvpeModel, &SharedInferenceModels::rmvpe,
@@ -1042,7 +1070,7 @@ void EditorController::analyzeAudioImpl(
                                         audioData.sampleRate);
     pitchInferenceError = rmvpeModel->getLastError();
   }
-  else if (pitchDetectorType == PitchDetectorType::FCPE)
+  else if (detectorType == PitchDetectorType::FCPE)
   {
     const auto modelLock =
         lockModel(models, fcpeModel, &SharedInferenceModels::fcpe,
@@ -1053,7 +1081,7 @@ void EditorController::analyzeAudioImpl(
         fcpeModel->extractF0(samples, numSamples, audioData.sampleRate);
     pitchInferenceError = fcpeModel->getLastError();
   }
-  else if (pitchDetectorType == PitchDetectorType::SwiftF0)
+  else if (detectorType == PitchDetectorType::SwiftF0)
   {
     const auto modelLock =
         lockModel(models, swiftF0Model, &SharedInferenceModels::swiftF0,
@@ -1072,6 +1100,52 @@ void EditorController::analyzeAudioImpl(
                      1) +
         " ms");
   }
+  else if (detectorType == PitchDetectorType::Ensemble)
+  {
+    // The three run side by side (each holds its own model lock).
+    const auto t0 = std::chrono::steady_clock::now();
+    auto runRmvpe = std::async(std::launch::async, [&]
+                               {
+      const auto modelLock =
+          lockModel(models, rmvpeModel, &SharedInferenceModels::rmvpe,
+                    &SharedInferenceModels::rmvpeMutex, shuttingDown);
+      if (shuttingDown.load())
+        return std::vector<float>{};
+      return rmvpeModel->extractF0(samples, numSamples, audioData.sampleRate); });
+    auto runFcpe = std::async(std::launch::async, [&]
+                              {
+      const auto modelLock =
+          lockModel(models, fcpeModel, &SharedInferenceModels::fcpe,
+                    &SharedInferenceModels::fcpeMutex, shuttingDown);
+      if (shuttingDown.load())
+        return std::vector<float>{};
+      return fcpeModel->extractF0(samples, numSamples, audioData.sampleRate); });
+    {
+      const auto modelLock =
+          lockModel(models, swiftF0Model, &SharedInferenceModels::swiftF0,
+                    &SharedInferenceModels::swiftF0Mutex, shuttingDown);
+      if (!shuttingDown.load())
+        ensembleSource[2] = swiftF0Model->extractF0(samples, numSamples,
+                                                    audioData.sampleRate);
+    }
+    ensembleSource[0] = runRmvpe.get();
+    ensembleSource[1] = runFcpe.get();
+    LOG("Ensemble: RMVPE " + juce::String(static_cast<int>(ensembleSource[0].size())) +
+        ", FCPE " + juce::String(static_cast<int>(ensembleSource[1].size())) +
+        ", SwiftF0 " + juce::String(static_cast<int>(ensembleSource[2].size())) +
+        " frames in " +
+        juce::String(std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - t0)
+                         .count(),
+                     1) +
+        " ms");
+    // Any one of them is enough to go on; the median uses what came back.
+    for (const auto &f0 : ensembleSource)
+      if (!f0.empty())
+        extractedF0 = f0;
+    if (extractedF0.empty())
+      pitchInferenceError = rmvpeModel->getLastError();
+  }
 
   if (shuttingDown.load())
     return;
@@ -1081,18 +1155,18 @@ void EditorController::analyzeAudioImpl(
   // so systems without a usable GPU do not fail with a misleading model-file
   // error. Keep the successful CPU detector for subsequent analyses.
   if (extractedF0.empty() &&
-      pitchDetectorType != PitchDetectorType::SwiftF0 &&
+      detectorType != PitchDetectorType::SwiftF0 &&
       getProviderFromDevice(device) == GPUProvider::DirectML)
   {
     const auto detectorName =
-        juce::String(pitchDetectorTypeToString(pitchDetectorType));
+        juce::String(pitchDetectorTypeToString(detectorType));
     LOG(detectorName + " DirectML inference failed: " +
         (pitchInferenceError.isNotEmpty() ? pitchInferenceError
                                            : "unknown error") +
         "; retrying with CPU");
 
     juce::String cpuRetryError;
-    if (pitchDetectorType == PitchDetectorType::RMVPE)
+    if (detectorType == PitchDetectorType::RMVPE)
     {
       auto cpuDetector = std::make_unique<RMVPEPitchDetector>();
       if (cpuDetector->loadModel(rmvpeModelPath, GPUProvider::CPU, 0))
@@ -1113,7 +1187,7 @@ void EditorController::analyzeAudioImpl(
         cpuRetryError = cpuDetector->getLastError();
       }
     }
-    else if (pitchDetectorType == PitchDetectorType::FCPE)
+    else if (detectorType == PitchDetectorType::FCPE)
     {
       auto cpuDetector = std::make_unique<FCPEPitchDetector>();
       if (cpuDetector->loadModel(fcpeModelPath, melFilterbankPath,
@@ -1203,54 +1277,32 @@ void EditorController::analyzeAudioImpl(
   }
 
   {
-    audioData.rawF0.assign(static_cast<size_t>(targetFrames), 0.0f);
-    audioData.voicedMask.assign(static_cast<size_t>(targetFrames), false);
-
-    // FCPE/RMVPE: 160-sample hop at 16 kHz (10 ms); SwiftF0: 256 (16 ms).
-    const double neuralFrameTime =
-        pitchDetectorType == PitchDetectorType::SwiftF0
-            ? SwiftF0PitchDetector::FRAME_TIME
-            : 160.0 / 16000.0;
     const double vocoderFrameTime =
         static_cast<double>(HOP_SIZE) /
         static_cast<double>(std::max(1, audioData.sampleRate));
-    const int sourceFrameCount = static_cast<int>(extractedF0.size());
 
-    for (int i = 0; i < targetFrames; ++i)
+    pitchensemble::Curve curve;
+    if (detectorType == PitchDetectorType::Ensemble)
     {
-      const double vocoderTime = i * vocoderFrameTime;
-      const double neuralFramePos = vocoderTime / neuralFrameTime;
-      const int leftIdx = std::clamp(static_cast<int>(std::floor(neuralFramePos)),
-                                     0, sourceFrameCount - 1);
-      const int rightIdx = std::min(leftIdx + 1, sourceFrameCount - 1);
-      const int nearestIdx = std::clamp(
-          static_cast<int>(std::llround(neuralFramePos)), 0,
-          sourceFrameCount - 1);
-      const double frac =
-          std::clamp(neuralFramePos - std::floor(neuralFramePos), 0.0, 1.0);
-
-      // Resample the detector's U/V decision independently from pitch. This
-      // prevents a nearby positive F0 from turning an originally unvoiced
-      // target frame into a voiced one.
-      const bool isVoiced = extractedF0[static_cast<size_t>(nearestIdx)] > 0.0f;
-      audioData.voicedMask[static_cast<size_t>(i)] = isVoiced;
-      if (!isVoiced)
-        continue;
-
-      const float leftF0 = extractedF0[static_cast<size_t>(leftIdx)];
-      const float rightF0 = extractedF0[static_cast<size_t>(rightIdx)];
-      if (leftF0 > 0.0f && rightF0 > 0.0f && leftIdx != rightIdx)
-      {
-        const float logF0 = static_cast<float>(
-            std::log(leftF0) * (1.0 - frac) + std::log(rightF0) * frac);
-        audioData.rawF0[static_cast<size_t>(i)] = std::exp(logF0);
-      }
-      else
-      {
-        audioData.rawF0[static_cast<size_t>(i)] =
-            extractedF0[static_cast<size_t>(nearestIdx)];
-      }
+      std::vector<pitchensemble::Curve> curves;
+      for (int d = 0; d < 3; ++d)
+        curves.push_back(pitchensemble::resample(
+            ensembleSource[static_cast<size_t>(d)], pitchensemble::kFrameTime[d],
+            pitchensemble::kOffset[d], targetFrames, vocoderFrameTime));
+      curve = pitchensemble::combine(curves);
     }
+    else
+    {
+      // FCPE/RMVPE: 160-sample hop at 16 kHz (10 ms); SwiftF0: 256 (16 ms).
+      const double neuralFrameTime =
+          detectorType == PitchDetectorType::SwiftF0
+              ? SwiftF0PitchDetector::FRAME_TIME
+              : 160.0 / 16000.0;
+      curve = pitchensemble::resample(extractedF0, neuralFrameTime, 0.0,
+                                      targetFrames, vocoderFrameTime);
+    }
+    audioData.rawF0 = std::move(curve.f0);
+    audioData.voicedMask = std::move(curve.voiced);
 
     // Compute energy-based VAD mask (captures consonants)
     {
