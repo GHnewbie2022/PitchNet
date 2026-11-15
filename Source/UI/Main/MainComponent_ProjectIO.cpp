@@ -70,6 +70,8 @@ void MainComponent::openProjectFile(const juce::File &file) {
 
     if (hasAnalyzedProject())
       fitAnalyzedPitchRangeToView(*project);
+    // Back where the project was last saved (overrides the fit above).
+    restoreViewFromProject();
     repaint();
     if (isPluginMode())
       notifyProjectDataChanged();
@@ -425,6 +427,7 @@ void MainComponent::loadAudioFile(const juce::File &file,
         }
 
         safeThis->fitAnalyzedPitchRangeToView(*project);
+        safeThis->restoreViewFromProject();
 
         if (auto *vocoder = safeThis->editorController
                                 ? safeThis->editorController->getVocoder()

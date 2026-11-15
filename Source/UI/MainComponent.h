@@ -369,6 +369,9 @@ private:
   juce::String savedProjectSnapshot;
   bool closePromptActive = false;
   void restoreProjectPresentation();
+  // The view (scroll, zoom) and playhead saved with a project.
+  void rememberViewInProject(Project &project) const;
+  void restoreViewFromProject();
 
   void undo();
   void redo();

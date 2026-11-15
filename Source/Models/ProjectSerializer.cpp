@@ -254,6 +254,15 @@ juce::var ProjectSerializer::toJson(const Project& project,
     obj->setProperty("uiWidth", project.uiWidth);
     obj->setProperty("uiHeight", project.uiHeight);
     obj->setProperty("thumbnailVisible", project.thumbnailVisible);
+    if (project.viewSaved) {
+        auto* view = new juce::DynamicObject();
+        view->setProperty("scrollX", project.viewScrollX);
+        view->setProperty("scrollY", project.viewScrollY);
+        view->setProperty("pixelsPerSecond", project.viewPixelsPerSecond);
+        view->setProperty("pixelsPerSemitone", project.viewPixelsPerSemitone);
+        view->setProperty("playhead", project.playheadSeconds);
+        obj->setProperty("view", juce::var(view));
+    }
 
     // Audio settings
     obj->setProperty("sampleRate", project.getAudioData().sampleRate);
@@ -420,6 +429,21 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
     project.uiWidth = juce::jlimit(0, 16384, static_cast<int>(json.getProperty("uiWidth", 0)));
     project.uiHeight = juce::jlimit(0, 16384, static_cast<int>(json.getProperty("uiHeight", 0)));
     project.thumbnailVisible = static_cast<bool>(json.getProperty("thumbnailVisible", false));
+    project.viewSaved = false;
+    if (const auto view = json.getProperty("view", juce::var()); view.isObject()) {
+        auto number = [&view](const char* key, double fallback) {
+            const auto value = view.getProperty(key, juce::var());
+            const double d = value.isVoid() ? fallback : static_cast<double>(value);
+            return std::isfinite(d) ? d : fallback;
+        };
+        project.viewScrollX = std::max(0.0, number("scrollX", 0.0));
+        project.viewScrollY = std::max(0.0, number("scrollY", 0.0));
+        project.viewPixelsPerSecond = static_cast<float>(number("pixelsPerSecond", 0.0));
+        project.viewPixelsPerSemitone = static_cast<float>(number("pixelsPerSemitone", 0.0));
+        project.playheadSeconds = std::max(0.0, number("playhead", 0.0));
+        project.viewSaved = project.viewPixelsPerSecond > 0.0f &&
+                            project.viewPixelsPerSemitone > 0.0f;
+    }
 
     // Audio settings
     auto& audioData = project.getAudioData();

@@ -216,6 +216,31 @@ void hostBackedArchiveStaysSourceless() {
 
 int main() {
   {
+    // The view and playhead saved with a project come back as saved; a
+    // project saved without them reads as "no saved view".
+    Project source;
+    source.viewSaved = true;
+    source.viewScrollX = 1234.5;
+    source.viewScrollY = 678.25;
+    source.viewPixelsPerSecond = 321.0f;
+    source.viewPixelsPerSemitone = 24.5f;
+    source.playheadSeconds = 5.933;
+    Project restored;
+    CHECK(ProjectSerializer::fromJson(restored, ProjectSerializer::toJson(source)));
+    CHECK(restored.viewSaved);
+    CHECK(restored.viewScrollX == 1234.5);
+    CHECK(restored.viewScrollY == 678.25);
+    CHECK(restored.viewPixelsPerSecond == 321.0f);
+    CHECK(restored.viewPixelsPerSemitone == 24.5f);
+    CHECK(std::abs(restored.playheadSeconds - 5.933) < 1.0e-9);
+
+    Project legacy;
+    Project fromLegacy;
+    fromLegacy.viewSaved = true;
+    CHECK(ProjectSerializer::fromJson(fromLegacy, ProjectSerializer::toJson(legacy)));
+    CHECK(!fromLegacy.viewSaved);
+  }
+  {
     auto shared = std::make_shared<MacroParameters>();
     Project verse, chorus;
     verse.setMacroParameters(shared);

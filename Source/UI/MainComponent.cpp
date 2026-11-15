@@ -1483,6 +1483,38 @@ MainComponent::exchangeProject(std::unique_ptr<Project> newProject)
   return previousProject;
 }
 
+void MainComponent::rememberViewInProject(Project &project) const
+{
+  const auto state = getViewportState();
+  project.viewSaved = true;
+  project.viewScrollX = state.scrollX;
+  project.viewScrollY = state.scrollY;
+  project.viewPixelsPerSecond = state.pixelsPerSecond;
+  project.viewPixelsPerSemitone = state.pixelsPerSemitone;
+  project.playheadSeconds = isPluginMode() ? 0.0 : pianoRoll.getPlayheadTime();
+}
+
+void MainComponent::restoreViewFromProject()
+{
+  auto *project = getProject();
+  if (project == nullptr || !project->viewSaved)
+    return;
+  MainViewViewportState state;
+  state.scrollX = project->viewScrollX;
+  state.scrollY = project->viewScrollY;
+  state.pixelsPerSecond = project->viewPixelsPerSecond;
+  state.pixelsPerSemitone = project->viewPixelsPerSemitone;
+  state.valid = true;
+  restoreViewportState(state);
+  // The host owns the transport in plugin mode.
+  if (!isPluginMode())
+    setPlayhead(juce::jlimit(0.0,
+                             static_cast<double>(
+                                 project->getAudioData().getDuration()),
+                             project->playheadSeconds),
+                false);
+}
+
 MainViewViewportState MainComponent::getViewportState() const
 {
   MainViewViewportState state;
@@ -1808,9 +1840,11 @@ juce::String MainComponent::projectSaveSnapshot() const
   if (!project)
     return {};
   auto json = ProjectSerializer::toJson(*project);
-  // Window geometry does not change the document's edited content.
+  // Window geometry, the view and the playhead do not change the document's
+  // edited content.
   json.getDynamicObject()->removeProperty("uiWidth");
   json.getDynamicObject()->removeProperty("uiHeight");
+  json.getDynamicObject()->removeProperty("view");
   return juce::JSON::toString(json, true);
 }
 
@@ -1895,6 +1929,7 @@ void MainComponent::saveProject(bool saveAs, std::function<void(bool)> onComplet
 
   project->uiWidth = getWidth();
   project->uiHeight = getHeight();
+  rememberViewInProject(*project);
 
   auto ensureAudioSha = [project]()
   {

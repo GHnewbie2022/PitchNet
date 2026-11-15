@@ -198,6 +198,15 @@ public:
     int uiWidth = 0;
     int uiHeight = 0;
     bool thumbnailVisible = false;
+    // Where the editor was looking, and the playhead, when last saved, so a
+    // reopened project picks up where it was left. viewSaved is false for
+    // projects saved before this existed.
+    bool viewSaved = false;
+    double viewScrollX = 0.0;
+    double viewScrollY = 0.0;
+    float viewPixelsPerSecond = 100.0f;
+    float viewPixelsPerSemitone = 12.0f;
+    double playheadSeconds = 0.0;
 
     // File operations
     void setFilePath(const juce::File &file) { filePath = file; }
