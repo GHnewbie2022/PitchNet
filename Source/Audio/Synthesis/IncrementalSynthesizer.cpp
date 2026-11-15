@@ -4,12 +4,12 @@
 #include "../BreathSibilanceAnalysis.h"
 #include "../NoteTiming.h"
 #include "../ProjectGain.h"
+#include "../WarpLayer.h"
 #include "OriginalWaveformRestore.h"
 #include "../../Utils/NoteGainCurve.h"
 #include "../../Utils/AppLogger.h"
 #include "../../Utils/Constants.h"
 #include "../../Utils/Localization.h"
-#include "../../Utils/TimingRegionUtils.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -17,7 +17,10 @@
 
 namespace {
 constexpr int kAdjacentFrameTolerance = 1;
-constexpr int kTimingClearFadeSamples = 128;
+// The vocoder's output lags its input by about 4.5 ms (measured on the
+// envelope of whole renders; see the warp layer spec, Q6). It is advanced by
+// this much before it is blended with the recording, so the two line up.
+constexpr double kVocoderLatencySeconds = 0.0045;
 
 struct EditedClusterSelection {
   std::vector<uint8_t> members;
@@ -25,88 +28,10 @@ struct EditedClusterSelection {
   int endFrame = -1;
 };
 
-struct PreservedTimingSpan {
-  int sourceStart = 0;
-  int sourceEnd = 0;
-  int destinationStart = 0;
-  int destinationEnd = 0;
-  bool leading = false;
-};
-
-struct AudioMovePatch {
-  int destinationStartSample = 0;
-  std::vector<float> samples;
-  int clearStartSample = -1;
-  int clearEndSample = -1;
-  bool releaseBeforeClear = false;
-  bool attackAfterClear = false;
-};
-
 struct CommitFrameRange {
   int start = 0;
   int end = 0;
 };
-
-bool hasTimingEdit(const Note &note) {
-  return note.getStartFrame() != note.getSrcStartFrame() ||
-         note.getEndFrame() != note.getSrcEndFrame();
-}
-
-// A timing edit needs a broad waveform commit only while its output position
-// differs from the position already represented in the composite waveform.
-// A note can remain timing-edited after that render, so comparing against the
-// immutable source bounds here would incorrectly broaden later pitch commits.
-bool hasPendingTimingPositionChange(const Note &note) {
-  // Which position this note's audio currently occupies in the composite.
-  //
-  // The rendered frames only mean anything once something has actually been
-  // rendered: they are stamped at construction and are not maintained by
-  // setStartFrame, so on a note that has never been rendered they are a
-  // stale snapshot of wherever the note was first created. Measured on a
-  // freshly detected take: cur=[12,41) src=[12,41) rendered=[14,41) - two
-  // frames of drift, no timing edit anywhere, yet the naive comparison
-  // reported a pending move. That false positive sets needsF0RangeCommit,
-  // which replaces the commit range for one note with the entire F0 dirty
-  // range: a single pitch edit rewriting 1.74 s of a 2.4 s region.
-  //
-  // Before the first render the note's audio is still sitting at its source
-  // position, so that is what a move has to be measured against. This keeps
-  // the case the expansion exists for - a note retimed but not yet rendered
-  // still reports the move, and both its old and new positions get
-  // committed - while a pitch-only edit correctly reports none.
-  const bool rendered = note.hasRenderedEdit();
-  const int occupiedStart =
-      rendered ? note.getRenderedStartFrame() : note.getSrcStartFrame();
-  const int occupiedEnd =
-      rendered ? note.getRenderedEndFrame() : note.getSrcEndFrame();
-
-  return note.getStartFrame() != occupiedStart ||
-         note.getEndFrame() != occupiedEnd;
-}
-
-std::vector<PreservedTimingSpan>
-getPreservedTimingSpans(const Project &project, const Note &note) {
-  std::vector<PreservedTimingSpan> spans;
-  if (note.isRest())
-    return spans;
-
-  const auto region = timingRegions::getSourceRegion(project, note);
-  if (note.getStartFrame() != note.getSrcStartFrame() &&
-      timingRegions::isFirstNote(project, note)) {
-    const int offset = note.getStartFrame() - note.getSrcStartFrame();
-    if (region.start < note.getSrcStartFrame())
-      spans.push_back({region.start, note.getSrcStartFrame(),
-                       region.start + offset, note.getStartFrame(), true});
-  }
-  if (note.getEndFrame() != note.getSrcEndFrame() &&
-      timingRegions::isLastNote(project, note)) {
-    const int offset = note.getEndFrame() - note.getSrcEndFrame();
-    if (note.getSrcEndFrame() < region.end)
-      spans.push_back({note.getSrcEndFrame(), region.end, note.getEndFrame(),
-                       region.end + offset, false});
-  }
-  return spans;
-}
 
 std::vector<float> interpolateMelFrame(
     const std::vector<std::vector<float>> &mel, double sourceFrame) {
@@ -127,100 +52,17 @@ std::vector<float> interpolateMelFrame(
   return frame;
 }
 
-// A retimed note's frames read the mel through its time map
-// (NoteTiming.h): the vowel is stretched, consonants are copied frame for
-// frame, so an "s" or a "t" keeps its recorded length.
-void retimeMelInterval(const std::vector<std::vector<float>> &sourceMel,
-                       const notetiming::TimeMap &map, int destinationStart,
-                       int destinationEnd, int rangeStart, int rangeEnd,
-                       std::vector<std::vector<float>> &melRange) {
-  if (destinationEnd <= destinationStart)
+// Every timeline frame reads the mel where the warp map says its audio was
+// recorded (WarpMap::sourceFrameAt): one continuous map for the whole track,
+// so notes, gaps and breaths are stretched alike.
+void applyWarpToMel(const Project &project, int rangeStart, int rangeEnd,
+                    std::vector<std::vector<float>> &melRange) {
+  const auto &audioData = project.getAudioData();
+  if (audioData.warpMap.isIdentity())
     return;
-
-  const int overlapStart = std::max(rangeStart, destinationStart);
-  const int overlapEnd = std::min(rangeEnd, destinationEnd);
-  for (int frame = overlapStart; frame < overlapEnd; ++frame)
-    melRange[static_cast<size_t>(frame - rangeStart)] =
-        interpolateMelFrame(sourceMel, map.sourceFrameAt(frame));
-}
-
-void moveMelInterval(const std::vector<std::vector<float>> &sourceMel,
-                     const PreservedTimingSpan &span, int rangeStart,
-                     int rangeEnd,
-                     std::vector<std::vector<float>> &melRange) {
-  const int overlapStart = std::max(rangeStart, span.destinationStart);
-  const int overlapEnd = std::min(rangeEnd, span.destinationEnd);
-  for (int frame = overlapStart; frame < overlapEnd; ++frame) {
-    const int sourceFrame = span.sourceStart + frame - span.destinationStart;
-    if (sourceFrame >= 0 && sourceFrame < static_cast<int>(sourceMel.size()))
-      melRange[static_cast<size_t>(frame - rangeStart)] =
-          sourceMel[static_cast<size_t>(sourceFrame)];
-  }
-}
-
-void applyNoteTimingToMel(const Project &project, int rangeStart,
-                          int rangeEnd,
-                          std::vector<std::vector<float>> &melRange) {
-  const auto &sourceMel = project.getAudioData().melSpectrogram;
-  for (const auto &note : project.getNotes()) {
-    if (note.isRest() || !hasTimingEdit(note))
-      continue;
-
-    for (const auto &span : getPreservedTimingSpans(project, note))
-      moveMelInterval(sourceMel, span, rangeStart, rangeEnd, melRange);
-
-    if (note.getSrcDurationFrames() > 0)
-      retimeMelInterval(sourceMel,
-                        notetiming::forNote(project.getAudioData(), note),
-                        note.getStartFrame(), note.getEndFrame(), rangeStart,
-                        rangeEnd, melRange);
-  }
-}
-
-void moveSourceFrameInterval(const PreservedTimingSpan &span, int rangeStart,
-                             int rangeEnd,
-                             std::vector<double> &sourceFrameMap) {
-  const int overlapStart = std::max(rangeStart, span.destinationStart);
-  const int overlapEnd = std::min(rangeEnd, span.destinationEnd);
-  for (int frame = overlapStart; frame < overlapEnd; ++frame)
-    sourceFrameMap[static_cast<size_t>(frame - rangeStart)] =
-        static_cast<double>(span.sourceStart + frame - span.destinationStart);
-}
-
-void retimeSourceFrameInterval(const notetiming::TimeMap &map,
-                               int destinationStart, int destinationEnd,
-                               int rangeStart, int rangeEnd,
-                               std::vector<double> &sourceFrameMap) {
-  if (destinationEnd <= destinationStart)
-    return;
-
-  const int overlapStart = std::max(rangeStart, destinationStart);
-  const int overlapEnd = std::min(rangeEnd, destinationEnd);
-  for (int frame = overlapStart; frame < overlapEnd; ++frame)
-    sourceFrameMap[static_cast<size_t>(frame - rangeStart)] =
-        map.sourceFrameAt(frame);
-}
-
-// The phase-vocoder counterpart of applyNoteTimingToMel(): the vocoder path
-// retimes the mel it feeds the model, this path retimes where the analysis
-// window reads from. Same spans, same order, so both engines place a
-// retimed note identically.
-void applyNoteTimingToSourceFrames(const Project &project, int rangeStart,
-                                   int rangeEnd,
-                                   std::vector<double> &sourceFrameMap) {
-  for (const auto &note : project.getNotes()) {
-    if (note.isRest() || !hasTimingEdit(note))
-      continue;
-
-    for (const auto &span : getPreservedTimingSpans(project, note))
-      moveSourceFrameInterval(span, rangeStart, rangeEnd, sourceFrameMap);
-
-    if (note.getSrcDurationFrames() > 0)
-      retimeSourceFrameInterval(
-          notetiming::forNote(project.getAudioData(), note),
-          note.getStartFrame(), note.getEndFrame(), rangeStart, rangeEnd,
-          sourceFrameMap);
-  }
+  for (int frame = rangeStart; frame < rangeEnd; ++frame)
+    melRange[static_cast<size_t>(frame - rangeStart)] = interpolateMelFrame(
+        audioData.melSpectrogram, audioData.warpMap.sourceFrameAt(frame));
 }
 
 float interpolateF0(const std::vector<float> &f0, double frame) {
@@ -244,73 +86,27 @@ float interpolateF0(const std::vector<float> &f0, double frame) {
   return leftValue * (1.0f - amount) + rightValue * amount;
 }
 
-void applyPreservedTimingToF0(const Project &project, int rangeStart,
-                              int rangeEnd,
-                              std::vector<float> &adjustedF0Range) {
-  const auto &audioData = project.getAudioData();
-  const auto &sourceF0 =
-      audioData.denseF0.empty() ? audioData.f0 : audioData.denseF0;
-  if (sourceF0.empty() || adjustedF0Range.empty())
-    return;
-
-  for (const auto &note : project.getNotes()) {
-    for (const auto &span : getPreservedTimingSpans(project, note)) {
-      const int overlapStart = std::max(rangeStart, span.destinationStart);
-      const int overlapEnd = std::min(rangeEnd, span.destinationEnd);
-      for (int frame = overlapStart; frame < overlapEnd; ++frame) {
-        const int sourceFrame =
-            span.sourceStart + frame - span.destinationStart;
-        if (sourceFrame >= 0 &&
-            sourceFrame < static_cast<int>(sourceF0.size()))
-          adjustedF0Range[static_cast<size_t>(frame - rangeStart)] =
-              sourceF0[static_cast<size_t>(sourceFrame)];
-      }
-    }
-  }
-}
-
+// The waveform a pass commits: the edited notes. Timing is not a note edit
+// any more - the warp layer lays the whole composite out again (WarpLayer.h)
+// - so a note's commit range is just where it plays now.
 std::vector<CommitFrameRange>
 collectCommitFrameRanges(const Project &project, bool hasDirtyNoteAnchors,
                          int f0DirtyStart, int f0DirtyEnd) {
   std::vector<CommitFrameRange> ranges;
-  bool needsF0RangeCommit = !hasDirtyNoteAnchors;
 
   if (hasDirtyNoteAnchors) {
     for (const auto &note : project.getNotes()) {
       if (note.isRest() || !note.isDirty())
         continue;
-
-      int start = note.getStartFrame();
-      int end = note.getEndFrame();
-
-      // Timing moves need their old and new output positions committed. A
-      // previously rendered timing edit is not a pending move, so a later
-      // pitch edit on that note keeps its waveform commit local.
-      if (hasPendingTimingPositionChange(note)) {
-        needsF0RangeCommit = true;
-        start = std::min(
-            {start, note.getSrcStartFrame(), note.getRenderedStartFrame()});
-        end = std::max(
-            {end, note.getSrcEndFrame(), note.getRenderedEndFrame()});
-        for (const auto &span : getPreservedTimingSpans(project, note)) {
-          start = std::min({start, span.sourceStart, span.destinationStart});
-          end = std::max({end, span.sourceEnd, span.destinationEnd});
-        }
-      }
-
-      if (end > start)
-        ranges.push_back({start, end});
+      if (note.getEndFrame() > note.getStartFrame())
+        ranges.push_back({note.getStartFrame(), note.getEndFrame()});
     }
   }
 
   // F0-only tools have no dirty-note anchor, so their edited curve range is
-  // the commit range. Timing undo/reset also needs it to restore a vacated
-  // destination. Ordinary pitch drags use this range only as render context;
-  // committing it would replace neighboring notes' waveform.
-  if (needsF0RangeCommit && f0DirtyStart >= 0 &&
-      f0DirtyEnd > f0DirtyStart) {
+  // the commit range.
+  if (!hasDirtyNoteAnchors && f0DirtyStart >= 0 && f0DirtyEnd > f0DirtyStart)
     ranges.push_back({f0DirtyStart, f0DirtyEnd});
-  }
 
   std::sort(ranges.begin(), ranges.end(),
             [](const CommitFrameRange &a, const CommitFrameRange &b) {
@@ -568,8 +364,8 @@ IncrementalSynthesizer::computeSynthesisRange(int dirtyStart, int dirtyEnd) {
   if (!project)
     return {dirtyStart, dirtyEnd};
 
-  auto &voicedMask = project->getAudioData().voicedMask;
-  const int totalFrames = static_cast<int>(voicedMask.size());
+  const auto &audioData = project->getAudioData();
+  const int totalFrames = static_cast<int>(audioData.voicedMask.size());
   if (totalFrames == 0)
     return {dirtyStart, dirtyEnd};
 
@@ -584,7 +380,7 @@ IncrementalSynthesizer::computeSynthesisRange(int dirtyStart, int dirtyEnd) {
   constexpr int kGapBridgeFrames = 16;
 
   auto isVoiced = [&](int idx) -> bool {
-    return idx >= 0 && idx < totalFrames && static_cast<bool>(voicedMask[idx]);
+    return idx >= 0 && idx < totalFrames && warp::voicedAt(audioData, idx);
   };
 
   // Expand backward to include neighboring voiced segments across short gaps.
@@ -634,10 +430,15 @@ IncrementalSynthesizer::computeSynthesisRange(int dirtyStart, int dirtyEnd) {
 std::vector<float>
 IncrementalSynthesizer::generateBlendMask(int startFrame, int endFrame,
                                           int hopSize) {
-  auto &voicedMask = project->getAudioData().voicedMask;
-  const int totalFrames = static_cast<int>(voicedMask.size());
+  // Timeline frames read the analysis of the audio that plays there, through
+  // the warp map (WarpLayer.h).
+  const auto &audioData = project->getAudioData();
+  const int totalFrames = static_cast<int>(audioData.voicedMask.size());
   const int numFrames = endFrame - startFrame;
   const int numSamples = numFrames * hopSize;
+  auto isVoicedAt = [&](int frame) {
+    return frame >= 0 && frame < totalFrames && warp::voicedAt(audioData, frame);
+  };
 
   // Step 1: stability-first frame mask.
   // Default to synthesized audio in the whole region to avoid internal
@@ -650,20 +451,14 @@ IncrementalSynthesizer::generateBlendMask(int startFrame, int endFrame,
   if (numFrames > 0 && totalFrames > 0) {
     int i = 0;
     while (i < numFrames) {
-      const int gf = startFrame + i;
-      const bool voiced =
-          gf >= 0 && gf < totalFrames && static_cast<bool>(voicedMask[gf]);
-      if (voiced) {
+      if (isVoicedAt(startFrame + i)) {
         ++i;
         continue;
       }
 
       const int runStart = i;
       while (i < numFrames) {
-        const int g = startFrame + i;
-        const bool v =
-            g >= 0 && g < totalFrames && static_cast<bool>(voicedMask[g]);
-        if (v)
+        if (isVoicedAt(startFrame + i))
           break;
         ++i;
       }
@@ -706,9 +501,18 @@ IncrementalSynthesizer::generateBlendMask(int startFrame, int endFrame,
 
   // Step 4: detected breaths and sibilants keep the original recording at
   // any length (see BreathSibilanceProtection.h for why and how).
-  breathsibilance::protectNoiseInBlendMask(
-      mask, project->getAudioData().breathSibilance, startFrame, numFrames,
-      hopSize);
+  if (audioData.warpMap.isIdentity()) {
+    breathsibilance::protectNoiseInBlendMask(
+        mask, audioData.breathSibilance, startFrame, numFrames, hopSize);
+  } else {
+    std::vector<std::uint8_t> timelineLabels(
+        static_cast<size_t>(std::max(0, endFrame)), 0);
+    for (int frame = std::max(0, startFrame); frame < endFrame; ++frame)
+      timelineLabels[static_cast<size_t>(frame)] =
+          warp::labelAt(audioData, frame);
+    breathsibilance::protectNoiseInBlendMask(mask, timelineLabels, startFrame,
+                                             numFrames, hopSize);
+  }
 
   return mask;
 }
@@ -727,7 +531,11 @@ IncrementalSynthesizer::buildSourceFrameMap(int startFrame, int endFrame) const 
     sourceFrameMap[static_cast<size_t>(frame - startFrame)] =
         static_cast<double>(frame);
 
-  applyNoteTimingToSourceFrames(*project, startFrame, endFrame, sourceFrameMap);
+  const auto &warpMap = project->getAudioData().warpMap;
+  if (!warpMap.isIdentity())
+    for (int frame = startFrame; frame < endFrame; ++frame)
+      sourceFrameMap[static_cast<size_t>(frame - startFrame)] =
+          warpMap.sourceFrameAt(frame);
   return sourceFrameMap;
 }
 
@@ -797,9 +605,24 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     return;
   }
 
+  // A warp edit lays the composite out again first (WarpLayer.h): the
+  // recording moved and stretched, every gain applied, and every note whose
+  // pitch is edited queued to be rendered where it now plays.
+  bool laidOut = false;
+  if (audioData.warpLayoutPending) {
+    warp::layOut(*project);
+    laidOut = true;
+    LOG("synthesizeRegion: warp layout rebuilt");
+  } else if (!audioData.warpMap.isIdentity() &&
+             audioData.warpedOriginal.getNumSamples() == 0) {
+    // A loaded project: its composite is laid out already, but the
+    // reference it blends onto is derived and not saved.
+    warp::rebuildReference(audioData);
+  }
+
   if (!project->hasDirtyNotes() && !project->hasF0DirtyRange()) {
     if (onComplete)
-      onComplete(false);
+      onComplete(laidOut);
     return;
   }
 
@@ -918,8 +741,6 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
           juce::String(note.getRenderedStartFrame()) + "," +
           juce::String(note.getRenderedEndFrame()) + ")" +
           "  hasRenderedEdit=" + (note.hasRenderedEdit() ? "yes" : "no") +
-          "  pendingTiming=" +
-          (hasPendingTimingPositionChange(note) ? "YES" : "no") +
           "  neutral=" +
           (note.isNeutralForOriginalWaveform() ? "yes" : "no"));
     }
@@ -927,30 +748,6 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   }
 
   std::vector<float> blendMask = generateBlendMask(startFrame, endFrame, hopSize);
-
-  // Timing edits cannot be mixed with pristine samples at their destination
-  // positions: even an originally unvoiced/consonant frame has moved. Keep
-  // the entire retimed note on the synthesized side of the blend.
-  for (const auto &note : project->getNotes()) {
-    if (note.isRest() || !hasTimingEdit(note))
-      continue;
-    int timingStart = std::min(note.getSrcStartFrame(), note.getStartFrame());
-    int timingEnd = std::max(note.getSrcEndFrame(), note.getEndFrame());
-    for (const auto &span : getPreservedTimingSpans(*project, note)) {
-      timingStart = std::min(
-          {timingStart, span.sourceStart, span.destinationStart});
-      timingEnd =
-          std::max({timingEnd, span.sourceEnd, span.destinationEnd});
-    }
-    const int first = std::max(startFrame, timingStart);
-    const int last = std::min(endFrame, timingEnd);
-    const int firstSample = (first - startFrame) * hopSize;
-    const int lastSample = (last - startFrame) * hopSize;
-    for (int sample = std::max(0, firstSample);
-         sample < std::min(static_cast<int>(blendMask.size()), lastSample);
-         ++sample)
-      blendMask[static_cast<size_t>(sample)] = 1.0f;
-  }
 
   // Early exit: if blend mask is all-zero, nothing to synthesize
   bool hasVoiced = std::any_of(blendMask.begin(), blendMask.end(),
@@ -963,9 +760,9 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   }
 
   // Copy original waveform segment for blending
-  const auto &origWaveform = audioData.originalWaveform.getNumSamples() > 0
-                                 ? audioData.originalWaveform
-                                 : audioData.waveform;
+  // The recording as laid out by the warp map: moved where it is not
+  // stretched, signalsmith where it is (WarpLayer.h).
+  const auto &origWaveform = warp::reference(audioData);
   int startSample = startFrame * hopSize;
   int numSynthSamples = (endFrame - startFrame) * hopSize;
   int totalOrigSamples = origWaveform.getNumSamples();
@@ -980,325 +777,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                 originalSegment.begin());
   }
 
-  // A retimed note is synthesized whole (above), except its breaths and
-  // sibilants: they keep their recorded length when the note is stretched,
-  // so they can play the recording, copied from where it was recorded.
-  if (origWaveform.getNumChannels() > 0 && !audioData.breathSibilance.empty()) {
-    for (const auto &note : project->getNotes()) {
-      if (note.isRest() || !hasTimingEdit(note) ||
-          note.getSrcDurationFrames() <= 0 ||
-          note.getEndFrame() <= startFrame || note.getStartFrame() >= endFrame)
-        continue;
-      breathsibilance::protectMovedNoiseInBlend(
-          blendMask, originalSegment, origWaveform.getReadPointer(0),
-          totalOrigSamples, audioData.breathSibilance,
-          notetiming::forNote(audioData, note), note.getStartFrame(),
-          note.getEndFrame(), startFrame, endFrame - startFrame, hopSize);
-    }
-  }
-
-  // Preserve the audio attached outside a region's first/last pitched note as
-  // immutable waveform patches. They are captured before the async render so
-  // repeated edits and undo do not accumulate synthesis or splice artifacts.
-  std::vector<AudioMovePatch> audioMovePatches;
-  if (origWaveform.getNumChannels() > 0) {
-    const float *origPtr = origWaveform.getReadPointer(0);
-    std::vector<CommitFrameRange> clearFrameRanges;
-    std::vector<CommitFrameRange> noteVacatedFrameRanges;
-    auto addClearFrameRange = [&](int start, int end) {
-      start = std::clamp(start, 0, audioData.getNumFrames());
-      end = std::clamp(end, start, audioData.getNumFrames());
-      if (end > start)
-        clearFrameRanges.push_back({start, end});
-    };
-    auto addClearPatch = [&](int startSample, int endSample,
-                             bool releaseBefore, bool attackAfter) {
-      startSample = std::clamp(startSample, 0, totalOrigSamples);
-      endSample = std::clamp(endSample, startSample, totalOrigSamples);
-      if (endSample <= startSample)
-        return;
-
-      AudioMovePatch patch;
-      patch.clearStartSample = startSample;
-      patch.clearEndSample = endSample;
-      patch.releaseBeforeClear = releaseBefore;
-      patch.attackAfterClear = attackAfter;
-      audioMovePatches.push_back(std::move(patch));
-    };
-
-    for (const auto &note : project->getNotes()) {
-      if (note.isRest())
-        continue;
-
-      const auto region = timingRegions::getSourceRegion(*project, note);
-
-      // A region edge moving inward from its last rendered position vacates
-      // that part of the composite. Compare against the rendered edge rather
-      // than only the immutable source edge so extend-then-shorten sequences
-      // clear the previous extension as well.
-      //
-      // The rendered bounds only describe the composite once the note has
-      // actually been rendered (see hasPendingTimingPositionChange). Before
-      // that they are a stale snapshot from note creation, and the note's
-      // audio still sits at its source position. Trusting the snapshot made a
-      // pitch-only edit on a region's first note clear the audio in front of
-      // the region (e.g. a breath) whenever the snapshot lagged the note.
-      const bool rendered = note.hasRenderedEdit();
-      const int occupiedStart =
-          rendered ? note.getRenderedStartFrame() : note.getSrcStartFrame();
-      const int occupiedEnd =
-          rendered ? note.getRenderedEndFrame() : note.getSrcEndFrame();
-      if (note.isDirty() && timingRegions::isFirstNote(*project, note) &&
-          note.getStartFrame() > occupiedStart) {
-        const int renderedOffset = occupiedStart - note.getSrcStartFrame();
-        const int destinationOffset =
-            note.getStartFrame() - note.getSrcStartFrame();
-        addClearFrameRange(region.start + renderedOffset,
-                           region.start + destinationOffset);
-      }
-      if (note.isDirty() && timingRegions::isLastNote(*project, note) &&
-          note.getEndFrame() < occupiedEnd) {
-        const int destinationOffset =
-            note.getEndFrame() - note.getSrcEndFrame();
-        const int renderedOffset = occupiedEnd - note.getSrcEndFrame();
-        addClearFrameRange(region.end + destinationOffset,
-                           region.end + renderedOffset);
-      }
-
-      // Keep every currently vacated source interval clear. A later edit to an
-      // adjacent region can otherwise blend immutable waveform samples back
-      // into a gap created by an earlier timing edit.
-      if (timingRegions::isFirstNote(*project, note) &&
-          note.getStartFrame() > note.getSrcStartFrame()) {
-        const int offset = note.getStartFrame() - note.getSrcStartFrame();
-        addClearFrameRange(region.start, region.start + offset);
-      }
-      if (timingRegions::isLastNote(*project, note) &&
-          note.getEndFrame() < note.getSrcEndFrame()) {
-        const int offset = note.getEndFrame() - note.getSrcEndFrame();
-        addClearFrameRange(region.end + offset, region.end);
-      }
-
-      // A note edge moved inward that is not a region edge (e.g. the first
-      // note of a phrase that shares a slicer chunk with the previous phrase)
-      // leaves part of the note's own source audio outside it. That audio has
-      // been retimed into the note, so the original frames must go silent;
-      // otherwise they are resynthesized from their untouched mel and the old
-      // attack/release stays audible and visible next to the shortened note.
-      if (note.getStartFrame() > note.getSrcStartFrame() &&
-          !timingRegions::isFirstNote(*project, note))
-        noteVacatedFrameRanges.push_back(
-            {note.getSrcStartFrame(), note.getStartFrame()});
-      if (note.getEndFrame() < note.getSrcEndFrame() &&
-          !timingRegions::isLastNote(*project, note))
-        noteVacatedFrameRanges.push_back(
-            {note.getEndFrame(), note.getSrcEndFrame()});
-
-      if (!note.isDirty() || !hasTimingEdit(note))
-        continue;
-
-      for (const auto &span : getPreservedTimingSpans(*project, note)) {
-        const int sourceStartSample = span.sourceStart * hopSize;
-        const int sourceEndSample = span.sourceEnd * hopSize;
-        const int destinationStartSample = span.destinationStart * hopSize;
-        const int sampleCount = sourceEndSample - sourceStartSample;
-        if (sampleCount <= 0 || sourceStartSample < 0 ||
-            sourceEndSample > totalOrigSamples || destinationStartSample < 0 ||
-            destinationStartSample + sampleCount > totalOrigSamples)
-          continue;
-
-        AudioMovePatch patch;
-        patch.destinationStartSample = destinationStartSample;
-        patch.samples.assign(origPtr + sourceStartSample,
-                             origPtr + sourceEndSample);
-        // A breath in the moved lead-in or tail keeps its level, as does a
-        // stray sibilant the gain of its note.
-        {
-          const auto regions = projectgain::outsideNoteRegions(*project);
-          if (!regions.empty()) {
-            const auto gain = NoteGainCurve::build(
-                regions, destinationStartSample, sampleCount,
-                totalOrigSamples, hopSize);
-            for (size_t i = 0; i < patch.samples.size() && i < gain.size(); ++i)
-              patch.samples[i] *= gain[i];
-          }
-        }
-        audioMovePatches.push_back(std::move(patch));
-      }
-    }
-
-    // Merge overlapping clear requests, then remove any interval occupied by
-    // the current region layout. This lets an adjacent region extend into a
-    // previously vacated area while the remainder of the gap stays silent.
-    std::sort(clearFrameRanges.begin(), clearFrameRanges.end(),
-              [](const CommitFrameRange &a, const CommitFrameRange &b) {
-                return a.start < b.start ||
-                       (a.start == b.start && a.end < b.end);
-              });
-    std::vector<CommitFrameRange> mergedClearRanges;
-    for (const auto &range : clearFrameRanges) {
-      if (mergedClearRanges.empty() ||
-          range.start > mergedClearRanges.back().end) {
-        mergedClearRanges.push_back(range);
-      } else {
-        mergedClearRanges.back().end =
-            std::max(mergedClearRanges.back().end, range.end);
-      }
-    }
-
-    std::vector<CommitFrameRange> occupiedRegionRanges;
-    for (int index = 0; index < timingRegions::regionCount(*project); ++index) {
-      const auto region = timingRegions::regionAt(*project, index);
-      const int currentStart =
-          static_cast<int>(std::lround(timingRegions::visualStart(*project,
-                                                                  region)));
-      const int currentEnd =
-          static_cast<int>(std::lround(timingRegions::visualEnd(*project,
-                                                                region)));
-      if (currentEnd > currentStart)
-        occupiedRegionRanges.push_back({currentStart, currentEnd});
-    }
-    std::sort(occupiedRegionRanges.begin(), occupiedRegionRanges.end(),
-              [](const CommitFrameRange &a, const CommitFrameRange &b) {
-                return a.start < b.start;
-              });
-
-    std::vector<CommitFrameRange> unoccupiedClearRanges;
-    for (const auto &clearRange : mergedClearRanges) {
-      int cursor = clearRange.start;
-      for (const auto &occupied : occupiedRegionRanges) {
-        if (occupied.end <= cursor)
-          continue;
-        if (occupied.start >= clearRange.end)
-          break;
-        if (occupied.start > cursor)
-          unoccupiedClearRanges.push_back(
-              {cursor, std::min(occupied.start, clearRange.end)});
-        cursor = std::max(cursor, occupied.end);
-        if (cursor >= clearRange.end)
-          break;
-      }
-      if (cursor < clearRange.end)
-        unoccupiedClearRanges.push_back({cursor, clearRange.end});
-    }
-
-    // If a vacated interval lies between two current regions, clear the whole
-    // current gap. The release and attack are then placed inside the adjacent
-    // regions instead of leaving fade remnants in the gap itself.
-    std::vector<CommitFrameRange> currentGapRanges;
-    for (const auto &range : unoccupiedClearRanges) {
-      CommitFrameRange gap = range;
-      bool hasLeftRegion = false;
-      bool hasRightRegion = false;
-      for (const auto &occupied : occupiedRegionRanges) {
-        if (occupied.end <= range.start) {
-          gap.start = occupied.end;
-          hasLeftRegion = true;
-          continue;
-        }
-        if (occupied.start >= range.end) {
-          gap.end = occupied.start;
-          hasRightRegion = true;
-          break;
-        }
-      }
-      if (!hasLeftRegion)
-        gap.start = range.start;
-      if (!hasRightRegion)
-        gap.end = range.end;
-      if (gap.end > gap.start)
-        currentGapRanges.push_back(gap);
-    }
-    std::sort(currentGapRanges.begin(), currentGapRanges.end(),
-              [](const CommitFrameRange &a, const CommitFrameRange &b) {
-                return a.start < b.start ||
-                       (a.start == b.start && a.end < b.end);
-              });
-    std::vector<CommitFrameRange> mergedGapRanges;
-    for (const auto &range : currentGapRanges) {
-      if (mergedGapRanges.empty() || range.start > mergedGapRanges.back().end)
-        mergedGapRanges.push_back(range);
-      else
-        mergedGapRanges.back().end =
-            std::max(mergedGapRanges.back().end, range.end);
-    }
-
-    for (const auto &gap : mergedGapRanges) {
-      const bool releaseBefore = std::any_of(
-          occupiedRegionRanges.begin(), occupiedRegionRanges.end(),
-          [&](const CommitFrameRange &occupied) {
-            return occupied.end == gap.start;
-          });
-      const bool attackAfter = std::any_of(
-          occupiedRegionRanges.begin(), occupiedRegionRanges.end(),
-          [&](const CommitFrameRange &occupied) {
-            return occupied.start == gap.end;
-          });
-      addClearPatch(gap.start * hopSize, gap.end * hopSize, releaseBefore,
-                    attackAfter);
-    }
-
-    // Silence the note-level vacated frames, minus anything currently
-    // occupied by a note or by moved lead/tail audio. Only ranges this render
-    // commits are touched, so an untouched gap is not faded again on every
-    // unrelated edit.
-    if (!noteVacatedFrameRanges.empty()) {
-      std::vector<CommitFrameRange> occupiedNoteRanges;
-      for (const auto &other : project->getNotes()) {
-        if (other.isRest())
-          continue;
-        if (other.getEndFrame() > other.getStartFrame())
-          occupiedNoteRanges.push_back(
-              {other.getStartFrame(), other.getEndFrame()});
-        if (hasTimingEdit(other))
-          for (const auto &span : getPreservedTimingSpans(*project, other))
-            if (span.destinationEnd > span.destinationStart)
-              occupiedNoteRanges.push_back(
-                  {span.destinationStart, span.destinationEnd});
-      }
-      std::sort(occupiedNoteRanges.begin(), occupiedNoteRanges.end(),
-                [](const CommitFrameRange &a, const CommitFrameRange &b) {
-                  return a.start < b.start;
-                });
-
-      const int frameCount = audioData.getNumFrames();
-      for (auto range : noteVacatedFrameRanges) {
-        range.start = std::clamp(range.start, 0, frameCount);
-        range.end = std::clamp(range.end, range.start, frameCount);
-        if (range.end <= range.start)
-          continue;
-        const bool committed = std::any_of(
-            commitFrameRanges.begin(), commitFrameRanges.end(),
-            [&](const CommitFrameRange &commit) {
-              return commit.start < range.end && commit.end > range.start;
-            });
-        if (!committed)
-          continue;
-
-        int cursor = range.start;
-        auto emit = [&](int start, int end) {
-          if (end > start)
-            addClearPatch(start * hopSize, end * hopSize, true, true);
-        };
-        for (const auto &occupied : occupiedNoteRanges) {
-          if (occupied.end <= cursor)
-            continue;
-          if (occupied.start >= range.end)
-            break;
-          emit(cursor, std::min(occupied.start, range.end));
-          cursor = std::max(cursor, occupied.end);
-          if (cursor >= range.end)
-            break;
-        }
-        if (cursor < range.end)
-          emit(cursor, range.end);
-      }
-    }
-  }
-
   std::vector<float> adjustedF0Range =
       project->getAdjustedF0ForRange(startFrame, endFrame);
-  applyPreservedTimingToF0(*project, startFrame, endFrame, adjustedF0Range);
 
   if (adjustedF0Range.empty()) {
     if (onComplete)
@@ -1324,7 +804,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   if (!usePsola) {
     melRange.assign(audioData.melSpectrogram.begin() + startFrame,
                     audioData.melSpectrogram.begin() + endFrame);
-    applyNoteTimingToMel(*project, startFrame, endFrame, melRange);
+    applyWarpToMel(*project, startFrame, endFrame, melRange);
 
     if (melRange.empty()) {
       if (onComplete)
@@ -1424,12 +904,11 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   auto onRendered =
       [this, capturedCancelFlag, capturedProject, capturedStartFrame,
        capturedEndFrame, hopSize, currentJobId, onComplete, elapsedText,
-       formantShifts, formantF0, formantSampleRate, hasGlobalFormant,
+       formantShifts, formantF0, formantSampleRate, hasGlobalFormant, usePsola,
        hasDirtyNoteAnchors, f0DirtyStart, f0DirtyEnd,
        capturedNoteCount, commitFrameRanges = std::move(commitFrameRanges),
        blendMask = std::move(blendMask),
-       originalSegment = std::move(originalSegment),
-       audioMovePatches = std::move(audioMovePatches)](
+       originalSegment = std::move(originalSegment)](
           std::vector<float> synthesizedAudio) {
         if (currentJobId != jobId.load())
           return;
@@ -1455,7 +934,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                      currentJobId, onComplete, elapsedText, hasDirtyNoteAnchors,
                      f0DirtyStart, f0DirtyEnd, capturedNoteCount,
                      commitFrameRanges, blendMask, originalSegment,
-                     audioMovePatches, formantShifts, formantF0, formantSampleRate, hasGlobalFormant,
+                     formantShifts, formantF0, formantSampleRate, hasGlobalFormant, usePsola,
                      synthesizedAudio = std::move(synthesizedAudio)]() mutable {
           if (currentJobId != jobId.load())
             return;
@@ -1528,6 +1007,25 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                 synthesizedAudio[i] +=
                     t * (originalSegment[i] - synthesizedAudio[i]);
               }
+            }
+          }
+
+          // Advance the vocoder's output by its latency so it lines up with
+          // the recording it is blended with. The range carries 24 frames of
+          // context past the commit, so the tail filled in from the
+          // recording is never committed.
+          if (!usePsola) {
+            const int latency = static_cast<int>(
+                std::lround(kVocoderLatencySeconds * formantSampleRate));
+            if (latency > 0 &&
+                latency < static_cast<int>(synthesizedAudio.size())) {
+              synthesizedAudio.erase(synthesizedAudio.begin(),
+                                     synthesizedAudio.begin() + latency);
+              const size_t size = synthesizedAudio.size();
+              synthesizedAudio.resize(size + static_cast<size_t>(latency));
+              for (size_t i = size; i < synthesizedAudio.size(); ++i)
+                synthesizedAudio[i] =
+                    i < originalSegment.size() ? originalSegment[i] : 0.0f;
             }
           }
 
@@ -1833,7 +1331,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                                   kResetSpliceSearchRadiusSamples,
                           "exact restore must cover the reset splice");
 
-            const auto &original = audioData.originalWaveform;
+            const auto &original = warp::reference(audioData);
             const int originalSamples = original.getNumSamples();
             if (!hasGlobalFormant && !resetSpans.empty() && originalSamples > 0 &&
                 original.getNumChannels() > 0) {
@@ -1843,19 +1341,6 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               for (const auto &region : breathRegions)
                 timingProtectedRanges.push_back({region.start - 128,
                                                  region.end + 128});
-              for (const auto &patch : audioMovePatches) {
-                // Timing clear fades extend 128 samples outside the gap.
-                if (patch.clearStartSample >= 0 &&
-                    patch.clearEndSample > patch.clearStartSample)
-                  timingProtectedRanges.push_back({
-                      patch.clearStartSample - kTimingClearFadeSamples,
-                      patch.clearEndSample + kTimingClearFadeSamples});
-                if (!patch.samples.empty())
-                  timingProtectedRanges.push_back({
-                      patch.destinationStartSample,
-                      patch.destinationStartSample +
-                          static_cast<int>(patch.samples.size())});
-              }
               const auto &allNotes = capturedProject->getNotes();
 
               // True if audio of an edited note (current edit, or rendered
@@ -1916,147 +1401,6 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                       original.getReadPointer(sourceChannel),
                       startSample + copyStart, startSample + copyEnd,
                       timingProtectedRanges);
-                }
-              }
-            }
-          }
-
-          // Apply fixed-length audio attached to timing-region boundaries.
-          // These joins happen after the synthesized commit, so they need
-          // their own smoothing instead of hard clear/copy operations.
-          constexpr int kTimingPatchBoundaryMarginSamples = 512;
-          constexpr int kTimingPatchFadeHalfSamples = 128;
-          constexpr int kTimingPatchAnalysisHalfSamples = 128;
-
-          // Vacated timing gaps are fully silent. Their click prevention is
-          // applied as a release/attack inside the adjacent regions below.
-          for (int channel = 0; channel < audioData.waveform.getNumChannels();
-               ++channel) {
-            auto *destination = audioData.waveform.getWritePointer(channel);
-            for (const auto &patch : audioMovePatches) {
-              if (patch.clearStartSample < 0 ||
-                  patch.clearEndSample <= patch.clearStartSample)
-                continue;
-
-              const int clearStart =
-                  std::clamp(patch.clearStartSample, 0, totalSamples);
-              const int clearEnd =
-                  std::clamp(patch.clearEndSample, clearStart, totalSamples);
-              const int clearCount = clearEnd - clearStart;
-              if (clearCount <= 0)
-                continue;
-              std::fill(destination + clearStart, destination + clearEnd,
-                        0.0f);
-            }
-          }
-
-          // Adaptively crossfade each moved patch at both ends. The shorter
-          // fades stay inside the patch while the search remains bounded by
-          // the same 512-sample timing margin.
-          for (const auto &patch : audioMovePatches) {
-            const int copyStart = std::clamp(
-                patch.destinationStartSample, 0, totalSamples);
-            const int sourceOffset = copyStart - patch.destinationStartSample;
-            const int copyCount = std::min(
-                static_cast<int>(patch.samples.size()) - sourceOffset,
-                totalSamples - copyStart);
-            if (copyCount <= 0)
-              continue;
-
-            std::vector<float> movedSamples(
-                patch.samples.begin() + sourceOffset,
-                patch.samples.begin() + sourceOffset + copyCount);
-            const int fadeHalf =
-                std::min(kTimingPatchFadeHalfSamples,
-                         std::max(1, copyCount / 4));
-            const int searchRadius = std::min(
-                std::max(0, kTimingPatchBoundaryMarginSamples - 2 * fadeHalf),
-                std::max(0, copyCount / 2 - 2 * fadeHalf));
-            const int analysisHalf =
-                std::min(kTimingPatchAnalysisHalfSamples, fadeHalf);
-            const float *existing =
-                audioData.waveform.getReadPointer(0, copyStart);
-            const int leftCenter = findBestSpliceCenter(
-                existing, movedSamples, fadeHalf, searchRadius, analysisHalf);
-            const int rightCenter = findBestSpliceCenter(
-                existing, movedSamples, copyCount - fadeHalf, searchRadius,
-                analysisHalf);
-            const int leftFadeStart = leftCenter - fadeHalf;
-            const int leftFadeEnd = leftCenter + fadeHalf;
-            const int rightFadeStart = rightCenter - fadeHalf;
-            const int rightFadeEnd = rightCenter + fadeHalf;
-
-            std::vector<float> patchMask(static_cast<size_t>(copyCount), 0.0f);
-            for (int sample = std::max(0, leftFadeStart);
-                 sample < std::min(copyCount, rightFadeEnd); ++sample) {
-              float leftBlend = 1.0f;
-              if (sample < leftFadeEnd)
-                leftBlend = smoothstep(
-                    static_cast<float>(sample - leftFadeStart) /
-                    static_cast<float>(2 * fadeHalf));
-
-              float rightBlend = 1.0f;
-              if (sample >= rightFadeStart)
-                rightBlend = smoothstep(
-                    static_cast<float>(rightFadeEnd - sample) /
-                    static_cast<float>(2 * fadeHalf));
-
-              patchMask[static_cast<size_t>(sample)] =
-                  std::min(leftBlend, rightBlend);
-            }
-
-            for (int channel = 0;
-                 channel < audioData.waveform.getNumChannels(); ++channel) {
-              auto *destination =
-                  audioData.waveform.getWritePointer(channel, copyStart);
-              for (int sample = 0; sample < copyCount; ++sample) {
-                const float blend = patchMask[static_cast<size_t>(sample)];
-                if (blend <= 0.0f)
-                  continue;
-                destination[sample] +=
-                    blend * (movedSamples[static_cast<size_t>(sample)] -
-                             destination[sample]);
-              }
-            }
-          }
-
-          // Shape audio on the occupied sides of each gap. Keeping these
-          // envelopes outside the cleared samples guarantees that the gap
-          // remains visually and audibly silent.
-          for (int channel = 0; channel < audioData.waveform.getNumChannels();
-               ++channel) {
-            auto *destination = audioData.waveform.getWritePointer(channel);
-            for (const auto &patch : audioMovePatches) {
-              if (patch.clearStartSample < 0 ||
-                  patch.clearEndSample <= patch.clearStartSample)
-                continue;
-
-              const int clearStart =
-                  std::clamp(patch.clearStartSample, 0, totalSamples);
-              const int clearEnd =
-                  std::clamp(patch.clearEndSample, clearStart, totalSamples);
-              if (patch.releaseBeforeClear && clearStart > 0) {
-                const int fadeCount =
-                    std::min(kTimingClearFadeSamples, clearStart);
-                const int fadeStart = clearStart - fadeCount;
-                const float denominator =
-                    static_cast<float>(std::max(1, fadeCount - 1));
-                for (int sample = 0; sample < fadeCount; ++sample) {
-                  const float gain = smoothstep(
-                      static_cast<float>(fadeCount - 1 - sample) /
-                      denominator);
-                  destination[fadeStart + sample] *= gain;
-                }
-              }
-              if (patch.attackAfterClear && clearEnd < totalSamples) {
-                const int fadeCount = std::min(kTimingClearFadeSamples,
-                                               totalSamples - clearEnd);
-                const float denominator =
-                    static_cast<float>(std::max(1, fadeCount - 1));
-                for (int sample = 0; sample < fadeCount; ++sample) {
-                  const float gain = smoothstep(
-                      static_cast<float>(sample) / denominator);
-                  destination[clearEnd + sample] *= gain;
                 }
               }
             }

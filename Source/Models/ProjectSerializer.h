@@ -13,7 +13,15 @@
  */
 class ProjectSerializer {
 public:
-    static constexpr int FORMAT_VERSION = 5;
+    // 6: the warp layer (WarpMap.h). Older formats kept per-note timing that
+    // the warp map cannot reproduce, so they are refused (spec Q3) and
+    // lastLoadWasLegacy() says why.
+    static constexpr int FORMAT_VERSION = 6;
+    static constexpr int FIRST_WARP_FORMAT_VERSION = 6;
+
+    /** True when the last fromJson()/fromBinaryArchive() call refused a
+     *  project saved by a PitchNet without the warp layer. */
+    static bool lastLoadWasLegacy();
 
     enum class BinaryArchiveMode {
         // Standalone documents and conventional plug-in state must remain

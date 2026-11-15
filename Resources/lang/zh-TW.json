@@ -82,6 +82,7 @@
   "dialog.pitch_edits_failed": "專案已開啟，但套用已儲存的音高編輯失敗。\n可以按「重新分析」重建音高資料。",
   "dialog.project_audio_missing": "找不到專案的音訊檔案：",
   "dialog.project_load_failed": "無法載入專案：",
+  "dialog.project_legacy": "此檔案來自舊版 PitchNet，無法開啟：",
   "dialog.reanalyze": "重新分析",
   "dialog.reanalyze_question": "要重新分析這段音訊嗎？",
   "dialog.recent_missing": "最近檔案不存在",

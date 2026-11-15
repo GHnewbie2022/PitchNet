@@ -438,6 +438,19 @@ add_library(pitchnet_ui STATIC ${PITCHNET_UI_SOURCES})
 
 target_include_directories(pitchnet_core PRIVATE ${R8BRAIN_INCLUDE_DIR})
 
+# signalsmith-stretch (MIT, header only) for the warp layer: time-stretches the
+# recording where it is stretched but not re-pitched. Only WarpedSource.cpp
+# includes it, so its Accelerate configuration stays out of the JUCE sources.
+target_include_directories(pitchnet_core PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/signalsmith-stretch"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/signalsmith-linear/include")
+if(APPLE)
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/Source/Audio/Synthesis/WarpedSource.cpp"
+        PROPERTIES COMPILE_DEFINITIONS "SIGNALSMITH_USE_ACCELERATE;ACCELERATE_NEW_LAPACK")
+    target_link_libraries(pitchnet_core PUBLIC "-framework Accelerate")
+endif()
+
 if(PITCHNET_SYNTH_NOTE_DIAGNOSTICS)
     target_compile_definitions(pitchnet_core PUBLIC PITCHNET_SYNTH_NOTE_DIAGNOSTICS=1)
     message(STATUS "PitchNet: per-note synthesis diagnostics ENABLED")

@@ -63,8 +63,10 @@ bool Note::isNeutralForOriginalWaveform() const
     constexpr float kPitchEpsilon = 0.001f;
     constexpr float kGainEpsilon = 0.001f;
 
-    return startFrame == srcStartFrame && endFrame == srcEndFrame &&
-           std::abs(midiNote - originalMidiNote) <= kPitchEpsilon &&
+    // Timing is not part of it: the warp layer moves and stretches the
+    // recording itself (WarpLayer.h), so a retimed note with its recorded
+    // pitch still plays the (laid out) recording.
+    return std::abs(midiNote - originalMidiNote) <= kPitchEpsilon &&
            !hasBakedDeltaPitch() &&
            std::abs(pitchOffset) <= kPitchEpsilon &&
            std::abs(formantShift) <= kPitchEpsilon &&

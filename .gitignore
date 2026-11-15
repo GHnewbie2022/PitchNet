@@ -42,7 +42,9 @@ tempcalude-*
 
 third_party/ASIOSDK/
 /build-xcode
-/third_party
+/third_party/*
+!/third_party/signalsmith-stretch/
+!/third_party/signalsmith-linear/
 sign.sh
 
 # Signing secrets

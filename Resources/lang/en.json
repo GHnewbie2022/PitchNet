@@ -84,6 +84,7 @@
   "dialog.pitch_edits_failed": "Project opened, but applying saved pitch edits failed.\nYou can click Re-analyze to rebuild pitch data.",
   "dialog.project_audio_missing": "Project audio file not found:",
   "dialog.project_load_failed": "Failed to load project:",
+  "dialog.project_legacy": "This project was saved by an older PitchNet and cannot be opened:",
   "dialog.reanalyze": "Re-analyze",
   "dialog.reanalyze_question": "Do you want to re-analyze this audio?",
   "dialog.recent_missing": "Recent file missing",

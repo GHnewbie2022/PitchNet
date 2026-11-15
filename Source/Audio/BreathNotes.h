@@ -4,7 +4,6 @@
 #include "../Models/Project.h"
 #include "../Utils/Constants.h"
 #include "../Utils/NoteGainCurve.h"
-#include "../Utils/TimingRegionUtils.h"
 
 #include <algorithm>
 #include <cmath>
@@ -86,42 +85,18 @@ inline float noteEnd(const Note &note, Layout layout)
 
 /**
  * How far audio at source frames [start, end) sits from where it was
- * recorded. A region's lead-in moves with its first note and its tail with
- * its last note (IncrementalSynthesizer's preserved timing spans); anything
- * else stays where it is.
+ * recorded: the warp layer's shift at its middle (WarpMap.h). A breath in a
+ * stretched stretch keeps its recorded length on screen; it is short, so its
+ * centre is what matters.
  */
 inline float displacementFrames(const Project &project, int start, int end,
-                                Layout layout = Layout::onScreen)
+                                Layout = Layout::onScreen)
 {
-  const auto &audioData = project.getAudioData();
-  timingRegions::SourceRegion region{0, 0, audioData.getNumFrames()};
-  if (!audioData.segmentChunkRanges.empty())
-  {
-    const int midpoint = start + (end - start) / 2;
-    bool found = false;
-    for (size_t i = 0; i < audioData.segmentChunkRanges.size(); ++i)
-    {
-      const auto &range = audioData.segmentChunkRanges[i];
-      if (midpoint >= range.first && midpoint < range.second)
-      {
-        region = {static_cast<int>(i), range.first, range.second};
-        found = true;
-        break;
-      }
-    }
-    if (!found)
-      return 0.0f;
-  }
-
-  if (const auto *first = timingRegions::firstNote(project, region))
-    if (start >= region.start && end <= first->getSrcStartFrame())
-      return detail::noteStart(*first, layout) -
-             static_cast<float>(first->getSrcStartFrame());
-  if (const auto *last = timingRegions::lastNote(project, region))
-    if (start >= last->getSrcEndFrame() && end <= region.end)
-      return detail::noteEnd(*last, layout) -
-             static_cast<float>(last->getSrcEndFrame());
-  return 0.0f;
+  const auto &map = project.getAudioData().warpMap;
+  if (map.isIdentity())
+    return 0.0f;
+  const double middle = 0.5 * (start + end);
+  return static_cast<float>(map.destinationAt(middle) - middle);
 }
 
 /** Every breath and stray sibilant outside the notes, placed. */

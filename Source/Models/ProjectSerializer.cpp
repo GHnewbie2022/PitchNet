@@ -13,7 +13,10 @@
 namespace
 {
 constexpr std::uint32_t kProjectArchiveMagic = 0x504E4152u; // PNAR
-constexpr int kProjectArchiveVersion = 10;
+// 11: the warp layer. Archives before it are refused (see FORMAT_VERSION).
+constexpr int kProjectArchiveVersion = 11;
+constexpr int kFirstWarpProjectArchiveVersion = 11;
+thread_local bool lastLoadLegacy = false;
 constexpr int kProjectArchiveHasOriginalWaveform = 1 << 0;
 constexpr int kProjectArchiveHasMelSpectrogram = 1 << 1;
 constexpr int kProjectArchiveHasRenderedWaveform = 1 << 2;
@@ -214,6 +217,8 @@ bool readMel(juce::InputStream& in, std::vector<std::vector<float>>& mel)
 }
 } // namespace
 
+bool ProjectSerializer::lastLoadWasLegacy() { return lastLoadLegacy; }
+
 bool ProjectSerializer::saveToFile(const Project& project, const juce::File& file) {
     // A .pitchnet document is self-contained: retain its rendered waveform and
     // analysis caches so it can reopen without the original source audio.
@@ -263,6 +268,18 @@ juce::var ProjectSerializer::toJson(const Project& project,
         regionRanges.add(range);
     }
     obj->setProperty("playbackRegionRanges", regionRanges);
+
+    // The warp layer (a user edit): its length and anchors, in frames.
+    {
+        const auto &map = project.getAudioData().warpMap;
+        auto *warpObject = new juce::DynamicObject();
+        warpObject->setProperty("length", map.length());
+        juce::Array<juce::var> anchors;
+        for (const auto &anchor : map.anchors())
+            anchors.add(juce::Array<juce::var>{anchor.source, anchor.destination});
+        warpObject->setProperty("anchors", anchors);
+        obj->setProperty("warp", juce::var(warpObject));
+    }
 
     // Breath note gains (a user edit), as [start, end, dB] runs of source
     // frames; the breath labels themselves are rebuilt on load.
@@ -319,6 +336,7 @@ juce::var ProjectSerializer::toJson(const Project& project,
     obj->setProperty("timelineGridDivision",
                      static_cast<int>(project.getTimelineGridDivision()));
     obj->setProperty("timelineSnapCycle", project.getTimelineSnapCycle());
+    obj->setProperty("timelineSnapWarp", project.getTimelineSnapWarp());
 
     // Loop range
     const auto& loopRange = project.getLoopRange();
@@ -390,7 +408,8 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
 
     const int formatVersion =
         static_cast<int>(json.getProperty("formatVersion", 1));
-    if (formatVersion < 1 || formatVersion > FORMAT_VERSION)
+    lastLoadLegacy = formatVersion >= 1 && formatVersion < FIRST_WARP_FORMAT_VERSION;
+    if (formatVersion < FIRST_WARP_FORMAT_VERSION || formatVersion > FORMAT_VERSION)
         return false;
 
     // Metadata
@@ -417,6 +436,26 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
                     static_cast<double>((*range)[1]));
         }
     }
+    // The warp layer. Its length is stored so it does not depend on the mel,
+    // which host-backed ARA state rebuilds later; the notes were saved at
+    // the frames this map gives them. warpedOriginal is rebuilt when needed.
+    {
+        const auto warpVar = json.getProperty("warp", juce::var());
+        warp::WarpMap map(static_cast<double>(warpVar.getProperty("length", 0.0)));
+        std::vector<warp::Anchor> anchors;
+        if (auto *list = warpVar.getProperty("anchors", juce::var()).getArray())
+            for (const auto &anchorVar : *list)
+                if (auto *pair = anchorVar.getArray(); pair && pair->size() >= 2)
+                    anchors.push_back({static_cast<double>((*pair)[0]),
+                                       static_cast<double>((*pair)[1])});
+        map.setAnchors(std::move(anchors));
+        if (!map.isValid())
+            map.clear();
+        audioData.warpMap = std::move(map);
+        audioData.warpedOriginal.setSize(0, 0);
+        audioData.warpLayoutPending = false;
+    }
+
     audioData.breathGainDb.clear();
     if (auto *runs = json.getProperty("breathGains", juce::var()).getArray()) {
         constexpr int kMaxFrames = 1 << 26;
@@ -531,6 +570,8 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
     }
     project.setTimelineSnapCycle(static_cast<bool>(
         json.getProperty("timelineSnapCycle", false)));
+    project.setTimelineSnapWarp(static_cast<bool>(
+        json.getProperty("timelineSnapWarp", false)));
 
     // Loop range
     auto loopVar = json.getProperty("loop", juce::var());
@@ -752,7 +793,9 @@ bool ProjectSerializer::fromBinaryArchive(Project& project, const void* data,
     if (static_cast<std::uint32_t>(in.readInt()) != kProjectArchiveMagic)
         return false;
     const int archiveVersion = in.readInt();
-    if (archiveVersion < 1 || archiveVersion > kProjectArchiveVersion)
+    lastLoadLegacy = archiveVersion >= 1 && archiveVersion < kFirstWarpProjectArchiveVersion;
+    if (archiveVersion < kFirstWarpProjectArchiveVersion ||
+        archiveVersion > kProjectArchiveVersion)
         return false;
 
     const int archiveFlags =

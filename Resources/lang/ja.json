@@ -82,6 +82,7 @@
   "dialog.pitch_edits_failed": "プロジェクトは開きましたが、保存されたピッチ編集を適用できませんでした。\n「再解析」を押すとピッチデータを作り直せます。",
   "dialog.project_audio_missing": "プロジェクトの音声ファイルが見つかりません:",
   "dialog.project_load_failed": "プロジェクトを読み込めませんでした:",
+  "dialog.project_legacy": "このプロジェクトは旧バージョンの PitchNet で保存されているため開けません：",
   "dialog.reanalyze": "再解析",
   "dialog.reanalyze_question": "この音声を再解析しますか？",
   "dialog.recent_missing": "最近使ったファイルがありません",

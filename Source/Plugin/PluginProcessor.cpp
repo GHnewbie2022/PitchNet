@@ -130,6 +130,16 @@ void mergeRenderedState(Project &target, const Project &rendered) {
   const auto &renderedAudio = rendered.getAudioData();
   targetAudio.waveform.makeCopyOf(renderedAudio.waveform);
   targetAudio.timelineOffsetSeconds = renderedAudio.timelineOffsetSeconds;
+  // The composite just copied is laid out for the rendered project's map.
+  targetAudio.compositeMap = renderedAudio.compositeMap;
+  targetAudio.compositeMapKnown = renderedAudio.compositeMapKnown;
+  // The render laid the composite out for this warp map. If the map has not
+  // changed since, the persistent project is laid out too; otherwise its newer
+  // edit stays pending for the next render.
+  if (targetAudio.warpMap == renderedAudio.warpMap) {
+    targetAudio.warpLayoutPending = renderedAudio.warpLayoutPending;
+    targetAudio.warpedOriginal.makeCopyOf(renderedAudio.warpedOriginal);
+  }
   targetAudio.playbackRegionRanges = renderedAudio.playbackRegionRanges;
 
   auto &targetNotes = target.getNotes();
@@ -1438,6 +1448,26 @@ void PitchNetAudioProcessor::requestCapturedAudioAnalysis(
           std::copy(src.melSpectrogram.begin(), src.melSpectrogram.end(),
                     dst.melSpectrogram.begin() + frameOffset);
 
+          // The new take replaces the warp anchors over its span: it is
+          // analysed fresh, unwarped.
+          {
+            auto anchors = dst.warpMap.anchors();
+            anchors.erase(
+                std::remove_if(anchors.begin(), anchors.end(),
+                               [frameOffset, captureEndFrame](const auto &a) {
+                                 return a.source >= frameOffset &&
+                                        a.source <= captureEndFrame;
+                               }),
+                anchors.end());
+            dst.warpMap.setAnchors(std::move(anchors));
+            dst.warpMap.setLength(
+                static_cast<double>(dst.melSpectrogram.size()));
+            if (!dst.warpMap.isValid())
+              dst.warpMap.clear();
+            dst.warpedOriginal.setSize(0, 0);
+            dst.warpLayoutPending = !dst.warpMap.isIdentity();
+          }
+
           auto &notes = completedProject->getNotes();
           notes.erase(
               std::remove_if(notes.begin(), notes.end(),
@@ -1900,6 +1930,11 @@ bool PitchNetAudioProcessor::projectHasRegionEdits(const Project &project) {
       project.getFormantShift() != 0.0f)
     return true;
 
+  // Timing lives in the warp layer, not on the notes (WarpLayer.h): a region
+  // that is only stretched still has to play the processed audio.
+  if (!project.getAudioData().warpMap.isIdentity())
+    return true;
+
   // Compare each note against the original rather than trusting
   // hasRenderedEdit(). That flag is historical: it records that a note once
   // contributed to the persisted composite, and it is only refreshed for
@@ -1909,7 +1944,7 @@ bool PitchNetAudioProcessor::projectHasRegionEdits(const Project &project) {
   // source, and stayed on a re-synthesised blob whose splice boundaries are
   // audible as a click on every syllable.
   //
-  // isNeutralForOriginalWaveform() checks timing, pitch, baked delta, offset,
+  // isNeutralForOriginalWaveform() checks pitch, baked delta, offset,
   // formant, volume, tilt, vibrato, drift, smoothing and delta scale, so a
   // note it calls neutral is one the original audio already represents
   // exactly.

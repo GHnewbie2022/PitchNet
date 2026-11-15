@@ -2,6 +2,7 @@
 
 #include "../JuceHeader.h"
 #include "../Audio/IO/MidiReference.h"
+#include "../Audio/WarpMap.h"
 #include "Note.h"
 #include <cstdint>
 #include <vector>
@@ -62,6 +63,22 @@ struct AudioData
     // past the end, = unchanged). A user edit, so it is saved with a project
     // (as runs); see breathnotes (BreathNotes.h).
     std::vector<float> breathGainDb;
+    // The warp layer (WarpMap.h): where each recorded frame plays on the
+    // timeline. A user edit, saved with the project. Notes keep their source
+    // frames; their timeline frames are derived from this (WarpLayer.h).
+    warp::WarpMap warpMap;
+    // originalWaveform laid out by warpMap (WarpedSource.h): the reference
+    // every edit is blended onto. Derived; empty while warpMap is the identity,
+    // in which case originalWaveform itself is the reference.
+    juce::AudioBuffer<float> warpedOriginal;
+    // The warp map changed and the composite has not been laid out again yet.
+    bool warpLayoutPending = false;
+    // The map the composite (waveform) is laid out for. It trails warpMap
+    // while an anchor is dragged and until the next layOut, so the piano
+    // roll can draw the composite where the new map will put it. Known once
+    // the map is first edited or laid out (WarpLayer.h).
+    warp::WarpMap compositeMap;
+    bool compositeMapKnown = false;
     std::vector<std::pair<int, int>> segmentChunkRanges; // [N] GAME slicer chunks in frame range [start, end)
     std::vector<SegmentDebugChunk> segmentDebugChunks;   // raw GAME outputs for debug visualization
 
@@ -165,6 +182,7 @@ struct MacroParameters
     double timelineTempoBpm = 120.0;
     TimelineGridDivision timelineGridDivision = TimelineGridDivision::Quarter;
     bool timelineSnapCycle = false;
+    bool timelineSnapWarp = false;
 };
 
 /**
@@ -318,6 +336,8 @@ public:
     void setTimelineGridDivision(TimelineGridDivision division);
     bool getTimelineSnapCycle() const { return macroParameters->timelineSnapCycle; }
     void setTimelineSnapCycle(bool enabled);
+    bool getTimelineSnapWarp() const { return macroParameters->timelineSnapWarp; }
+    void setTimelineSnapWarp(bool enabled);
 
     std::shared_ptr<MacroParameters> getMacroParameters() const
     {

@@ -68,8 +68,10 @@ constexpr juce::int64 kPitchNetAraModificationArchiveMagic =
 // read for stream alignment only and then discarded - their note frames and
 // waveforms are timeline-anchored, so reusing them here would place edits and
 // rendered audio at the wrong offset. Affected modifications simply re-analyse.
-constexpr int kPitchNetAraModificationArchiveVersion = 4;
-constexpr int kPitchNetAraFirstModificationTimeArchiveVersion = 4;
+// v5: the warp layer. v4 projects keep per-note timing the warp map cannot
+// reproduce (spec Q3), so like v3 they are read for alignment and dropped.
+constexpr int kPitchNetAraModificationArchiveVersion = 5;
+constexpr int kPitchNetAraFirstModificationTimeArchiveVersion = 5;
 
 juce::AudioBuffer<float> resampleAuditionBuffer(
     const juce::AudioBuffer<float> &source, double sourceRate,

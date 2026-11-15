@@ -10,6 +10,6 @@
 #include "NoteActions.h"
 #include "DragActions.h"
 #include "PitchToolAction.h"
-#include "TimingAction.h"
+#include "WarpAction.h"
 #include "PitchDrawingAction.h"
 #include "PitchUndoManager.h"

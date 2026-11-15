@@ -751,7 +751,8 @@ void EditorController::resynthesizeIncrementalAsync(
     }
   }
 
-  if (!project.hasDirtyNotes() && !project.hasF0DirtyRange())
+  const bool warpPending = audioData.warpLayoutPending;
+  if (!warpPending && !project.hasDirtyNotes() && !project.hasF0DirtyRange())
   {
     if (onComplete)
       onComplete(false);
@@ -759,7 +760,7 @@ void EditorController::resynthesizeIncrementalAsync(
   }
 
   auto [dirtyStart, dirtyEnd] = project.getDirtyFrameRange();
-  if (dirtyStart < 0 || dirtyEnd < 0)
+  if (!warpPending && (dirtyStart < 0 || dirtyEnd < 0))
   {
     if (onComplete)
       onComplete(false);

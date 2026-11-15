@@ -22,8 +22,10 @@ void MainComponent::openProjectFile(const juce::File &file) {
   auto loadedProject = std::make_shared<Project>();
   if (!ProjectSerializer::loadFromFile(*loadedProject, file)) {
     StyledMessageBox::show(this, TR("dialog.open_failed"),
-                           TR("dialog.project_load_failed") + "\n" +
-                               file.getFullPathName(),
+                           (ProjectSerializer::lastLoadWasLegacy()
+                                ? TR("dialog.project_legacy")
+                                : TR("dialog.project_load_failed")) +
+                               "\n" + file.getFullPathName(),
                            StyledMessageBox::WarningIcon);
     return;
   }

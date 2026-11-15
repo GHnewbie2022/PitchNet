@@ -10,42 +10,74 @@
 
 /**
  * Time maps for notes (NoteTimeMap.h): which recorded frames a note plays
- * where, now that a stretched note holds its vowel and keeps its consonants
- * at their recorded length. Everything that lays a note's audio or curves out
- * over its frames goes through these - the vocoder's mel, PSOLA's read
- * position, the pitch contour, the blend with the recording, and the piano
- * roll - so the picture, the pitch and the sound stay together.
+ * where. Since the warp layer (WarpMap.h) a note is stretched evenly between
+ * the warp anchors - consonants, vowels and gaps alike - so its map is the
+ * slice of the track's warp map over the note's source frames, fitted to the
+ * note's whole timeline frames. Everything that lays a note's audio or
+ * curves out over its frames goes through these - the vocoder's mel, PSOLA's
+ * read position, the pitch contour, the blend with the recording, and the
+ * piano roll - so the picture, the pitch and the sound stay together.
  */
 namespace notetiming
 {
+/** The warp map over source frames [sourceStart, sourceEnd), fitted to
+ *  destination [destinationStart, destinationEnd). */
+inline TimeMap warpSlice(const warp::WarpMap &warpMap, int sourceStart,
+                         int sourceEnd, double destinationStart,
+                         double destinationEnd)
+{
+  if (sourceEnd <= sourceStart)
+    return TimeMap::uniform(sourceStart, sourceEnd, destinationStart,
+                            destinationEnd);
+  std::vector<std::pair<double, double>> points;
+  points.push_back({static_cast<double>(sourceStart),
+                    warpMap.destinationAt(sourceStart)});
+  for (const auto &anchor : warpMap.anchors())
+    if (anchor.source > sourceStart && anchor.source < sourceEnd)
+      points.push_back({anchor.source, anchor.destination});
+  points.push_back({static_cast<double>(sourceEnd),
+                    warpMap.destinationAt(sourceEnd)});
+
+  // Fit the warped span onto the note's (rounded) frames.
+  const double first = points.front().second;
+  const double span = points.back().second - first;
+  const double target = destinationEnd - destinationStart;
+  for (auto &point : points)
+    point.second = span > 0.0
+                       ? destinationStart + (point.second - first) * target / span
+                       : destinationStart;
+  points.back().second = destinationEnd;
+  return TimeMap::fromPoints(points);
+}
+
 /** The note as committed: its source frames over [start, end). */
 inline TimeMap forNote(const AudioData &audioData, const Note &note)
 {
-  return TimeMap::build(audioData.voicedMask, audioData.breathSibilance,
-                        note.getSrcStartFrame(), note.getSrcEndFrame(),
-                        note.getStartFrame(), note.getEndFrame());
+  return warpSlice(audioData.warpMap, note.getSrcStartFrame(),
+                   note.getSrcEndFrame(), note.getStartFrame(),
+                   note.getEndFrame());
 }
 
-/** The note as drawn: follows a timing drag in progress. */
+/** The note as drawn. A warp drag updates the map live, so this is the
+ *  committed layout too. */
 inline TimeMap forNoteOnScreen(const AudioData &audioData, const Note &note)
 {
-  return TimeMap::build(audioData.voicedMask, audioData.breathSibilance,
-                        note.getSrcStartFrame(), note.getSrcEndFrame(),
-                        note.getVisualStartFrame(), note.getVisualEndFrame());
+  return warpSlice(audioData.warpMap, note.getSrcStartFrame(),
+                   note.getSrcEndFrame(), note.getVisualStartFrame(),
+                   note.getVisualEndFrame());
 }
 
 /**
  * The map a per-frame curve stored with the note was written under. A curve
  * is stored at the length the note had when it was written - the recorded
  * length for the analysed contour, the note's length at the time for a drawn
- * one - so its frames sit where that note's audio played then.
+ * one - spread evenly over the note's source frames.
  */
-inline TimeMap forStoredCurve(const AudioData &audioData, const Note &note,
+inline TimeMap forStoredCurve(const AudioData &, const Note &note,
                               int curveLength)
 {
-  return TimeMap::build(audioData.voicedMask, audioData.breathSibilance,
-                        note.getSrcStartFrame(), note.getSrcEndFrame(), 0.0,
-                        static_cast<double>(curveLength));
+  return TimeMap::uniform(note.getSrcStartFrame(), note.getSrcEndFrame(), 0.0,
+                          static_cast<double>(curveLength));
 }
 
 /**

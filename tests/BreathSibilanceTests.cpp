@@ -336,181 +336,6 @@ void noteEdgeTests()
                   {{5, 46}}));
 }
 
-bool near(double a, double b, double tolerance = 1e-9)
-{
-  return std::abs(a - b) <= tolerance;
-}
-
-// Stretching a note: the vowel takes the change, consonants keep their
-// recorded length and land on whole frames.
-void timeMapTests()
-{
-  using notetiming::TimeMap;
-
-  // "s" + vowel + "t": source frames [100, 134).
-  EdgeFrames frames(200);
-  frames.sibilant(100, 106).vowel(106, 130).plosive(130, 134);
-
-  // Moved, not stretched: every frame plays its own source frame.
-  {
-    const auto map =
-        TimeMap::build(frames.voiced, frames.labels, 100, 134, 150, 184);
-    for (int d = 150; d < 184; ++d)
-    {
-      CHECK(map.unscaledSourceFrame(d) == d - 50);
-      CHECK(near(map.sourceFrameAt(d), d - 50));
-    }
-  }
-
-  // Twice as long: the "s" and the "t" keep 6 and 4 frames, the vowel goes
-  // from 24 to 58.
-  {
-    const auto map =
-        TimeMap::build(frames.voiced, frames.labels, 100, 134, 200, 268);
-    CHECK(map.segments().size() == 3);
-    for (int d = 200; d < 206; ++d)
-      CHECK(map.unscaledSourceFrame(d) == d - 100);
-    for (int d = 264; d < 268; ++d)
-      CHECK(map.unscaledSourceFrame(d) == d - 134);
-    for (int d = 206; d < 264; ++d)
-      CHECK(map.unscaledSourceFrame(d) == -1);
-    CHECK(near(map.destinationAt(106), 206));
-    CHECK(near(map.destinationAt(130), 264));
-    CHECK(near(map.sourceAt(235), 118)); // the middle of the vowel
-    for (double x = 200.0; x <= 268.0; x += 0.25)
-      CHECK(near(map.destinationAt(map.sourceAt(x)), x, 1e-9));
-  }
-
-  // A consonant between two vowels still lands on whole frames: the vowels
-  // share 28 frames as 16 + 12 (largest remainder of 16.47 + 11.53).
-  {
-    EdgeFrames mid(60);
-    mid.vowel(10, 20).sibilant(20, 25).vowel(25, 32);
-    const auto map = TimeMap::build(mid.voiced, mid.labels, 10, 32, 0, 33);
-    for (int d = 16; d < 21; ++d)
-      CHECK(map.unscaledSourceFrame(d) == d + 4);
-    CHECK(near(map.segments().back().destinationEnd, 33));
-  }
-
-  // Shortened: the vowel gives up its length first, down to 30% of it (9 of
-  // 30 frames here); past that, the consonants shrink with it.
-  {
-    EdgeFrames squeeze(60);
-    squeeze.sibilant(0, 6).vowel(6, 36).sibilant(36, 40);
-    const auto kept = TimeMap::build(squeeze.voiced, squeeze.labels, 0, 40, 0, 19);
-    CHECK(kept.unscaledSourceFrame(0) == 0);
-    CHECK(kept.unscaledSourceFrame(18) == 39);
-    CHECK(near(kept.destinationAt(36), 15));
-    const auto shrunk =
-        TimeMap::build(squeeze.voiced, squeeze.labels, 0, 40, 0, 15);
-    // 6 + 9 + 4 frames scaled to 15.
-    CHECK(near(shrunk.destinationAt(6), 6.0 * 15 / 19));
-    CHECK(near(shrunk.destinationAt(36), 15.0 * 15 / 19));
-    for (int d = 0; d < 15; ++d)
-      CHECK(shrunk.unscaledSourceFrame(d) == -1);
-  }
-
-  // No vowel, or only a blip of voicing: an even stretch, as before.
-  {
-    EdgeFrames none(40);
-    none.sibilant(0, 8).vowel(8, 10).sibilant(10, 20);
-    const auto map = TimeMap::build(none.voiced, none.labels, 0, 20, 0, 40);
-    CHECK(map.segments().size() == 1);
-    CHECK(near(map.sourceAt(20), 10));
-  }
-
-  // A one-frame voicing dropout stays inside the vowel; an "s" there does not.
-  {
-    EdgeFrames dropout(40);
-    dropout.vowel(0, 10).vowel(11, 20);
-    CHECK(TimeMap::build(dropout.voiced, dropout.labels, 0, 20, 0, 40)
-              .segments()
-              .size() == 1);
-    dropout.sibilant(10, 11);
-    const auto map =
-        TimeMap::build(dropout.voiced, dropout.labels, 0, 20, 0, 40);
-    CHECK(map.segments().size() == 3);
-    bool found = false;
-    for (int d = 0; d < 40; ++d)
-      found = found || map.unscaledSourceFrame(d) == 10;
-    CHECK(found);
-  }
-
-  // A note's contour follows its audio. Stored at the recorded length, a
-  // curve of source frame numbers reads back as the frame each destination
-  // frame plays; drawn on the stretched note and stretched again, it still
-  // lands on the same audio.
-  {
-    AudioData audio;
-    audio.voicedMask = frames.voiced;
-    audio.breathSibilance = frames.labels;
-    Note note(100, 134, 60.0f);
-    note.setStartFrame(200);
-    note.setEndFrame(268);
-    std::vector<float> recorded(34);
-    for (int i = 0; i < 34; ++i)
-      recorded[static_cast<size_t>(i)] = static_cast<float>(100 + i);
-    CHECK(notetiming::curveOnNote(audio, note, recorded).size() == 68);
-    CHECK(notetiming::curveOnNote(audio, Note(100, 134, 60.0f), recorded) ==
-          recorded);
-
-    const auto map = notetiming::forNote(audio, note);
-    const auto laidOut = notetiming::curveOnNote(audio, note, recorded);
-    for (int d = 200; d < 268; ++d)
-    {
-      const double expected = std::clamp(map.sourceFrameAt(d), 100.0, 133.0);
-      CHECK(near(laidOut[static_cast<size_t>(d - 200)], expected, 1e-4));
-      if (map.unscaledSourceFrame(d) >= 0)
-        CHECK(laidOut[static_cast<size_t>(d - 200)] ==
-              static_cast<float>(map.unscaledSourceFrame(d)));
-    }
-
-    Note longer = note;
-    longer.setEndFrame(302);
-    const auto fromRecorded = notetiming::curveOnNote(audio, longer, recorded);
-    const auto fromDrawn = notetiming::curveOnNote(audio, longer, laidOut);
-    CHECK(fromRecorded.size() == 102 && fromDrawn.size() == 102);
-    for (size_t i = 0; i < fromRecorded.size(); ++i)
-      CHECK(near(fromRecorded[i], fromDrawn[i], 0.5));
-
-    // Where those curves divide when the note is cut at a recorded frame.
-    CHECK(notetiming::curveIndexAtSource(audio, note, 34, 120) == 20);
-    CHECK(notetiming::curveIndexAtSource(audio, note, 68, 106) == 6);
-    CHECK(notetiming::curveIndexAtSource(audio, note, 68, 130) == 64);
-  }
-
-  // The blend keeps the recording for a moved note's "s", copied from where
-  // it was recorded, and leaves the stretched vowel synthesized.
-  {
-    constexpr int hop = 8;
-    std::vector<float> recording(200 * hop);
-    for (size_t i = 0; i < recording.size(); ++i)
-      recording[i] = static_cast<float>(i);
-    const auto map =
-        TimeMap::build(frames.voiced, frames.labels, 100, 134, 200, 268);
-    // Render range: frames [190, 280).
-    std::vector<float> mask(90 * hop, 1.0f);
-    std::vector<float> original(90 * hop, -1.0f);
-    breathsibilance::protectMovedNoiseInBlend(
-        mask, original, recording.data(), static_cast<int>(recording.size()),
-        frames.labels, map, 200, 268, 190, 90, hop, 2);
-    // The "s" plays destination frames [200, 206): kept from its own samples,
-    // inside the note and away from the fades.
-    for (int sample = (200 - 190) * hop + 2; sample < (206 - 190) * hop - hop / 2 - 2;
-         ++sample)
-    {
-      CHECK(mask[static_cast<size_t>(sample)] == 0.0f);
-      CHECK(original[static_cast<size_t>(sample)] ==
-            static_cast<float>(sample + 190 * hop - 100 * hop));
-    }
-    // Before the note, the vowel and the unlabelled "t" stay synthesized.
-    for (int sample = 0; sample < (200 - 190) * hop; ++sample)
-      CHECK(mask[static_cast<size_t>(sample)] == 1.0f);
-    for (int sample = (206 - 190) * hop; sample < (268 - 190) * hop; ++sample)
-      CHECK(mask[static_cast<size_t>(sample)] == 1.0f);
-  }
-}
-
 bool nearGain(double a, double b, double tolerance = 1e-4)
 {
   return std::abs(a - b) <= tolerance;
@@ -613,14 +438,14 @@ void gainTests()
     CHECK(projectgain::hatchedSamples(audio, *noteB).empty());
     CHECK(!projectgain::hasHatchedFrames(audio, *noteB));
 
-    // Stretched to twice its length, the "s" keeps its six frames; the vowels
-    // around it take the extra length.
+    // Stretched to twice its length, evenly (the warp layer): the "s" at
+    // source [40, 46) plays over [60, 72).
     Note stretched(20, 60, 60.0f);
     stretched.setEndFrame(100);
     const auto moved = projectgain::hatchedSamples(audio, stretched);
     CHECK(moved.size() == 1);
-    CHECK(moved[0].second - moved[0].first == 6 * hop);
-    CHECK(moved[0].first == 64 * hop - hop / 2);
+    CHECK(moved[0].second - moved[0].first == 12 * hop);
+    CHECK(moved[0].first == 60 * hop - hop / 2);
   }
 
   // The balance's gain over the note: negative cuts the "s", positive the
@@ -1061,15 +886,15 @@ int main()
               expected);
       }
       CHECK(noiseFrames > 0); // the "s" is inside the span
-      // Stretched, the vowels around the "s" take the extra length; the "s"
-      // keeps its frames.
+      // Stretched, the warp layer stretches evenly: the "s" takes twice its
+      // frames, like the vowels around it.
       int stretchedNoise = 0;
       for (int d = stretched.getStartFrame(); d < stretched.getEndFrame(); ++d)
         stretchedNoise += breathsibilance::isNoise(
                               breathsibilance::labelAtNoteFrame(audio, stretched, d))
                               ? 1
                               : 0;
-      CHECK(stretchedNoise == noiseFrames);
+      CHECK(std::abs(stretchedNoise - 2 * noiseFrames) <= 1);
       CHECK(!breathsibilance::isNoise(breathsibilance::labelAtNoteFrame(
           audio, stretched, stretched.getStartFrame())));
       CHECK(!breathsibilance::isNoise(breathsibilance::labelAtNoteFrame(
@@ -1120,7 +945,6 @@ int main()
 
   noteEdgeTests();
   sibilantOnlyTests();
-  timeMapTests();
   gainTests();
 
   CHECK(breathsibilance::labelAt(labels, -1) == None);

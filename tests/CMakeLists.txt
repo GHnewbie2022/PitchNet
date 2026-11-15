@@ -28,7 +28,8 @@ set(PITCHNET_TEST_SOURCES
     PluginStateArchiveTests.cpp
     ProjectModificationRangeTests.cpp
     TimelineCoordinateTests.cpp
-    VisualWaveformEnvelopeTests.cpp)
+    VisualWaveformEnvelopeTests.cpp
+    WarpLayerTests.cpp)
 
 foreach(test_source IN LISTS PITCHNET_TEST_SOURCES)
     get_filename_component(test_name ${test_source} NAME_WE)
@@ -86,3 +87,16 @@ add_executable(PitchMacroRenderTests PitchMacroRenderTests.cpp)
 target_link_libraries(PitchMacroRenderTests PRIVATE pitchnet_ui)
 target_compile_features(PitchMacroRenderTests PRIVATE cxx_std_17)
 add_test(NAME PitchMacroRenderTests COMMAND PitchMacroRenderTests)
+
+# Offline warp-layer render check (not a CTest test): PitchNet's own analysis
+# and synthesis on a file, written to WAV. See tools/warp_render/WarpRender.cpp.
+add_executable(WarpRender ../tools/warp_render/WarpRender.cpp)
+target_link_libraries(WarpRender PRIVATE pitchnet_core pitchnet_ui)
+target_compile_features(WarpRender PRIVATE cxx_std_17)
+if(APPLE)
+    # OnnxRuntime::initialise() loads <executable>/../Frameworks/libonnxruntime.dylib.
+    add_custom_command(TARGET WarpRender POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/Frameworks"
+        COMMAND ${CMAKE_COMMAND} -E create_symlink "${ONNXRUNTIME_LIBRARY}"
+                "${CMAKE_BINARY_DIR}/Frameworks/libonnxruntime.dylib")
+endif()

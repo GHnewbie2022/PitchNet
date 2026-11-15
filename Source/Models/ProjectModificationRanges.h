@@ -46,6 +46,14 @@ collectDirtyModificationSampleRanges(const Project &project,
         static_cast<juce::int64>(frame) * static_cast<juce::int64>(HOP_SIZE)));
   };
 
+  // A warp edit lays the whole composite out again (WarpLayer.h), so all of
+  // it is new.
+  if (project.getAudioData().warpLayoutPending) {
+    const int total = project.getAudioData().waveform.getNumSamples();
+    if (total > 0)
+      ranges.emplace_back(0, total);
+  }
+
   for (const auto &note : project.getNotes()) {
     if (!note.isDirty())
       continue;

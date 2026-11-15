@@ -466,6 +466,15 @@ void Project::setTimelineSnapCycle(bool enabled)
     modified = true;
 }
 
+void Project::setTimelineSnapWarp(bool enabled)
+{
+    if (macroParameters->timelineSnapWarp == enabled)
+        return;
+
+    macroParameters->timelineSnapWarp = enabled;
+    modified = true;
+}
+
 void Project::setMacroParameters(std::shared_ptr<MacroParameters> parameters)
 {
     if (parameters)
