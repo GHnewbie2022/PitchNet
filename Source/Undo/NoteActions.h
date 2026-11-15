@@ -329,6 +329,9 @@ public:
                 break;
             }
         }
+        // The drawn pitch curve is built from the notes: rebuild it for the
+        // notes now in place, or it keeps the other layout's curve.
+        PitchCurveProcessor::rebuildBaseFromNotes(*project);
         if (onChanged)
             onChanged();
     }
@@ -346,6 +349,7 @@ public:
             }
         }
         project->addNote(secondNote);
+        PitchCurveProcessor::rebuildBaseFromNotes(*project);
         if (onChanged)
             onChanged();
     }
@@ -385,6 +389,7 @@ public:
             }
         }
         project->addNote(secondNote);
+        PitchCurveProcessor::rebuildBaseFromNotes(*project);
         if (onChanged)
             onChanged();
     }
@@ -402,6 +407,7 @@ public:
             }
         }
         project->removeNoteByStartFrame(secondNote.getStartFrame());
+        PitchCurveProcessor::rebuildBaseFromNotes(*project);
         if (onChanged)
             onChanged();
     }

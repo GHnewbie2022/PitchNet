@@ -1,6 +1,7 @@
 #include "NoteSplitter.h"
 #include "../../Audio/NoteTiming.h"
 #include "../../Utils/NoteAmplitude.h"
+#include "../../Utils/PitchCurveProcessor.h"
 #include "../../Utils/Constants.h"
 #include <algorithm>
 #include <cmath>
@@ -272,6 +273,10 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
             project, originalNote, firstNote, secondNote, nullptr);
         undoManager->addAction(std::move(action));
     }
+
+    // Rebuild the drawn pitch curve from the new notes (pitch-neutral edit:
+    // the audio already matches).
+    PitchCurveProcessor::rebuildBaseFromNotes(*project);
     if (onNoteSplit)
         onNoteSplit();
 
@@ -437,6 +442,10 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
     if (undoManager)
         undoManager->addAction(std::make_unique<NoteMergeAction>(
             project, firstNote, secondNote, mergedNote, nullptr));
+
+    // Rebuild the drawn pitch curve from the new notes (pitch-neutral edit:
+    // the audio already matches).
+    PitchCurveProcessor::rebuildBaseFromNotes(*project);
     if (onNoteSplit)
         onNoteSplit();
 

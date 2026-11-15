@@ -17,6 +17,9 @@
 #include "../../Source/Utils/Constants.h"
 #include "../../Source/Utils/OnnxRuntime.h"
 #include "../../Source/Utils/PitchCurveProcessor.h"
+#include "../../Source/Models/ProjectSerializer.h"
+#include "../../Source/Undo/NoteActions.h"
+#include "../../Source/Undo/PitchUndoManager.h"
 #include "../../Source/UI/PianoRollComponent.h"
 #include "../../Source/UI/PianoRoll/PianoRollInteractionContext.h"
 
@@ -60,6 +63,311 @@ juce::MouseEvent mouseAt(juce::Component &component, juce::Point<float> at,
   return juce::MouseEvent(source, at, mods, juce::MouseInputSource::defaultPressure,
                           0.0f, 0.0f, 0.0f, 0.0f, &component, &component, now,
                           downAt, now, 1, false);
+}
+
+// "Restore note separation": merge and split notes, then restore, undo,
+// redo and save/load. Prints PASS/FAIL lines.
+void separationCheck(Project &project)
+{
+  PianoRollComponent roll;
+  roll.setSize(1400, 640);
+  roll.setProject(&project);
+  auto &splitter = *roll.getInteractionContext().noteSplitter;
+  auto cuts = [&]()
+  {
+    juce::String s;
+    for (const auto &n : project.getNotes())
+      if (!n.isRest() && n.getSrcStartFrame() < 130)
+        s << "[" << n.getSrcStartFrame() << "," << n.getSrcEndFrame() << ") ";
+    return s.trim();
+  };
+  auto find = [&](int src) -> Note *
+  {
+    for (auto &n : project.getNotes())
+      if (!n.isRest() && n.getSrcStartFrame() == src)
+        return &n;
+    return nullptr;
+  };
+  auto check = [](const char *what, bool ok)
+  { std::printf("%s %s\n", ok ? "PASS" : "FAIL", what); };
+
+  const auto original = cuts();
+  // The curve the piano roll draws: basePitch + deltaPitch, frame by frame.
+  auto drawn = [&]()
+  {
+    const auto &ad = project.getAudioData();
+    std::vector<float> curve;
+    for (size_t i = 0; i < ad.basePitch.size() && i < ad.deltaPitch.size(); ++i)
+      curve.push_back(ad.basePitch[i] + ad.deltaPitch[i]);
+    return curve;
+  };
+  const auto drawnAtAnalysis = drawn();
+  auto compareDrawn = [&](const char *label)
+  {
+    // Voiced frames inside notes: where the curve is drawn. (Gaps differ
+    // after any rebuild, edit or not; see the control line.)
+    const auto now = drawn();
+    const auto &ad = project.getAudioData();
+    float worst = 0.0f; int at = -1;
+    for (const auto &n : project.getNotes())
+    {
+      if (n.isRest()) continue;
+      for (int f = n.getStartFrame(); f < n.getEndFrame(); ++f)
+      {
+        const size_t i = static_cast<size_t>(f);
+        if (i >= now.size() || i >= drawnAtAnalysis.size() ||
+            i >= ad.voicedMask.size() || !ad.voicedMask[i]) continue;
+        if (std::abs(now[i] - drawnAtAnalysis[i]) > worst)
+        { worst = std::abs(now[i] - drawnAtAnalysis[i]); at = f; }
+      }
+    }
+    std::printf("%s: drawn curve max diff %.4f semitones at frame %d\n", label, worst, at);
+    return worst < 0.01f;
+  };
+  {
+    // Is the note's stored curve what is drawn?
+    const auto &ad = project.getAudioData();
+    float worst = 0.0f;
+    for (const auto &n : project.getNotes())
+    {
+      if (n.isRest() || n.getSrcStartFrame() >= 130) continue;
+      const auto &od = n.getOriginalDeltaPitch();
+      for (size_t k = 0; k < od.size(); ++k)
+      {
+        const size_t i = static_cast<size_t>(n.getStartFrame()) + k;
+        if (i < ad.deltaPitch.size())
+          worst = std::max(worst, std::abs(od[k] - ad.deltaPitch[i]));
+      }
+    }
+    std::printf("analysis: note curves vs drawn delta max diff %.4f\n", worst);
+  }
+  {
+    // Control: rebuild the curves with no edit at all.
+    Project untouched = project;
+    PitchCurveProcessor::rebuildBaseFromNotes(untouched);
+    const auto &ad = untouched.getAudioData();
+    float worst = 0.0f; int at = -1, voicedBad = 0, frames = 0;
+    for (size_t i = 0; i < drawnAtAnalysis.size(); ++i)
+    {
+      const float d = std::abs(ad.basePitch[i] + ad.deltaPitch[i] - drawnAtAnalysis[i]);
+      if (d > worst) { worst = d; at = static_cast<int>(i); }
+      if (d > 0.01f) ++frames;
+      if (d > 0.01f && i < ad.voicedMask.size() && ad.voicedMask[i]) ++voicedBad;
+    }
+    int inNotes = 0;
+    for (size_t i = 0; i < drawnAtAnalysis.size(); ++i)
+    {
+      if (std::abs(ad.basePitch[i] + ad.deltaPitch[i] - drawnAtAnalysis[i]) <= 0.01f) continue;
+      for (const auto &n : untouched.getNotes())
+        if (!n.isRest() && static_cast<int>(i) >= n.getStartFrame() && static_cast<int>(i) < n.getEndFrame())
+        { ++inNotes; if (inNotes <= 12) std::printf("  frame %zu (%.2f s) in note [%d,%d) voiced %d: %.2f -> %.2f\n", i, i*512/44100.0, n.getStartFrame(), n.getEndFrame(), (i < ad.voicedMask.size() && ad.voicedMask[i]) ? 1 : 0, drawnAtAnalysis[i], ad.basePitch[i] + ad.deltaPitch[i]); break; }
+    }
+    std::printf("control (rebuild, no edit): drawn max diff %.4f at frame %d, %d frames differ, %d voiced, %d inside notes\n",
+                worst, at, frames, voicedBad, inNotes);
+  }
+  std::vector<Note> analysed;
+  for (const auto &n : project.getNotes())
+    if (!n.isRest() && n.getSrcStartFrame() < 130)
+      analysed.push_back(n);
+  // How far the restored notes are from the analysis: centre, curves, macro
+  // source, and the absolute pitch (centre + deviation) frame by frame.
+  auto compare = [&](const char *label)
+  {
+    float centre = 0.0f, curve = 0.0f, absolute = 0.0f, macro = 0.0f;
+    for (const auto &orig : analysed)
+    {
+      const Note *now = find(orig.getSrcStartFrame());
+      if (!now) { centre = 99.0f; continue; }
+      centre = std::max(centre, std::abs(now->getMidiNote() - orig.getMidiNote()));
+      macro = std::max(macro, std::abs(now->getLastNonMacroMidiNote() -
+                                       orig.getLastNonMacroMidiNote()));
+      const auto &a = now->getOriginalDeltaPitch();
+      const auto &b = orig.getOriginalDeltaPitch();
+      for (size_t i = 0; i < std::min(a.size(), b.size()); ++i)
+      {
+        curve = std::max(curve, std::abs(a[i] - b[i]));
+        absolute = std::max(absolute, std::abs((now->getMidiNote() + a[i]) -
+                                               (orig.getMidiNote() + b[i])));
+      }
+      if (a.size() != b.size()) curve = 99.0f;
+      const bool tools = now->getTiltLeft() == orig.getTiltLeft() &&
+                         now->getTiltRight() == orig.getTiltRight() &&
+                         now->getVibrato() == orig.getVibrato() &&
+                         now->getPitchOffset() == orig.getPitchOffset() &&
+                         now->getBakedDeltaPitch() == orig.getBakedDeltaPitch() &&
+                         std::abs(now->getOriginalMidiNote() - orig.getOriginalMidiNote()) < 0.001f;
+      if (!tools) centre = std::max(centre, 50.0f);
+    }
+    std::printf("%s: max diff centre %.4f, curve %.4f, absolute %.4f, macro source %.4f\n",
+                label, centre, curve, absolute, macro);
+    return centre < 0.001f && curve < 0.001f;
+  };
+  std::printf("analysis: %s\n", original.toRawUTF8());
+  Note *first = nullptr;
+  for (auto &n : project.getNotes())
+    if (!n.isRest()) { first = &n; break; }
+  check("analysis spans recorded",
+        first && first->getAnalysisSpans().size() == 1);
+  check("nothing to restore after analysis", !splitter.canRestoreSeparation(*first));
+
+  // Merge the first two notes and the result with the third.
+  const int a = first->getSrcStartFrame();
+  const int b = first->getSrcEndFrame();
+  // Mess with the pitch first: move the second note up 2 semitones, tilt
+  // the first, draw on the third.
+  find(b)->setMidiNote(find(b)->getMidiNote() + 2.0f);
+  find(a)->setTiltLeft(1.5f);
+  {
+    Note *third = find(find(b)->getSrcEndFrame());
+    auto drawn = third->getOriginalDeltaPitch();
+    for (auto &v : drawn) v += 0.7f;
+    third->setBakedDeltaPitch(drawn);
+  }
+  PitchCurveProcessor::rebuildBaseFromNotes(project);
+  check("merge 1+2", splitter.mergeNotes(find(a), find(b)));
+  const int c = find(a)->getSrcEndFrame();
+  check("merge (1+2)+3", splitter.mergeNotes(find(a), find(c)));
+  const int mergedEnd = find(a)->getSrcEndFrame();
+  std::printf("merged:   %s\n", cuts().toRawUTF8());
+  check("merged note can be restored", splitter.canRestoreSeparation(*find(a)));
+
+  // Restore through the undoable action, as the reset menu does.
+  auto group = splitter.separationGroupFor(*find(a));
+  std::vector<Note> after;
+  splitter.restoreSeparation(*group, after);
+  NoteSeparationAction action(&project, group->notes, after);
+  std::printf("restored: %s\n", cuts().toRawUTF8());
+  check("restore gives the analysis cuts", cuts() == original);
+  check("restore gives the analysis pitch", compare("after merge+restore"));
+  PitchCurveProcessor::rebuildBaseFromNotes(project);
+  {
+    const auto &ad = project.getAudioData();
+    int frames = 0, voicedBad = 0, inNotes = 0;
+    const auto now = drawn();
+    for (size_t i = 0; i < now.size(); ++i)
+    {
+      const bool bad = std::abs(now[i] - drawnAtAnalysis[i]) > 0.01f;
+      if (!bad) continue;
+      ++frames;
+      if (i < ad.voicedMask.size() && ad.voicedMask[i]) ++voicedBad;
+      for (const auto &n : project.getNotes())
+        if (!n.isRest() && static_cast<int>(i) >= n.getStartFrame() && static_cast<int>(i) < n.getEndFrame()) { ++inNotes; break; }
+    }
+    std::printf("after restore: %d frames differ, %d voiced, %d inside notes\n", frames, voicedBad, inNotes);
+  }
+  check("drawn curve after restore equals analysis", compareDrawn("after merge+restore"));
+  action.undo();
+  check("undo brings the merge back",
+        find(a) && find(a)->getSrcEndFrame() == mergedEnd && !find(b) && !find(c));
+  std::printf("undone:   %s\n", cuts().toRawUTF8());
+  action.redo();
+  check("redo restores again", cuts() == original);
+
+  // Split a note in two by hand, then restore: the cut goes away.
+  Note *second = find(b);
+  const int mid = (second->getStartFrame() + second->getEndFrame()) / 2;
+  check("manual split", splitter.splitNoteAtFrame(second, mid));
+  // Move the new piece's pitch.
+  for (auto &n : project.getNotes())
+    if (!n.isRest() && n.getSrcStartFrame() > b && n.getSrcEndFrame() <= find(b)->getSrcEndFrame() + 100 &&
+        n.getSrcStartFrame() < 90)
+      n.setMidiNote(n.getMidiNote() - 3.0f);
+  std::printf("split:    %s\n", cuts().toRawUTF8());
+  auto splitGroup = splitter.separationGroupFor(*find(b));
+  check("split note can be restored", splitGroup &&
+        splitGroup->currentCuts != splitGroup->targetCuts);
+  splitter.restoreSeparation(*splitGroup, after);
+  check("restore joins the manual split", cuts() == original);
+  check("restore after split gives the analysis pitch", compare("after split+restore"));
+
+  // Split, move one half, merge back by hand: the cuts are the analysis
+  // cuts again (nothing for "Note Separation"), but the Pitch restore must
+  // still see the edit: its baseline is the analysed pitch.
+  {
+    Note *n2 = find(b);
+    const int m2 = (n2->getStartFrame() + n2->getEndFrame()) / 2;
+    splitter.splitNoteAtFrame(n2, m2);
+    Note *right = nullptr;
+    for (auto &n : project.getNotes())
+      if (!n.isRest() && n.getStartFrame() == m2) right = &n;
+    right->setMidiNote(right->getMidiNote() + 4.0f);
+    const int rightSrc = right->getSrcStartFrame();
+    splitter.mergeNotes(find(b), find(rightSrc));
+    const Note *merged = find(b);
+    const auto *span = merged->exactAnalysisSpan();
+    check("re-merged note is a detected note again", span != nullptr);
+    check("pitch restore sees the edit (baseline is the analysed pitch)",
+          span && (std::abs(merged->getMidiNote() - span->midi) > 0.01f ||
+                   merged->getOriginalDeltaPitch() != span->originalDelta));
+    Note copy = *merged;
+    copy.restoreAnalysisPitch();
+    const Note *orig = nullptr;
+    for (const auto &n : analysed) if (n.getSrcStartFrame() == b) orig = &n;
+    check("restoring its pitch gives the analysed pitch",
+          orig && copy.getMidiNote() == orig->getMidiNote() &&
+          copy.getOriginalDeltaPitch() == orig->getOriginalDeltaPitch());
+  }
+
+  // Split, move one half (its own partial curve rebuild, as a drag does),
+  // then undo the move and the split: inside the notes the drawn curve must
+  // be the one before the split.
+  {
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+    const auto before = drawn();
+    PitchUndoManager history;
+    splitter.setUndoManager(&history);
+    Note *target = find(b);
+    const int cut = (target->getStartFrame() + target->getEndFrame()) / 2;
+    splitter.splitNoteAtFrame(target, cut);
+    Note *piece = nullptr;
+    for (auto &n : project.getNotes())
+      if (!n.isRest() && n.getStartFrame() == cut) piece = &n;
+    const float oldMidi = piece->getMidiNote();
+    piece->setMidiNote(oldMidi + 2.0f);
+    PitchCurveProcessor::rebuildBaseFromNotesForDrag(project, {piece});
+    piece->setMidiNote(oldMidi);                       // "undo" of the move
+    PitchCurveProcessor::rebuildBaseFromNotesForDrag(project, {piece});
+    history.undo();                                     // undo the split
+    splitter.setUndoManager(nullptr);
+    const auto after = drawn();
+    const auto &ad = project.getAudioData();
+    float worst = 0.0f;
+    for (const auto &n : project.getNotes())
+    {
+      if (n.isRest()) continue;
+      for (int i = n.getStartFrame(); i < n.getEndFrame() && i < static_cast<int>(after.size()); ++i)
+        if (i < static_cast<int>(ad.voicedMask.size()) && ad.voicedMask[static_cast<size_t>(i)])
+          worst = std::max(worst, std::abs(after[static_cast<size_t>(i)] - before[static_cast<size_t>(i)]));
+    }
+    std::printf("split + move + undo all: drawn curve in voiced note frames max diff %.4f\n", worst);
+    check("undo back to the start redraws the curve", worst < 0.01f);
+  }
+
+  // Save and load keep the spans.
+  splitter.mergeNotes(find(a), find(b));
+  const auto json = ProjectSerializer::toJson(project);
+  Project loaded;
+  ProjectSerializer::fromJson(loaded, json);
+  const Note *reloaded = nullptr;
+  for (const auto &n : loaded.getNotes())
+    if (!n.isRest() && n.getSrcStartFrame() == a) { reloaded = &n; break; }
+  check("spans survive save and load",
+        reloaded && reloaded->getAnalysisSpans() == find(a)->getAnalysisSpans() &&
+        reloaded->getAnalysisSpans().size() == 2);
+  {
+    bool curves = reloaded != nullptr;
+    if (reloaded)
+      for (size_t i = 0; i < reloaded->getAnalysisSpans().size(); ++i)
+      {
+        const auto &x = reloaded->getAnalysisSpans()[i];
+        const auto &y = find(a)->getAnalysisSpans()[i];
+        curves = curves && !x.originalDelta.empty() && x.midi == y.midi &&
+                 x.originalDelta.size() == y.originalDelta.size();
+        for (size_t k = 0; curves && k < x.originalDelta.size(); ++k)
+          curves = std::abs(x.originalDelta[k] - y.originalDelta[k]) < 1.0e-5f;
+      }
+    check("analysed pitch and curves survive save and load", curves);
+  }
 }
 
 void snapshots(Project &project, const juce::String &prefix)
@@ -298,7 +606,7 @@ int main(int argc, char **argv)
       juce::String::fromUTF8(argv[2]));
   juce::String anchorsArg, engine = "vocoder", detector = "fcpe", snapshotPrefix;
   double shift = 0.0, shiftFrom = 0.0, shiftTo = 1.0e9;
-  bool dumpNotes = false;
+  bool dumpNotes = false, separationTest = false;
   for (int i = 3; i < argc; ++i)
   {
     const juce::String arg = juce::String::fromUTF8(argv[i]);
@@ -314,6 +622,7 @@ int main(int argc, char **argv)
     else if (arg == "--engine") { engine = next; ++i; }
     else if (arg == "--detector") { detector = next; ++i; }
     else if (arg == "--dump-notes") dumpNotes = true;
+    else if (arg == "--separation-test") separationTest = true;
     else if (arg == "--snapshot") { snapshotPrefix = next; ++i; }
   }
 
@@ -412,6 +721,12 @@ int main(int argc, char **argv)
                   note.getStartFrame(), note.getEndFrame(), note.getMidiNote(),
                   note.isRest() ? " rest" : "");
 
+  if (separationTest)
+  {
+    separationCheck(project);
+    controller.requestShutdown();
+    return 0;
+  }
   if (snapshotPrefix.isNotEmpty())
   {
     snapshots(project, snapshotPrefix);
