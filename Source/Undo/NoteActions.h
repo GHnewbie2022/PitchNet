@@ -548,3 +548,123 @@ private:
     std::vector<Note> before;
     std::vector<Note> after;
 };
+
+/**
+ * Action for resizing a note's source/timeline frame range in Select mode.
+ */
+class NoteResizeAction : public UndoableAction
+{
+public:
+    NoteResizeAction(Project *proj, Note before, Note after,
+                     std::vector<NoteCurveEdit> edits,
+                     std::vector<DrawnCurve> cBefore,
+                     std::vector<DrawnCurve> cAfter,
+                     bool resynth,
+                     std::function<void()> changed = nullptr)
+        : project(proj),
+          beforeNote(std::move(before)),
+          afterNote(std::move(after)),
+          neighbourEdits(std::move(edits)),
+          curvesBefore(std::move(cBefore)),
+          curvesAfter(std::move(cAfter)),
+          needsResynthesis(resynth),
+          onChanged(std::move(changed)) {}
+
+    void undo() override
+    {
+        if (!project)
+            return;
+        Note *target = findNote(afterNote);
+        if (target)
+            *target = beforeNote;
+        sortNotesByStartFrame();
+        project->getDrawnCurves() = curvesBefore;
+        NoteCurveEdit::apply(*project, neighbourEdits, false);
+        PitchCurveProcessor::rebuildBaseFromNotes(*project);
+        if (needsResynthesis)
+        {
+            project->getAudioData().warpLayoutPending = true;
+            if (Note *restored = findNote(beforeNote))
+            {
+                restored->markDirty();
+                restored->markSynthDirty();
+            }
+            project->markNoteEditDirtyRange(
+                std::min(beforeNote.getStartFrame(), afterNote.getStartFrame()),
+                std::max(beforeNote.getEndFrame(), afterNote.getEndFrame()));
+        }
+        project->setModified(true);
+        if (onChanged)
+            onChanged();
+    }
+
+    void redo() override
+    {
+        if (!project)
+            return;
+        Note *target = findNote(beforeNote);
+        if (target)
+            *target = afterNote;
+        sortNotesByStartFrame();
+        project->getDrawnCurves() = curvesAfter;
+        NoteCurveEdit::apply(*project, neighbourEdits, true);
+        PitchCurveProcessor::rebuildBaseFromNotes(*project);
+        if (needsResynthesis)
+        {
+            project->getAudioData().warpLayoutPending = true;
+            if (Note *resized = findNote(afterNote))
+            {
+                resized->markDirty();
+                resized->markSynthDirty();
+            }
+            project->markNoteEditDirtyRange(
+                std::min(beforeNote.getStartFrame(), afterNote.getStartFrame()),
+                std::max(beforeNote.getEndFrame(), afterNote.getEndFrame()));
+        }
+        project->setModified(true);
+        if (onChanged)
+            onChanged();
+    }
+
+    juce::String getName() const override { return "Resize Note"; }
+    bool requiresAudioResynthesis() const override { return needsResynthesis; }
+
+private:
+    Note *findNote(const Note &reference)
+    {
+        auto &notes = project->getNotes();
+        if (reference.getUid() != 0)
+        {
+            for (auto &note : notes)
+                if (note.getUid() == reference.getUid())
+                    return &note;
+        }
+        for (auto &note : notes)
+            if (!note.isRest() && note.getStartFrame() == reference.getStartFrame())
+                return &note;
+        return nullptr;
+    }
+
+    void sortNotesByStartFrame()
+    {
+        auto &notes = project->getNotes();
+        if (!std::is_sorted(notes.begin(), notes.end(),
+                            [](const Note &a, const Note &b)
+                            { return a.getStartFrame() < b.getStartFrame(); }))
+        {
+            std::stable_sort(notes.begin(), notes.end(),
+                             [](const Note &a, const Note &b)
+                             { return a.getStartFrame() < b.getStartFrame(); });
+        }
+    }
+
+    Project *project;
+    Note beforeNote;
+    Note afterNote;
+    std::vector<NoteCurveEdit> neighbourEdits;
+    std::vector<DrawnCurve> curvesBefore;
+    std::vector<DrawnCurve> curvesAfter;
+    bool needsResynthesis = false;
+    std::function<void()> onChanged;
+};
+

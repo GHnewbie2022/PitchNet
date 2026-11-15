@@ -265,6 +265,258 @@ std::vector<NoteCurveEdit> smoothOverBoundaries(Project& project, int start, int
     }
     return edits;
 }
+
+float sampleBasePitchAt(const std::vector<float>& basePitch, double framePos)
+{
+    if (basePitch.empty())
+        return 0.0f;
+    const double clamped = std::clamp(
+        framePos, 0.0, static_cast<double>(basePitch.size() - 1));
+    const size_t i0 = static_cast<size_t>(std::floor(clamped));
+    const size_t i1 = std::min(i0 + 1, basePitch.size() - 1);
+    const float frac = static_cast<float>(clamped - static_cast<double>(i0));
+    return basePitch[i0] * (1.0f - frac) + basePitch[i1] * frac;
+}
+
+std::vector<float> curveAtSourceLength(const std::vector<float>& curve, int srcLen)
+{
+    if (srcLen <= 0 || curve.empty() || static_cast<int>(curve.size()) == srcLen)
+        return curve;
+    return CurveResampler::resampleLinear(curve, srcLen);
+}
+
+Note* findResizedNote(Project& project, uint64_t uid, int startFrame)
+{
+    auto& notes = project.getNotes();
+    if (uid != 0)
+    {
+        for (auto& n : notes)
+            if (n.getUid() == uid)
+                return &n;
+    }
+    return noteStartingAt(project, startFrame);
+}
+
+void sortNotesByStartFrame(Project& project)
+{
+    auto& notes = project.getNotes();
+    if (!std::is_sorted(notes.begin(), notes.end(),
+                        [](const Note& a, const Note& b)
+                        { return a.getStartFrame() < b.getStartFrame(); }))
+    {
+        std::stable_sort(notes.begin(), notes.end(),
+                         [](const Note& a, const Note& b)
+                         { return a.getStartFrame() < b.getStartFrame(); });
+    }
+}
+
+void applyResizedNoteState(Project& project,
+                           Note& note,
+                           const Note& originalNote,
+                           int newSrcStartFrame,
+                           int newSrcEndFrame,
+                           const std::vector<float>& baseBefore)
+{
+    const auto& audioData = project.getAudioData();
+    const auto& map = audioData.warpMap;
+    const int newStart = map.isIdentity()
+        ? newSrcStartFrame
+        : static_cast<int>(std::lround(map.destinationAt(newSrcStartFrame)));
+    int newEnd = map.isIdentity()
+        ? newSrcEndFrame
+        : static_cast<int>(std::lround(map.destinationAt(newSrcEndFrame)));
+    if (newSrcEndFrame > newSrcStartFrame)
+        newEnd = std::max(newEnd, newStart + 1);
+
+    const auto uid = originalNote.getUid();
+    note = originalNote;
+    note.setSrcStartFrame(newSrcStartFrame);
+    note.setSrcEndFrame(newSrcEndFrame);
+    note.setStartFrame(newStart);
+    note.setEndFrame(newEnd);
+    note.clearTimingPreview();
+
+    const int newSrcLen = std::max(0, newSrcEndFrame - newSrcStartFrame);
+    const auto& pitchSource = !audioData.denseF0.empty() ? audioData.denseF0 : audioData.f0;
+    const int pitchSize = static_cast<int>(pitchSource.size());
+
+    std::vector<float> f0Values(static_cast<size_t>(newSrcLen), 0.0f);
+    for (int i = 0; i < newSrcLen; ++i)
+    {
+        const int s = newSrcStartFrame + i;
+        if (s >= 0 && s < pitchSize)
+            f0Values[static_cast<size_t>(i)] = pitchSource[static_cast<size_t>(s)];
+    }
+    note.setF0Values(std::move(f0Values));
+    note.trimAnalysisSpans();
+    NoteAmplitude::update(note, audioData);
+
+    sortNotesByStartFrame(project);
+    Note* resized = findResizedNote(project, uid, newStart);
+    if (!resized)
+        return;
+
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+    const auto& baseAfter = project.getAudioData().basePitch;
+
+    const int oldSrcStart = originalNote.getSrcStartFrame();
+    const int oldSrcEnd = originalNote.getSrcEndFrame();
+    const int oldSrcLen = std::max(0, oldSrcEnd - oldSrcStart);
+    const std::vector<float> oldOrig =
+        curveAtSourceLength(originalNote.getOriginalDeltaPitch(), oldSrcLen);
+    const std::vector<float> oldBaked =
+        originalNote.hasBakedDeltaPitch()
+            ? curveAtSourceLength(originalNote.getBakedDeltaPitch(), oldSrcLen)
+            : std::vector<float>{};
+
+    const auto beforeMap = notetiming::forNote(audioData, originalNote);
+    const auto nowMap = notetiming::forNote(audioData, *resized);
+    const int oldStart = originalNote.getStartFrame();
+    const int oldEnd = originalNote.getEndFrame();
+    const float userShift =
+        originalNote.getAdjustedMidiNote() - originalNote.getOriginalMidiNote();
+
+    std::vector<float> origDelta(static_cast<size_t>(newSrcLen), 0.0f);
+    std::vector<float> baked(
+        originalNote.hasBakedDeltaPitch() ? static_cast<size_t>(newSrcLen) : 0, 0.0f);
+
+    for (int i = 0; i < newSrcLen; ++i)
+    {
+        const int s = newSrcStartFrame + i;
+        const double dstAfterPos = std::clamp(
+            nowMap.destinationAt(static_cast<double>(s) + 0.5) - 0.5,
+            static_cast<double>(newStart),
+            static_cast<double>(std::max(newStart, newEnd - 1)));
+        const float bAfter = sampleBasePitchAt(baseAfter, dstAfterPos);
+
+        double dstBeforePos = dstAfterPos;
+        if (s >= oldSrcStart && s < oldSrcEnd && oldEnd > oldStart)
+        {
+            dstBeforePos = std::clamp(
+                beforeMap.destinationAt(static_cast<double>(s) + 0.5) - 0.5,
+                static_cast<double>(oldStart),
+                static_cast<double>(oldEnd - 1));
+        }
+        const float bBefore =
+            !baseBefore.empty() ? sampleBasePitchAt(baseBefore, dstBeforePos) : bAfter;
+
+        const int oldIdx = s - oldSrcStart;
+        if (s >= oldSrcStart && s < oldSrcEnd &&
+            oldIdx >= 0 && oldIdx < static_cast<int>(oldOrig.size()))
+        {
+            origDelta[static_cast<size_t>(i)] =
+                oldOrig[static_cast<size_t>(oldIdx)] - (bAfter - bBefore);
+        }
+        else
+        {
+            const float f0 = resized->getF0Values()[static_cast<size_t>(i)];
+            origDelta[static_cast<size_t>(i)] =
+                (f0 > 0.0f) ? (freqToMidi(f0) - (bAfter - userShift)) : 0.0f;
+        }
+
+        if (originalNote.hasBakedDeltaPitch())
+        {
+            if (s >= oldSrcStart && s < oldSrcEnd &&
+                oldIdx >= 0 && oldIdx < static_cast<int>(oldBaked.size()))
+            {
+                baked[static_cast<size_t>(i)] =
+                    oldBaked[static_cast<size_t>(oldIdx)] - (bAfter - bBefore);
+            }
+            else
+            {
+                baked[static_cast<size_t>(i)] = origDelta[static_cast<size_t>(i)];
+            }
+        }
+    }
+
+    resized->setOriginalDeltaPitch(std::move(origDelta));
+    resized->setDeltaPitch({});
+    if (originalNote.hasBakedDeltaPitch())
+        resized->setBakedDeltaPitch(std::move(baked));
+}
+
+std::vector<NoteCurveEdit> compensateNeighbourBaseChange(
+    Project& project,
+    const std::vector<float>& baseBefore,
+    int reachStart,
+    int reachEnd,
+    uint64_t skipUid,
+    int skipStartFrame)
+{
+    std::vector<NoteCurveEdit> edits;
+    const auto& audioData = project.getAudioData();
+    const auto& baseAfter = audioData.basePitch;
+    if (baseBefore.empty() || baseAfter.empty())
+        return edits;
+
+    for (auto& note : project.getNotes())
+    {
+        if (note.isRest() || note.getEndFrame() <= reachStart ||
+            note.getStartFrame() >= reachEnd)
+            continue;
+        if ((skipUid != 0 && note.getUid() == skipUid) ||
+            note.getStartFrame() == skipStartFrame)
+            continue;
+        if (note.getDurationFrames() <= 0 || note.getSrcDurationFrames() <= 0)
+            continue;
+
+        const auto origBefore = note.getOriginalDeltaPitch();
+        const auto bakedBefore = note.getBakedDeltaPitch();
+        auto origAfter = origBefore;
+        auto bakedAfter = bakedBefore;
+        bool changed = false;
+
+        const auto nowMap = notetiming::forNote(audioData, note);
+        const int noteStart = note.getStartFrame();
+        const int noteLast = std::max(noteStart, note.getEndFrame() - 1);
+
+        auto compensateCurve = [&](std::vector<float>& curve)
+        {
+            if (curve.empty())
+                return;
+            const int len = static_cast<int>(curve.size());
+            const auto storedMap = notetiming::forStoredCurve(audioData, note, len);
+            for (int j = 0; j < len; ++j)
+            {
+                const double dstPos =
+                    (len == note.getDurationFrames())
+                        ? static_cast<double>(noteStart + j)
+                        : std::clamp(
+                              nowMap.destinationAt(
+                                  storedMap.sourceAt(static_cast<double>(j) + 0.5)) -
+                                  0.5,
+                              static_cast<double>(noteStart),
+                              static_cast<double>(noteLast));
+                const float diff = sampleBasePitchAt(baseAfter, dstPos) -
+                                   sampleBasePitchAt(baseBefore, dstPos);
+                if (std::abs(diff) > 1.0e-6f)
+                {
+                    curve[static_cast<size_t>(j)] -= diff;
+                    changed = true;
+                }
+            }
+        };
+
+        compensateCurve(origAfter);
+        if (note.hasBakedDeltaPitch())
+            compensateCurve(bakedAfter);
+
+        if (!changed)
+            continue;
+
+        note.setOriginalDeltaPitch(origAfter);
+        if (!note.hasBakedDeltaPitch() &&
+            note.getDeltaPitch().size() == origAfter.size())
+            note.setDeltaPitch(origAfter);
+        if (note.hasBakedDeltaPitch())
+            note.setBakedDeltaPitch(bakedAfter);
+
+        edits.push_back({note.getStartFrame(), origBefore, origAfter,
+                         bakedBefore, bakedAfter});
+    }
+
+    return edits;
+}
 }
 
 Note* NoteSplitter::findNoteAt(float x, float y) {
@@ -527,20 +779,6 @@ std::pair<Note*, Note*> NoteSplitter::findMergeableNotesAt(float x, float y)
     if (!project || !coordMapper)
         return {};
 
-    const auto &chunkRanges = project->getAudioData().segmentChunkRanges;
-    const auto getRegionIndex = [&chunkRanges](const Note &note)
-    {
-        if (chunkRanges.empty())
-            return 0;
-
-        const int midpoint = note.getSrcStartFrame() +
-                             std::max(0, note.getSrcDurationFrames()) / 2;
-        for (size_t i = 0; i < chunkRanges.size(); ++i)
-            if (midpoint >= chunkRanges[i].first && midpoint < chunkRanges[i].second)
-                return static_cast<int>(i);
-        return -1;
-    };
-
     auto &notes = project->getNotes();
     const float pixelsPerSecond = coordMapper->getPixelsPerSecond();
     const float pixelsPerSemitone = coordMapper->getPixelsPerSemitone();
@@ -558,11 +796,10 @@ std::pair<Note*, Note*> NoteSplitter::findMergeableNotesAt(float x, float y)
             if (right.isRest())
                 continue;
 
-            // Only expose merge on a true split: the output and source frame
-            // ranges must remain continuous across the boundary.
+            // Expose merge whenever adjacent notes form a continuous timeline and
+            // source frame boundary, including resized notes across chunks.
             if (left.getEndFrame() != right.getStartFrame() ||
-                left.getSrcEndFrame() != right.getSrcStartFrame() ||
-                getRegionIndex(left) < 0 || getRegionIndex(left) != getRegionIndex(right))
+                left.getSrcEndFrame() != right.getSrcStartFrame())
                 break;
 
             const float boundaryX = 0.5f * framesToSeconds(
@@ -916,5 +1153,122 @@ bool NoteSplitter::restoreSeparation(const SeparationGroup& group,
         if (!n.isRest() && n.getSrcStartFrame() >= group.srcStart &&
             n.getSrcEndFrame() <= group.srcEnd)
             after.push_back(n);
+    return true;
+}
+
+bool NoteSplitter::previewResizeNote(Note* note, const Note& originalNote,
+                                     int newSrcStartFrame, int newSrcEndFrame)
+{
+    if (!project || !note || note->isRest() || newSrcEndFrame <= newSrcStartFrame)
+        return false;
+
+    const auto uid = originalNote.getUid();
+    *note = originalNote;
+    sortNotesByStartFrame(*project);
+    PitchCurveProcessor::rebuildBaseFromNotes(*project);
+    const auto baseBefore = project->getAudioData().basePitch;
+
+    Note* activeNote = findResizedNote(*project, uid, originalNote.getStartFrame());
+    if (!activeNote)
+        return false;
+
+    applyResizedNoteState(*project, *activeNote, originalNote,
+                          newSrcStartFrame, newSrcEndFrame, baseBefore);
+    Note* resized = findResizedNote(*project, uid,
+                                    project->getAudioData().warpMap.isIdentity()
+                                        ? newSrcStartFrame
+                                        : static_cast<int>(std::lround(
+                                              project->getAudioData().warpMap.destinationAt(
+                                                  newSrcStartFrame))));
+    const int newStart = resized ? resized->getStartFrame() : originalNote.getStartFrame();
+    const int newEnd = resized ? resized->getEndFrame() : originalNote.getEndFrame();
+    const int spanStart = std::min(originalNote.getStartFrame(), newStart);
+    const int spanEnd = std::max(originalNote.getEndFrame(), newEnd);
+    const int reachStart = std::max(0, spanStart - kBoundaryReach);
+    const int reachEnd = spanEnd + kBoundaryReach;
+
+    compensateNeighbourBaseChange(*project, baseBefore, reachStart, reachEnd, uid, newStart);
+    PitchCurveProcessor::rebuildBaseFromNotes(*project);
+    PitchCurveProcessor::refitUntouchedCurves(*project, reachStart, reachEnd);
+    return true;
+}
+
+bool NoteSplitter::commitResizeNote(Note* note, const Note& originalNote,
+                                    int newSrcStartFrame, int newSrcEndFrame)
+{
+    if (!project || !note || note->isRest() || newSrcEndFrame <= newSrcStartFrame)
+        return false;
+
+    const auto uid = originalNote.getUid();
+    const auto& map = project->getAudioData().warpMap;
+    const int newStart = map.isIdentity()
+        ? newSrcStartFrame
+        : static_cast<int>(std::lround(map.destinationAt(newSrcStartFrame)));
+    int newEnd = map.isIdentity()
+        ? newSrcEndFrame
+        : static_cast<int>(std::lround(map.destinationAt(newSrcEndFrame)));
+    if (newSrcEndFrame > newSrcStartFrame)
+        newEnd = std::max(newEnd, newStart + 1);
+
+    // Restore original state first so baseBefore matches the pre-resize layout.
+    *note = originalNote;
+    sortNotesByStartFrame(*project);
+    PitchCurveProcessor::rebuildBaseFromNotes(*project);
+    const auto baseBefore = project->getAudioData().basePitch;
+
+    const int spanStart = std::min(originalNote.getStartFrame(), newStart);
+    const int spanEnd = std::max(originalNote.getEndFrame(), newEnd);
+    const int reachStart = std::max(0, spanStart - kBoundaryReach);
+    const int reachEnd = spanEnd + kBoundaryReach;
+
+    const auto curvesBefore = project->getDrawnCurves();
+    auto curvesAfter = curvesBefore;
+    if (newStart > originalNote.getStartFrame())
+        curvesAfter = drawncurve::without(curvesAfter, originalNote.getStartFrame(), newStart);
+    if (newEnd < originalNote.getEndFrame())
+        curvesAfter = drawncurve::without(curvesAfter, newEnd, originalNote.getEndFrame());
+    project->getDrawnCurves() = curvesAfter;
+
+    Note* activeNote = findResizedNote(*project, uid, originalNote.getStartFrame());
+    if (!activeNote)
+        return false;
+
+    applyResizedNoteState(*project, *activeNote, originalNote,
+                          newSrcStartFrame, newSrcEndFrame, baseBefore);
+    activeNote = findResizedNote(*project, uid, newStart);
+
+    const bool needsResynthesis =
+        !originalNote.isNeutralForOriginalWaveform() ||
+        originalNote.hasRenderedEdit() ||
+        std::abs(project->getFormantShift()) > 0.001f;
+    if (needsResynthesis)
+    {
+        if (activeNote)
+        {
+            activeNote->markDirty();
+            activeNote->markSynthDirty();
+        }
+        project->getAudioData().warpLayoutPending = true;
+        project->markNoteEditDirtyRange(spanStart, spanEnd);
+    }
+
+    auto neighbourEdits = compensateNeighbourBaseChange(
+        *project, baseBefore, reachStart, reachEnd, uid, newStart);
+    PitchCurveProcessor::rebuildBaseFromNotes(*project);
+    activeNote = findResizedNote(*project, uid, newStart);
+
+    const Note afterNote = activeNote ? *activeNote : originalNote;
+    if (undoManager)
+    {
+        undoManager->addAction(std::make_unique<NoteResizeAction>(
+            project, originalNote, afterNote,
+            std::move(neighbourEdits),
+            std::move(curvesBefore), std::move(curvesAfter),
+            needsResynthesis, nullptr));
+    }
+
+    project->setModified(true);
+    if (onNoteSplit)
+        onNoteSplit();
     return true;
 }

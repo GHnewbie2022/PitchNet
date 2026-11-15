@@ -1,12 +1,13 @@
 #pragma once
 
 #include "InteractionHandler.h"
+#include "../../../Models/Note.h"
+#include "../../../Models/NoteRef.h"
 #include "../../../Undo/F0FrameEdit.h"
 
 #include <limits>
+#include <utility>
 #include <vector>
-
-class Note;
 
 /**
  * Handles selection, note dragging (single + multi), box selection,
@@ -48,7 +49,21 @@ public:
   bool isFinePitchDragging() const { return isDragging && fineDrag; }
   Note *getDraggedNote() const { return draggedNote; }
 
+  enum class ResizeEdge { None, Left, Right };
+  bool isHoveringNoteEdge() const
+  {
+    return hoveredEdge != ResizeEdge::None && hoveredEdgeNote != nullptr;
+  }
+  bool isResizingNoteEdge() const { return isResizingNote; }
+  bool hitsResizeEdge(float worldX, float worldY) const;
+  void clearEdgeHover()
+  {
+    hoveredEdgeNote = nullptr;
+    hoveredEdge = ResizeEdge::None;
+  }
+
 private:
+  std::pair<Note *, ResizeEdge> findResizeEdgeAt(float worldX, float worldY) const;
   /** Rebuild base pitch, fire edited/finished callbacks, and repaint. */
   void rebuildAndNotify();
 
@@ -67,6 +82,7 @@ private:
   void prepareDragBasePreview();
   void applyDragBasePreview(float pitchOffsetSemitones);
   void restoreDragBasePreview();
+  void restoreResizeInitialNotes(bool rebuildBase = false);
 
   // Notes already selected when a Cmd box selection began: the box adds to
   // them instead of replacing them.
@@ -106,4 +122,16 @@ private:
   int deltaOffsetMaxFrame = std::numeric_limits<int>::min();
   std::vector<Note *> deltaOffsetTargetNotes;
   std::vector<F0FrameEdit> deltaOffsetEdits;
+
+  // Note edge resize state
+  Note *hoveredEdgeNote = nullptr;
+  ResizeEdge hoveredEdge = ResizeEdge::None;
+  bool isResizingNote = false;
+  NoteRef resizedNoteRef;
+  ResizeEdge activeResizeEdge = ResizeEdge::None;
+  Note originalResizedNote;
+  std::vector<Note> resizeInitialNotes;
+  int resizeMinSrcFrame = 0;
+  int resizeMaxSrcFrame = 0;
+  int currentResizeSrcFrame = 0;
 };

@@ -42,6 +42,14 @@ public:
     /** Merges two adjacent segments that originated from the same note. */
     bool mergeNotes(Note* first, Note* second);
 
+    /** Live preview for Select-mode boundary resizing (does not record undo). */
+    bool previewResizeNote(Note* note, const Note& originalNote,
+                           int newSrcStartFrame, int newSrcEndFrame);
+
+    /** Commit Select-mode boundary resize and record undo action. */
+    bool commitResizeNote(Note* note, const Note& originalNote,
+                          int newSrcStartFrame, int newSrcEndFrame);
+
     /**
      * "Restore note separation": the notes that share analysed notes with
      * `note` (Note::getAnalysisSpans), cut back the way the analysis cut

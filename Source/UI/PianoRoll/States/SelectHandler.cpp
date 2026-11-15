@@ -7,6 +7,7 @@
 #include "../../../Undo/PitchToolAction.h"
 #include "../../../Undo/GainEditAction.h"
 
+#include <algorithm>
 #include <unordered_set>
 
 namespace
@@ -108,6 +109,67 @@ bool SelectHandler::mouseDown(const juce::MouseEvent &e, float worldX,
     owner_.updatePitchToolHandlesFromSelection();
     owner_.repaint();
     return true;
+  }
+
+  if (!addToSelection)
+  {
+    const auto [edgeNote, edge] = findResizeEdgeAt(worldX, worldY);
+    if (edgeNote && edge != ResizeEdge::None)
+    {
+      const auto &audioData = project->getAudioData();
+      const int totalFrames = std::max({
+          audioData.getNumFrames(),
+          static_cast<int>(audioData.denseF0.size()),
+          static_cast<int>(audioData.f0.size()),
+          edgeNote->getSrcEndFrame()});
+
+      if (edge == ResizeEdge::Left)
+      {
+        int minFrame = 0;
+        for (const auto &other : project->getNotes())
+        {
+          if (&other == edgeNote || other.isRest())
+            continue;
+          if (other.getSrcEndFrame() <= edgeNote->getSrcStartFrame())
+            minFrame = std::max(minFrame, other.getSrcEndFrame());
+        }
+        minFrame = std::min(minFrame, edgeNote->getSrcStartFrame());
+        const int maxFrame = std::max(minFrame, edgeNote->getSrcEndFrame() - 1);
+        resizeMinSrcFrame = minFrame;
+        resizeMaxSrcFrame = maxFrame;
+        currentResizeSrcFrame = edgeNote->getSrcStartFrame();
+      }
+      else
+      {
+        int maxFrame = totalFrames;
+        for (const auto &other : project->getNotes())
+        {
+          if (&other == edgeNote || other.isRest())
+            continue;
+          if (other.getSrcStartFrame() >= edgeNote->getSrcEndFrame())
+            maxFrame = std::min(maxFrame, other.getSrcStartFrame());
+        }
+        maxFrame = std::max(maxFrame, edgeNote->getSrcEndFrame());
+        const int minFrame = std::min(edgeNote->getSrcEndFrame(), edgeNote->getSrcStartFrame() + 1);
+        resizeMinSrcFrame = minFrame;
+        resizeMaxSrcFrame = std::max(minFrame, maxFrame);
+        currentResizeSrcFrame = edgeNote->getSrcEndFrame();
+      }
+
+      originalResizedNote = *edgeNote;
+      {
+        const auto &notes = project->getNotes();
+        resizeInitialNotes.assign(notes.begin(), notes.end());
+      }
+      resizedNoteRef = NoteRef(edgeNote);
+      activeResizeEdge = edge;
+      isResizingNote = true;
+      hoveredEdgeNote = nullptr;
+      hoveredEdge = ResizeEdge::None;
+      owner_.updatePitchToolHandlesFromSelection();
+      owner_.repaint();
+      return true;
+    }
   }
 
   if (note)
@@ -223,6 +285,69 @@ bool SelectHandler::mouseDrag(const juce::MouseEvent &e, float worldX,
   {
     juce::ignoreUnused(e);
     owner_.dragBreaths(worldY);
+    return true;
+  }
+
+  if (isResizingNote)
+  {
+    Note *note = resizedNoteRef.get();
+    if (!note || !owner_.coordMapper || !owner_.noteSplitter)
+    {
+      cancel();
+      return false;
+    }
+
+    const double timelineSec = owner_.coordMapper->xToTime(worldX);
+    const double timelineFrame = timelineSec * SAMPLE_RATE / HOP_SIZE;
+    const auto &audioData = project->getAudioData();
+    const double rawSrcFrame =
+        audioData.warpMap.isIdentity()
+            ? timelineFrame
+            : audioData.warpMap.sourceAt(timelineFrame);
+    const int clampedSrcFrame = std::clamp(
+        static_cast<int>(std::lround(rawSrcFrame)),
+        resizeMinSrcFrame, resizeMaxSrcFrame);
+
+    if (clampedSrcFrame != currentResizeSrcFrame)
+    {
+      currentResizeSrcFrame = clampedSrcFrame;
+      const int newSrcStart =
+          (activeResizeEdge == ResizeEdge::Left)
+              ? clampedSrcFrame
+              : originalResizedNote.getSrcStartFrame();
+      const int newSrcEnd =
+          (activeResizeEdge == ResizeEdge::Right)
+              ? clampedSrcFrame
+              : originalResizedNote.getSrcEndFrame();
+
+      restoreResizeInitialNotes();
+      note = resizedNoteRef.get();
+      if (!note)
+      {
+        cancel();
+        return false;
+      }
+
+      if (newSrcStart == originalResizedNote.getSrcStartFrame() &&
+          newSrcEnd == originalResizedNote.getSrcEndFrame())
+      {
+        PitchCurveProcessor::rebuildBaseFromNotes(*project);
+      }
+      else
+      {
+        owner_.noteSplitter->previewResizeNote(
+            note, originalResizedNote, newSrcStart, newSrcEnd);
+      }
+      owner_.invalidateBasePitchCache();
+      owner_.updatePitchToolHandlesFromSelection();
+      if (owner_.onPitchEdited)
+        owner_.onPitchEdited();
+      if (shouldRepaint)
+      {
+        owner_.repaint();
+        owner_.lastDragRepaintTime = now;
+      }
+    }
     return true;
   }
 
@@ -452,6 +577,51 @@ bool SelectHandler::mouseUp(const juce::MouseEvent &e, float worldX,
   if (owner_.isDraggingBreaths())
   {
     owner_.releaseBreaths();
+    return true;
+  }
+
+  if (isResizingNote)
+  {
+    restoreResizeInitialNotes();
+    Note *note = resizedNoteRef.get();
+    const int newSrcStart =
+        (activeResizeEdge == ResizeEdge::Left)
+            ? currentResizeSrcFrame
+            : originalResizedNote.getSrcStartFrame();
+    const int newSrcEnd =
+        (activeResizeEdge == ResizeEdge::Right)
+            ? currentResizeSrcFrame
+            : originalResizedNote.getSrcEndFrame();
+    const bool changed =
+        note && owner_.noteSplitter &&
+        (newSrcStart != originalResizedNote.getSrcStartFrame() ||
+         newSrcEnd != originalResizedNote.getSrcEndFrame());
+    const bool needsResynthesis =
+        !originalResizedNote.isNeutralForOriginalWaveform() ||
+        originalResizedNote.hasRenderedEdit() ||
+        std::abs(project->getFormantShift()) > 0.001f;
+
+    if (changed)
+    {
+      owner_.noteSplitter->commitResizeNote(
+          note, originalResizedNote, newSrcStart, newSrcEnd);
+      owner_.invalidateBasePitchCache();
+      if (owner_.onPitchEdited)
+        owner_.onPitchEdited();
+      if (needsResynthesis && owner_.onPitchEditFinished)
+        owner_.onPitchEditFinished();
+    }
+    else
+    {
+      restoreResizeInitialNotes(/*rebuildBase=*/true);
+    }
+
+    isResizingNote = false;
+    resizeInitialNotes.clear();
+    resizedNoteRef = {};
+    activeResizeEdge = ResizeEdge::None;
+    owner_.updatePitchToolHandlesFromSelection();
+    owner_.repaint();
     return true;
   }
 
@@ -780,13 +950,93 @@ bool SelectHandler::mouseUp(const juce::MouseEvent &e, float worldX,
   return true;
 }
 
+std::pair<Note *, SelectHandler::ResizeEdge>
+SelectHandler::findResizeEdgeAt(float worldX, float worldY) const
+{
+  if (!owner_.project || !owner_.coordMapper)
+    return {nullptr, ResizeEdge::None};
+
+  if (owner_.pitchToolHandles &&
+      owner_.pitchToolHandles->hitTest(worldX, worldY) >= 0)
+    return {nullptr, ResizeEdge::None};
+
+  Note *bestNote = nullptr;
+  ResizeEdge bestEdge = ResizeEdge::None;
+  float bestDist = std::numeric_limits<float>::max();
+  float bestBoundaryX = 0.0f;
+
+  const float noteH = owner_.pixelsPerSemitone;
+  constexpr float outsideMargin = 3.0f;
+
+  for (auto &note : owner_.project->getNotes())
+  {
+    if (note.isRest())
+      continue;
+
+    const float noteX =
+        owner_.coordMapper->timeToX(framesToSeconds(note.getStartFrame()));
+    const float noteEndX =
+        owner_.coordMapper->timeToX(framesToSeconds(note.getEndFrame()));
+    const float noteW = noteEndX - noteX;
+    const float noteY =
+        owner_.coordMapper->midiToY(note.getAdjustedMidiNote());
+
+    if (worldY < noteY || worldY >= noteY + noteH)
+      continue;
+
+    const float insideMargin =
+        std::min(6.0f, std::max(2.0f, noteW * 0.25f));
+
+    auto considerCandidate = [&](ResizeEdge edge, float boundaryX)
+    {
+      const float dist = std::abs(worldX - boundaryX);
+      if (dist < bestDist - 0.001f)
+      {
+        bestNote = &note;
+        bestEdge = edge;
+        bestDist = dist;
+        bestBoundaryX = boundaryX;
+        return;
+      }
+      if (std::abs(dist - bestDist) <= 0.001f &&
+          std::abs(boundaryX - bestBoundaryX) <= 0.5f)
+      {
+        // At touching boundaries, prefer the left note's right edge before the
+        // boundary line and the right note's left edge at or past it.
+        const bool preferCandidate =
+            (worldX < boundaryX && edge == ResizeEdge::Right) ||
+            (worldX >= boundaryX && edge == ResizeEdge::Left);
+        if (preferCandidate)
+        {
+          bestNote = &note;
+          bestEdge = edge;
+          bestDist = dist;
+          bestBoundaryX = boundaryX;
+        }
+      }
+    };
+
+    if (worldX >= noteX - outsideMargin && worldX <= noteX + insideMargin)
+      considerCandidate(ResizeEdge::Left, noteX);
+    if (worldX >= noteEndX - insideMargin && worldX <= noteEndX + outsideMargin)
+      considerCandidate(ResizeEdge::Right, noteEndX);
+  }
+
+  return {bestNote, bestEdge};
+}
+
+bool SelectHandler::hitsResizeEdge(float worldX, float worldY) const
+{
+  return findResizeEdgeAt(worldX, worldY).second != ResizeEdge::None;
+}
+
 void SelectHandler::mouseMove(const juce::MouseEvent &e, float worldX,
                               float worldY)
 {
   // Pitch tool handle hover
-  if (owner_.pitchToolHandles && !owner_.pitchToolHandles->isEmpty() &&
-      e.y >= PianoRollComponent::headerHeight &&
-      e.x >= PianoRollComponent::pianoKeysWidth)
+  const bool inCanvas = e.y >= PianoRollComponent::headerHeight &&
+                        e.x >= PianoRollComponent::pianoKeysWidth;
+  if (owner_.pitchToolHandles && !owner_.pitchToolHandles->isEmpty() && inCanvas)
   {
     int hitIndex = owner_.pitchToolHandles->hitTest(worldX, worldY);
     if (hitIndex != owner_.hoveredPitchToolHandle)
@@ -801,6 +1051,22 @@ void SelectHandler::mouseMove(const juce::MouseEvent &e, float worldX,
     owner_.hoveredPitchToolHandle = -1;
     if (owner_.pitchToolHandles)
       owner_.pitchToolHandles->setHoveredHandleIndex(-1);
+    owner_.repaint();
+  }
+
+  Note *edgeNote = nullptr;
+  ResizeEdge edge = ResizeEdge::None;
+  if (inCanvas && !isResizingNote && owner_.hoveredPitchToolHandle < 0)
+  {
+    const auto [hitNote, hitEdge] = findResizeEdgeAt(worldX, worldY);
+    edgeNote = hitNote;
+    edge = hitEdge;
+  }
+
+  if (edgeNote != hoveredEdgeNote || edge != hoveredEdge)
+  {
+    hoveredEdgeNote = edgeNote;
+    hoveredEdge = edge;
     owner_.repaint();
   }
 }
@@ -1267,7 +1533,8 @@ void SelectHandler::mouseDoubleClick(const juce::MouseEvent &e,
 
 bool SelectHandler::isActive() const
 {
-  return isDragging || isDeltaScaleDragging || isDeltaOffsetDragging ||
+  return isDragging || isResizingNote || isDeltaScaleDragging ||
+         isDeltaOffsetDragging ||
          (owner_.pitchToolController &&
           owner_.pitchToolController->isDragging()) ||
          owner_.boxSelector->isSelecting() ||
@@ -1276,6 +1543,16 @@ bool SelectHandler::isActive() const
 
 void SelectHandler::cancel()
 {
+  clearEdgeHover();
+  if (isResizingNote)
+  {
+    restoreResizeInitialNotes(/*rebuildBase=*/true);
+    isResizingNote = false;
+    resizeInitialNotes.clear();
+    resizedNoteRef = {};
+    activeResizeEdge = ResizeEdge::None;
+    owner_.updatePitchToolHandlesFromSelection();
+  }
   if (isDragging && draggedNote)
   {
     restoreDragBasePreview();
@@ -1537,4 +1814,35 @@ void SelectHandler::restoreDragBasePreview()
         dragF0Snapshot[static_cast<size_t>(i)];
   }
   lastDragPitchOffset = 0.0f;
+}
+
+void SelectHandler::restoreResizeInitialNotes(bool rebuildBase)
+{
+  auto *project = owner_.project;
+  if (!project)
+    return;
+  if (!resizeInitialNotes.empty())
+  {
+    auto &notes = project->getNotes();
+    notes.assign(resizeInitialNotes.begin(), resizeInitialNotes.end());
+  }
+  else if (Note *note = resizedNoteRef.get())
+  {
+    *note = originalResizedNote;
+  }
+
+  if (!rebuildBase)
+    return;
+
+  auto &notes = project->getNotes();
+  if (!std::is_sorted(notes.begin(), notes.end(),
+                      [](const Note &a, const Note &b)
+                      { return a.getStartFrame() < b.getStartFrame(); }))
+  {
+    std::stable_sort(notes.begin(), notes.end(),
+                     [](const Note &a, const Note &b)
+                     { return a.getStartFrame() < b.getStartFrame(); });
+  }
+  PitchCurveProcessor::rebuildBaseFromNotes(*project);
+  owner_.invalidateBasePitchCache();
 }

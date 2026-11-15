@@ -2127,6 +2127,8 @@ bool PianoRollComponent::beginTrackGesture(const juce::MouseEvent& e)
   const float worldX = e.x - pianoKeysWidth + scrollX;
   const float worldY = e.y - headerHeight + scrollY;
   if ((hoveredNote && pitchToolHandles && pitchToolHandles->containsLayoutPoint(worldX, worldY)) ||
+      (editMode == EditMode::Select && selectHandler_ &&
+       selectHandler_->hitsResizeEdge(worldX, worldY)) ||
       findPreviewButtonNoteAt(worldX, worldY)) return false;
   Note* hit = nullptr;
   std::vector<Project*> selectedOwners;
@@ -2706,9 +2708,18 @@ void PianoRollComponent::mouseMove(const juce::MouseEvent &e)
   }
   else if (editMode == EditMode::Select)
   {
-    // A breath note's level is dragged up and down.
-    setMouseCursor(hoveredBreath >= 0 ? juce::MouseCursor::UpDownResizeCursor
-                                      : juce::MouseCursor::NormalCursor);
+    // Note edges drag coverage without stretching; a breath note's level is dragged up and down.
+    if (selectHandler_ &&
+        (selectHandler_->isResizingNoteEdge() ||
+         (selectHandler_->isHoveringNoteEdge() && hoveredPitchToolHandle < 0)))
+    {
+      setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+    }
+    else
+    {
+      setMouseCursor(hoveredBreath >= 0 ? juce::MouseCursor::UpDownResizeCursor
+                                        : juce::MouseCursor::NormalCursor);
+    }
   }
   else if (editMode == EditMode::Split)
   {
@@ -4124,7 +4135,13 @@ void PianoRollComponent::updateMouseCursorForEditMode()
   }
   else
   {
-    setMouseCursor(juce::MouseCursor::NormalCursor);
+    const bool hoveringResizeEdge =
+        editMode == EditMode::Select && selectHandler_ &&
+        (selectHandler_->isResizingNoteEdge() ||
+         (selectHandler_->isHoveringNoteEdge() && hoveredPitchToolHandle < 0));
+    setMouseCursor(hoveringResizeEdge
+                       ? juce::MouseCursor::LeftRightResizeCursor
+                       : juce::MouseCursor::NormalCursor);
   }
 }
 
@@ -4149,6 +4166,7 @@ void PianoRollComponent::updatePitchToolHandlesFromSelection()
 
   const bool isChangingPitch =
       (selectHandler_ && (selectHandler_->isSingleNoteDragging() ||
+                          selectHandler_->isResizingNoteEdge() ||
                           selectHandler_->getIsDeltaScaleDragging() ||
                           selectHandler_->getIsDeltaOffsetDragging())) ||
       (pitchEditor && (pitchEditor->isDraggingNote() ||
@@ -4371,6 +4389,7 @@ void PianoRollComponent::updatePreviewButtonBounds()
 {
   const bool isChangingPitch =
       (selectHandler_ && (selectHandler_->isSingleNoteDragging() ||
+                          selectHandler_->isResizingNoteEdge() ||
                           selectHandler_->getIsDeltaScaleDragging() ||
                           selectHandler_->getIsDeltaOffsetDragging())) ||
       (pitchToolController && pitchToolController->isDragging()) ||
