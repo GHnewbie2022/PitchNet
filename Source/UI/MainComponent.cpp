@@ -1036,6 +1036,15 @@ MainComponent::MainComponent(bool enableAudioDevice)
   };
   pianoRoll.onSeek = [this](double time)
   { setPlayhead(time); };
+  pianoRoll.onSetPlayhead = [this](double time)
+  {
+    // While playing, only the start point moves; playback carries on and
+    // returns here when stopped.
+    if (isPlaying && !isPluginMode())
+      pianoRoll.setPlayheadTime(std::max(0.0, time));
+    else
+      setPlayhead(time);
+  };
   pianoRoll.onCanvasEmptyDoubleClick = [this](double time)
   {
     setPlayhead(time);

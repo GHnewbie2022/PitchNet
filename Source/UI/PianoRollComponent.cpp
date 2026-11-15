@@ -2274,25 +2274,37 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e)
   // snapping; in Warp mode Alt + click on an anchor deletes it.
 
   // Shift + Alt + click anywhere on the canvas sets the playhead, like a
-  // click on the ruler. It takes the whole gesture: no tool sees it.
+  // click on the ruler, but never moves playback that is running. It takes
+  // the whole gesture: no tool sees it.
   if (isCanvasPoint(e) && e.mods.isShiftDown() && e.mods.isAltDown() &&
       !e.mods.isCommandDown() && !e.mods.isCtrlDown())
   {
     swallowGestureUntilMouseUp = true;
     const double time = std::max(getTimelineStart(), xToTime(adjustedX));
-    setCursorTime(time);
-    if (onSeek)
-      onSeek(time);
+    if (onSetPlayhead)
+      onSetPlayhead(time);
+    else
+    {
+      setCursorTime(time);
+      if (onSeek)
+        onSeek(time);
+    }
     return;
   }
 
-  // Handle timeline clicks - seek to position
+  // A click on the ruler sets the playhead, like Shift + Alt + click: running
+  // playback carries on.
   if (e.y < timelineHeight && e.x >= pianoKeysWidth)
   {
     double time = std::max(getTimelineStart(), xToTime(adjustedX));
-    setCursorTime(time);
-    if (onSeek)
-      onSeek(time);
+    if (onSetPlayhead)
+      onSetPlayhead(time);
+    else
+    {
+      setCursorTime(time);
+      if (onSeek)
+        onSeek(time);
+    }
     return;
   }
 
