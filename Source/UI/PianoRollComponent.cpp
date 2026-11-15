@@ -5,6 +5,7 @@
 #include "../Undo/AmplitudeAction.h"
 #include "../Undo/GainEditAction.h"
 #include "../Audio/BreathNotes.h"
+#include "../Audio/NoteTiming.h"
 #include "../Utils/BasePitchCurve.h"
 #include "../Utils/CurveResampler.h"
 #include "../Utils/Constants.h"
@@ -3581,56 +3582,13 @@ bool PianoRollComponent::deleteSelectedNotes()
                                       note.getEndFrame());
   }
 
-  const int reachStart = std::max(0, minStart - 12);
-  const int reachEnd = maxEnd + 12;
-  std::vector<std::pair<int, std::vector<float>>> prior;
-  for (const auto &existing : project->getNotes())
-  {
-    if (existing.isRest() || existing.getEndFrame() <= reachStart ||
-        existing.getStartFrame() >= reachEnd)
-      continue;
-    const bool isDeleted = std::any_of(
-        deletedNotes.begin(), deletedNotes.end(),
-        [&existing](const Note &d)
-        {
-          return (d.getUid() != 0 && existing.getUid() == d.getUid()) ||
-                 existing.getStartFrame() == d.getStartFrame();
-        });
-    if (!isDeleted)
-      prior.emplace_back(existing.getStartFrame(),
-                         existing.getOriginalDeltaPitch());
-  }
-
-  project->getDrawnCurves() = curvesAfter;
-  for (const auto &note : deletedNotes)
-    project->removeNoteByStartFrame(note.getStartFrame());
-
   setHoveredNote(nullptr);
   if (selectHandler_)
     selectHandler_->clearEdgeHover();
 
-  PitchCurveProcessor::rebuildBaseFromNotes(*project);
-  std::vector<NoteCurveEdit> neighbourEdits;
-  for (const int changedStart :
-       PitchCurveProcessor::refitUntouchedCurves(*project, reachStart, reachEnd))
-  {
-    const auto was = std::find_if(
-        prior.begin(), prior.end(),
-        [changedStart](const auto &p) { return p.first == changedStart; });
-    if (was == prior.end())
-      continue;
-    for (const auto &existing : project->getNotes())
-    {
-      if (!existing.isRest() && existing.getStartFrame() == changedStart)
-      {
-        neighbourEdits.push_back({changedStart, was->second,
-                                  existing.getOriginalDeltaPitch(),
-                                  existing.getBakedDeltaPitch(),
-                                  existing.getBakedDeltaPitch()});
-        break;
-      }
-    }
-  }
+  // Neighbours keep their analysed pitch, worked out without any drag.
+  noteSplitter->setProject(project);
+  auto neighbourEdits = noteSplitter->removeNotes(deletedNotes, curvesAfter);
 
   if (needsResynthesis)
   {

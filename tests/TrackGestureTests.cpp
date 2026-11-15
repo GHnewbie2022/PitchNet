@@ -1,4 +1,5 @@
 #include "../Source/UI/PianoRollComponent.h"
+#include "../Source/UI/PianoRoll/NoteSplitter.h"
 #include "../Source/Audio/NoteTiming.h"
 #include "../Source/Undo/PitchUndoManager.h"
 #include "../Source/Utils/PitchCurveProcessor.h"
@@ -38,8 +39,339 @@ static void initWarpedOriginalDelta(Project& project) {
   }
 }
 
+static void warpedSplitMergeAndDeletePreservePitchCurve(PianoRollComponent& roll) {
+  Project proj;
+  auto& audio = proj.getAudioData();
+  audio.sampleRate = SAMPLE_RATE;
+  audio.melSpectrogram.resize(100);
+  audio.denseF0.assign(100, midiToFreq(55.4f));
+  for (int i = 30; i < 35; ++i)
+    audio.denseF0[static_cast<size_t>(i)] = midiToFreq(55.5f);
+  for (int i = 35; i < 45; ++i)
+    audio.denseF0[static_cast<size_t>(i)] = midiToFreq(44.0f);
+  for (int i = 45; i < 62; ++i)
+    audio.denseF0[static_cast<size_t>(i)] = midiToFreq(55.4f);
+  audio.f0 = audio.denseF0;
+  audio.voicedMask.assign(100, true);
+  audio.warpMap.setLength(100.0);
+  audio.warpMap.setAnchors({{30.0, 40.0}, {45.0, 60.0}, {62.0, 82.0}});
+
+  Note target(40, 60, 55.1f);
+  target.setSrcStartFrame(30);
+  target.setSrcEndFrame(45);
+  Note rightNeighbour(60, 82, 55.4f);
+  rightNeighbour.setSrcStartFrame(45);
+  rightNeighbour.setSrcEndFrame(62);
+  proj.addNote(target);
+  proj.addNote(rightNeighbour);
+  PitchCurveProcessor::rebuildBaseFromNotes(proj);
+  initWarpedOriginalDelta(proj);
+  proj.getNotes()[0].setAnalysisSpans(
+      {{30, 45, 55.1f, proj.getNotes()[0].getOriginalDeltaPitch()}});
+  proj.getNotes()[1].setAnalysisSpans(
+      {{45, 62, 55.4f, proj.getNotes()[1].getOriginalDeltaPitch()}});
+  PitchCurveProcessor::rebuildBaseFromNotes(proj);
+
+  const auto f0Before = proj.getAudioData().f0;
+
+  auto findNoteAt = [&](int startFrame) -> Note* {
+    for (auto& n : proj.getNotes())
+      if (!n.isRest() && n.getStartFrame() == startFrame)
+        return &n;
+    return nullptr;
+  };
+  auto checkRangeMatches = [&](int from, int to) {
+    for (int i = from; i < to; ++i) {
+      const float gotMidi = freqToMidi(proj.getAudioData().f0[static_cast<size_t>(i)]);
+      const float expMidi = freqToMidi(f0Before[static_cast<size_t>(i)]);
+      CHECK(std::abs(gotMidi - expMidi) < 0.02f);
+    }
+  };
+
+  PitchUndoManager history;
+  NoteSplitter splitter;
+  splitter.setProject(&proj);
+  splitter.setUndoManager(&history);
+
+  // Split the warped note across the high/low pitch jump: zero boundary spikes.
+  CHECK(splitter.splitNoteAtFrame(findNoteAt(40), 46));
+  CHECK(proj.getNotes().size() == 3);
+  CHECK(findNoteAt(40) != nullptr && findNoteAt(46) != nullptr && findNoteAt(60) != nullptr);
+  CHECK(findNoteAt(40)->getMidiNote() > 54.0f);
+  CHECK(findNoteAt(46)->getMidiNote() < 46.0f);
+  checkRangeMatches(40, 82);
+
+  history.undo();
+  CHECK(proj.getNotes().size() == 2);
+  checkRangeMatches(40, 82);
+
+  history.redo();
+  CHECK(proj.getNotes().size() == 3);
+  checkRangeMatches(40, 82);
+
+  // Merge the warped halves back together: zero seam or neighbour spikes.
+  CHECK(splitter.mergeNotes(findNoteAt(40), findNoteAt(46)));
+  CHECK(proj.getNotes().size() == 2);
+  checkRangeMatches(40, 82);
+
+  history.undo();
+  CHECK(proj.getNotes().size() == 3);
+  checkRangeMatches(40, 82);
+
+  history.redo();
+  CHECK(proj.getNotes().size() == 2);
+  checkRangeMatches(40, 82);
+
+  // Back to split state, then delete the low half: surviving warped neighbours keep f0.
+  history.undo();
+  CHECK(proj.getNotes().size() == 3);
+  roll.setProject(&proj);
+  roll.setUndoManager(&history);
+  roll.setTrackViewMode(false);
+  proj.deselectAllNotes();
+  findNoteAt(46)->setSelected(true);
+  CHECK(roll.keyPressed(juce::KeyPress(juce::KeyPress::backspaceKey)));
+  CHECK(proj.getNotes().size() == 2);
+  CHECK(findNoteAt(46) == nullptr);
+  checkRangeMatches(40, 46);
+  checkRangeMatches(60, 82);
+
+  history.undo();
+  CHECK(proj.getNotes().size() == 3);
+  checkRangeMatches(40, 82);
+
+  history.redo();
+  CHECK(proj.getNotes().size() == 2);
+  checkRangeMatches(40, 46);
+  checkRangeMatches(60, 82);
+
+  // Editing one half then merging a warped note without an exact analysis span
+  // still returns to a spike-free curve.
+  history.undo();
+  CHECK(proj.getNotes().size() == 3);
+  findNoteAt(40)->setAnalysisSpans({});
+  findNoteAt(46)->setAnalysisSpans({});
+  findNoteAt(46)->setMidiNote(findNoteAt(46)->getMidiNote() + 4.0f);
+  PitchCurveProcessor::rebuildBaseFromNotes(proj);
+  CHECK(splitter.mergeNotes(findNoteAt(40), findNoteAt(46)));
+  CHECK(proj.getNotes().size() == 2);
+  checkRangeMatches(40, 82);
+
+  roll.setUndoManager(nullptr);
+}
+
+// Three warped notes with a moving contour: left neighbour, target, right
+// neighbour. Each carries its exact analysis span.
+static void buildWarpedTrio(Project& proj) {
+  auto& audio = proj.getAudioData();
+  audio.sampleRate = SAMPLE_RATE;
+  audio.melSpectrogram.resize(120);
+  audio.denseF0.assign(120, midiToFreq(57.0f));
+  for (int i = 0; i < 120; ++i) {
+    float midi = 57.0f + 0.4f * std::sin(0.45f * static_cast<float>(i));
+    // Sung glides between notes (a few frames each), not instant jumps.
+    const auto glide = [i](float at) {
+      return 0.5f * (1.0f + std::tanh((static_cast<float>(i) - at) / 1.5f));
+    };
+    midi += 2.0f * glide(37.5f) - 3.5f * glide(46.5f) + 4.5f * glide(57.5f);
+    audio.denseF0[static_cast<size_t>(i)] = midiToFreq(midi);
+  }
+  audio.f0 = audio.denseF0;
+  audio.voicedMask.assign(120, true);
+  audio.warpMap.setLength(120.0);
+  audio.warpMap.setAnchors({{20.0, 20.0}, {38.0, 40.0}, {58.0, 70.0}, {75.0, 92.0}});
+
+  Note left(20, 40, 57.0f);
+  left.setSrcStartFrame(20);
+  left.setSrcEndFrame(38);
+  Note target(40, 70, 58.0f);
+  target.setSrcStartFrame(38);
+  target.setSrcEndFrame(58);
+  Note right(70, 92, 60.0f);
+  right.setSrcStartFrame(58);
+  right.setSrcEndFrame(75);
+  proj.addNote(left);
+  proj.addNote(target);
+  proj.addNote(right);
+  PitchCurveProcessor::rebuildBaseFromNotes(proj);
+  initWarpedOriginalDelta(proj);
+  for (auto& n : proj.getNotes()) {
+    // Detected notes carry their recorded f0, as a loaded project's do.
+    n.setF0Values({audio.denseF0.begin() + n.getSrcStartFrame(),
+                   audio.denseF0.begin() + n.getSrcEndFrame()});
+  }
+  PitchCurveProcessor::rebuildBaseFromNotes(proj);
+  initWarpedOriginalDelta(proj);
+  for (auto& n : proj.getNotes())
+    n.setAnalysisSpans({{n.getSrcStartFrame(), n.getSrcEndFrame(),
+                         n.getOriginalMidiNote(), n.getOriginalDeltaPitch()}});
+  PitchCurveProcessor::rebuildBaseFromNotes(proj);
+}
+
+static Note* noteAt(Project& proj, int startFrame) {
+  for (auto& n : proj.getNotes())
+    if (!n.isRest() && n.getStartFrame() == startFrame)
+      return &n;
+  return nullptr;
+}
+
+static void shiftNote(Project& proj, int startFrame, float semitones) {
+  auto* n = noteAt(proj, startFrame);
+  CHECK(n != nullptr);
+  if (!n)
+    return;
+  n->setMidiNote(n->getMidiNote() + semitones);
+  PitchCurveProcessor::rebuildBaseFromNotes(proj);
+}
+
+static float maxF0ErrorSemitones(const Project& proj, const std::vector<float>& ref,
+                                 int from, int to) {
+  float worst = 0.0f;
+  for (int i = from; i < to; ++i)
+    worst = std::max(worst, std::abs(
+        freqToMidi(proj.getAudioData().f0[static_cast<size_t>(i)]) -
+        freqToMidi(ref[static_cast<size_t>(i)])));
+  return worst;
+}
+
+// Split a warped note in 4, drag every piece, merge in pairs, then merge the
+// pairs: the analysed pitch comes back, and undo/redo walk it exactly.
+static void warpedQuarteredShiftedPairMergeRestoresAnalysis() {
+  Project proj;
+  buildWarpedTrio(proj);
+  const auto f0Initial = proj.getAudioData().f0;
+  PitchUndoManager history;
+  NoteSplitter splitter;
+  splitter.setProject(&proj);
+  splitter.setUndoManager(&history);
+
+  CHECK(splitter.splitNoteAtFrame(noteAt(proj, 40), 55));
+  CHECK(splitter.splitNoteAtFrame(noteAt(proj, 40), 47));
+  CHECK(splitter.splitNoteAtFrame(noteAt(proj, 55), 62));
+  CHECK(proj.getNotes().size() == 6);
+  CHECK(maxF0ErrorSemitones(proj, f0Initial, 20, 92) < 0.02f);
+  shiftNote(proj, 40, 5.0f);
+  shiftNote(proj, 47, -8.0f);
+  shiftNote(proj, 55, 9.0f);
+  shiftNote(proj, 62, -6.0f);
+  const auto f0Shifted = proj.getAudioData().f0;
+
+  CHECK(splitter.mergeNotes(noteAt(proj, 40), noteAt(proj, 47)));
+  CHECK(splitter.mergeNotes(noteAt(proj, 55), noteAt(proj, 62)));
+  const auto f0Pairs = proj.getAudioData().f0;
+  CHECK(maxF0ErrorSemitones(proj, f0Initial, 20, 92) < 0.02f);
+  CHECK(splitter.mergeNotes(noteAt(proj, 40), noteAt(proj, 55)));
+  CHECK(proj.getNotes().size() == 3);
+  const float err = maxF0ErrorSemitones(proj, f0Initial, 20, 92);
+  if (err >= 0.02f)
+    std::cerr << "quartered pair merge max error " << err << " st\n";
+  CHECK(err < 0.02f);
+
+  history.undo();
+  CHECK(maxF0ErrorSemitones(proj, f0Pairs, 20, 92) < 0.02f);
+  history.undo();
+  history.undo();
+  CHECK(maxF0ErrorSemitones(proj, f0Shifted, 20, 92) < 0.02f);
+  history.redo();
+  history.redo();
+  CHECK(maxF0ErrorSemitones(proj, f0Pairs, 20, 92) < 0.02f);
+  history.redo();
+  CHECK(maxF0ErrorSemitones(proj, f0Initial, 20, 92) < 0.02f);
+}
+
+// Split and drag, split a dragged half again and drag, drag the neighbours,
+// then glue everything across the original note boundaries into one note.
+static void warpedResplitShiftedCrossNoteMergeRestoresAnalysis() {
+  Project proj;
+  buildWarpedTrio(proj);
+  const auto f0Initial = proj.getAudioData().f0;
+  PitchUndoManager history;
+  NoteSplitter splitter;
+  splitter.setProject(&proj);
+  splitter.setUndoManager(&history);
+
+  CHECK(splitter.splitNoteAtFrame(noteAt(proj, 40), 52));
+  shiftNote(proj, 40, 6.0f);
+  shiftNote(proj, 52, -7.0f);
+  CHECK(splitter.splitNoteAtFrame(noteAt(proj, 52), 61));
+  shiftNote(proj, 52, 4.0f);
+  shiftNote(proj, 61, -5.0f);
+  shiftNote(proj, 20, -3.0f);
+  shiftNote(proj, 70, -6.0f);
+  CHECK(proj.getNotes().size() == 5);
+
+  CHECK(splitter.mergeNotes(noteAt(proj, 52), noteAt(proj, 61)));
+  CHECK(splitter.mergeNotes(noteAt(proj, 40), noteAt(proj, 52)));
+  CHECK(splitter.mergeNotes(noteAt(proj, 20), noteAt(proj, 40)));
+  CHECK(splitter.mergeNotes(noteAt(proj, 20), noteAt(proj, 70)));
+  CHECK(proj.getNotes().size() == 1);
+  const float err = maxF0ErrorSemitones(proj, f0Initial, 20, 92);
+  if (err >= 0.02f)
+    std::cerr << "cross-note merge max error " << err << " st\n";
+  CHECK(err < 0.02f);
+}
+
+// Split, drag a piece far up, delete it, stretch the left neighbour's right
+// edge over the gap to meet the other piece, then glue: the analysed pitch
+// comes back with no seam.
+static void warpedDeleteShiftedPieceResizeMergeRestoresAnalysis(PianoRollComponent& roll) {
+  Project proj;
+  buildWarpedTrio(proj);
+  const auto f0Initial = proj.getAudioData().f0;
+  PitchUndoManager history;
+  NoteSplitter splitter;
+  splitter.setProject(&proj);
+  splitter.setUndoManager(&history);
+  auto report = [&](const char* step, int from, int to) {
+    const float err = maxF0ErrorSemitones(proj, f0Initial, from, to);
+    if (err >= 0.02f)
+      std::cerr << "delete/resize/merge " << step << " max error " << err << " st\n";
+    return err;
+  };
+
+  CHECK(splitter.splitNoteAtFrame(noteAt(proj, 40), 52));
+  shiftNote(proj, 40, 8.0f);
+
+  roll.setProject(&proj);
+  roll.setUndoManager(&history);
+  roll.setTrackViewMode(false);
+  proj.deselectAllNotes();
+  noteAt(proj, 40)->setSelected(true);
+  CHECK(roll.keyPressed(juce::KeyPress(juce::KeyPress::backspaceKey)));
+  CHECK(noteAt(proj, 40) == nullptr);
+  const float afterDelete = std::max(report("after delete (left)", 20, 40),
+                                     report("after delete (right)", 52, 92));
+
+  Note* left = noteAt(proj, 20);
+  Note* piece = noteAt(proj, 52);
+  CHECK(left != nullptr && piece != nullptr);
+  const Note leftBefore = *left;
+  CHECK(splitter.commitResizeNote(left, leftBefore, leftBefore.getSrcStartFrame(),
+                                  piece->getSrcStartFrame()));
+  CHECK(noteAt(proj, 20)->getEndFrame() == 52);
+  const float afterResize = report("after resize", 20, 92);
+
+  CHECK(splitter.mergeNotes(noteAt(proj, 20), noteAt(proj, 52)));
+  const float afterMerge = report("after merge", 20, 92);
+  roll.setUndoManager(nullptr);
+  CHECK(afterDelete < 0.02f);
+  // The stretched note's contour is kept per recorded frame and read back
+  // through the warp by linear interpolation: where the base bends within a
+  // stretched stretch of the note, that reads a few cents off. A multi-
+  // semitone seam is the bug this guards against.
+  CHECK(afterResize < 0.1f);
+  CHECK(afterMerge < 0.1f);
+}
+
 int main() {
   juce::ScopedJuceInitialiser_GUI gui;
+  {
+    PianoRollComponent scratchRoll;
+    scratchRoll.setSize(800, 400);
+    warpedDeleteShiftedPieceResizeMergeRestoresAnalysis(scratchRoll);
+  }
+  warpedQuarteredShiftedPairMergeRestoresAnalysis();
+  warpedResplitShiftedCrossNoteMergeRestoresAnalysis();
   Project a, b;
   for (auto* project : {&a, &b}) {
     project->getAudioData().sampleRate = SAMPLE_RATE;
@@ -349,6 +681,8 @@ int main() {
     const float exp = initialEF0[static_cast<size_t>(i)];
     CHECK(std::abs(got - exp) < 0.02f);
   }
+
+  warpedSplitMergeAndDeletePreservePitchCurve(roll);
 
   std::cout << "Track gesture tests passed\n";
 }

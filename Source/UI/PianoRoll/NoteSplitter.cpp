@@ -168,34 +168,49 @@ constexpr int kBoundaryReach = 12;
 std::vector<NoteCurveEdit> smoothOverBoundaries(Project& project, int start, int end,
                                                const std::vector<float>& before,
                                                const std::vector<int>& own,
-                                               const std::vector<int>& skip = {})
+                                               const std::vector<int>& skip = {},
+                                               bool bakedOnly = false)
 {
     std::vector<NoteCurveEdit> edits;
-    const int first = start - kBoundaryReach;
+    // Untouched notes sing the recording: refit them to it over the new base
+    // (PitchCurveProcessor::refitUntouchedCurves). Edited or warped notes keep
+    // the pitch they sang through the compensation below.
+    const int first = std::max(0, start - kBoundaryReach);
     if (before.empty())
         return edits;
+    const int last = std::min(end + kBoundaryReach,
+                              first + static_cast<int>(before.size()));
 
-    // Untouched notes sing the recording: refit them to it over the new base
-    // (PitchCurveProcessor::refitUntouchedCurves). Only edited notes keep the
-    // pitch they sang through the compensation below.
+    if (!bakedOnly)
     {
-        std::vector<std::pair<int, std::vector<float>>> prior;
+        struct PriorCurve
+        {
+            int startFrame = 0;
+            std::vector<float> original;
+            std::vector<float> baked;
+        };
+        std::vector<PriorCurve> prior;
         for (const auto& note : project.getNotes())
             if (!note.isRest() && note.getEndFrame() > first &&
-                note.getStartFrame() < end + kBoundaryReach)
-                prior.emplace_back(note.getStartFrame(), note.getOriginalDeltaPitch());
+                note.getStartFrame() < last)
+                prior.push_back({note.getStartFrame(),
+                                 note.getOriginalDeltaPitch(),
+                                 note.getBakedDeltaPitch()});
         for (const int changed : PitchCurveProcessor::refitUntouchedCurves(
-                 project, first, end + kBoundaryReach))
+                 project, first, last))
         {
             if (std::find(own.begin(), own.end(), changed) != own.end() ||
                 std::find(skip.begin(), skip.end(), changed) != skip.end())
                 continue;
             const auto was = std::find_if(prior.begin(), prior.end(),
-                                          [changed](const auto& p) { return p.first == changed; });
+                                          [changed](const PriorCurve& p)
+                                          { return p.startFrame == changed; });
             for (const auto& note : project.getNotes())
-                if (!note.isRest() && note.getStartFrame() == changed && was != prior.end())
-                    edits.push_back({changed, was->second, note.getOriginalDeltaPitch(),
-                                     note.getBakedDeltaPitch(), note.getBakedDeltaPitch()});
+                if (!note.isRest() && note.getStartFrame() == changed &&
+                    was != prior.end())
+                    edits.push_back({changed, was->original,
+                                     note.getOriginalDeltaPitch(),
+                                     was->baked, note.getBakedDeltaPitch()});
         }
     }
     for (int pass = 0; pass < 2; ++pass)
@@ -206,18 +221,28 @@ std::vector<NoteCurveEdit> smoothOverBoundaries(Project& project, int start, int
         {
             const int noteStart = note.getStartFrame();
             if (note.isRest() || note.getEndFrame() <= first ||
-                noteStart >= end + kBoundaryReach ||
+                noteStart >= last ||
                 std::find(skip.begin(), skip.end(), noteStart) != skip.end())
                 continue;
-            if (note.isPitchUntouched() && note.getStartFrame() == note.getSrcStartFrame())
+            if (bakedOnly && !note.hasBakedDeltaPitch())
+                continue;
+            if (!audio.denseF0.empty() && note.isPitchUntouched() &&
+                note.getStartFrame() == note.getSrcStartFrame() &&
+                note.getDurationFrames() == note.getSrcDurationFrames())
                 continue; // refitted to the recording above
             const bool baked = note.hasBakedDeltaPitch();
-            auto curve = baked ? note.getBakedDeltaPitch() : note.getOriginalDeltaPitch();
+            const auto& storedCurve =
+                baked ? note.getBakedDeltaPitch() : note.getOriginalDeltaPitch();
+            if (storedCurve.empty())
+                continue;
+            auto curve = static_cast<int>(storedCurve.size()) == note.getDurationFrames()
+                             ? storedCurve
+                             : notetiming::curveOnNote(audio, note, storedCurve);
             if (static_cast<int>(curve.size()) != note.getDurationFrames())
-                continue; // laid out over another length: leave it be
+                continue;
             bool touched = false;
             for (int f = std::max(noteStart, first);
-                 f < std::min(note.getEndFrame(), end + kBoundaryReach); ++f)
+                 f < std::min(note.getEndFrame(), last); ++f)
             {
                 const auto k = static_cast<size_t>(f - first);
                 const auto i = static_cast<size_t>(f);
@@ -249,8 +274,7 @@ std::vector<NoteCurveEdit> smoothOverBoundaries(Project& project, int start, int
             else
             {
                 note.setOriginalDeltaPitch(curve);
-                if (!note.getDeltaPitch().empty() &&
-                    note.getDeltaPitch().size() == curve.size())
+                if (!note.getDeltaPitch().empty())
                     note.setDeltaPitch(curve);
             }
             if (listed)
@@ -265,6 +289,100 @@ std::vector<NoteCurveEdit> smoothOverBoundaries(Project& project, int start, int
     }
     return edits;
 }
+
+/** Drop every pitch edit: the note sings what the analysis gave it. */
+void resetNoteToUnedited(Note& n)
+{
+    n.setMidiNote(n.getOriginalMidiNote());
+    n.setPitchOffset(0.0f);
+    n.setTiltLeft(0.0f);
+    n.setTiltRight(0.0f);
+    n.setVibrato(1.0f);
+    n.setPitchDrift(1.0f);
+    n.setSmoothLeftFrames(0);
+    n.setSmoothRightFrames(0);
+    n.setDeltaScale(1.0f);
+    n.setDeltaOffset(0.0f);
+    n.setFrozenTilt({});
+    n.setBakedDeltaPitch({});
+    n.setDeltaPitch(n.getOriginalDeltaPitch());
+}
+
+/**
+ * A split or merge works out the notes' unedited pitch (originalMidiNote,
+ * originalDeltaPitch and their boundary compensation) in the unedited pitch:
+ * every note's pitch edits and the drawn curves are put aside while it does,
+ * so no drag or tool bends the base pitch the analysis is measured against.
+ * The other notes get their edits back afterwards, keeping the analysed
+ * curves the work gave them.
+ */
+struct UneditedSpace
+{
+    Project& project;
+    std::vector<Note> saved;
+    std::vector<DrawnCurve> curves;
+
+    explicit UneditedSpace(Project& p)
+        : project(p), saved(p.getNotes()), curves(p.getDrawnCurves())
+    {
+        for (auto& n : project.getNotes())
+            if (!n.isRest())
+                resetNoteToUnedited(n);
+        project.getDrawnCurves().clear();
+        PitchCurveProcessor::rebuildBaseFromNotes(project);
+    }
+
+    const Note* savedNote(std::uint64_t uid) const
+    {
+        for (const auto& n : saved)
+            if (n.getUid() == uid)
+                return &n;
+        return nullptr;
+    }
+
+    /** Edits back on every note but `edited` (by uid), and `drawn` in place. */
+    void restoreOthers(const std::vector<std::uint64_t>& edited,
+                       std::vector<DrawnCurve> drawn)
+    {
+        for (auto& n : project.getNotes())
+        {
+            if (n.isRest() ||
+                std::find(edited.begin(), edited.end(), n.getUid()) != edited.end())
+                continue;
+            const auto* was = savedNote(n.getUid());
+            if (!was)
+                continue;
+            const auto original = n.getOriginalDeltaPitch();
+            const bool followed = was->getDeltaPitch() == was->getOriginalDeltaPitch();
+            n = *was;
+            n.setOriginalDeltaPitch(original);
+            if (followed)
+                n.setDeltaPitch(original);
+        }
+        project.getDrawnCurves() = std::move(drawn);
+        PitchCurveProcessor::rebuildBaseFromNotes(project);
+    }
+
+    /** What the whole edit changed in the other notes' curves, for undo. */
+    std::vector<NoteCurveEdit> neighbourEdits(const std::vector<int>& own) const
+    {
+        std::vector<NoteCurveEdit> edits;
+        for (const auto& n : project.getNotes())
+        {
+            if (n.isRest() ||
+                std::find(own.begin(), own.end(), n.getStartFrame()) != own.end())
+                continue;
+            const auto* was = savedNote(n.getUid());
+            if (!was || (was->getOriginalDeltaPitch() == n.getOriginalDeltaPitch() &&
+                         was->getBakedDeltaPitch() == n.getBakedDeltaPitch()))
+                continue;
+            edits.push_back({n.getStartFrame(), was->getOriginalDeltaPitch(),
+                             n.getOriginalDeltaPitch(), was->getBakedDeltaPitch(),
+                             n.getBakedDeltaPitch()});
+        }
+        return edits;
+    }
+};
 
 float sampleBasePitchAt(const std::vector<float>& basePitch, double framePos)
 {
@@ -362,14 +480,40 @@ void applyResizedNoteState(Project& project,
     const int oldSrcStart = originalNote.getSrcStartFrame();
     const int oldSrcEnd = originalNote.getSrcEndFrame();
     const int oldSrcLen = std::max(0, oldSrcEnd - oldSrcStart);
-    const std::vector<float> oldOrig =
-        curveAtSourceLength(originalNote.getOriginalDeltaPitch(), oldSrcLen);
+    const auto beforeMap = notetiming::forNote(audioData, originalNote);
+    // A curve kept at the note's timeline length (boundary compensation
+    // writes one) reads back per recorded frame through the warp, not
+    // spread evenly: evenly would slide the contour along the note.
+    const auto atSource = [&](const std::vector<float>& curve)
+    {
+        const int oldLen = originalNote.getDurationFrames();
+        if (static_cast<int>(curve.size()) != oldLen || oldLen == oldSrcLen ||
+            oldLen <= 0)
+            return curveAtSourceLength(curve, oldSrcLen);
+        std::vector<float> out(static_cast<size_t>(oldSrcLen));
+        for (int i = 0; i < oldSrcLen; ++i)
+        {
+            const double pos = std::clamp(
+                beforeMap.destinationAt(oldSrcStart + i + 0.5) - 0.5 -
+                    originalNote.getStartFrame(),
+                0.0, static_cast<double>(oldLen - 1));
+            const int a = static_cast<int>(std::floor(pos));
+            const int b = std::min(a + 1, oldLen - 1);
+            const float t = static_cast<float>(pos - a);
+            out[static_cast<size_t>(i)] = curve[static_cast<size_t>(a)] * (1.0f - t) +
+                                          curve[static_cast<size_t>(b)] * t;
+        }
+        return out;
+    };
+    const std::vector<float> oldOrig = atSource(originalNote.getOriginalDeltaPitch());
     const std::vector<float> oldBaked =
         originalNote.hasBakedDeltaPitch()
-            ? curveAtSourceLength(originalNote.getBakedDeltaPitch(), oldSrcLen)
+            ? atSource(originalNote.getBakedDeltaPitch())
             : std::vector<float>{};
+    // An unedited note sings the recording: its contour is read from it
+    // over the new base, wherever the recording is voiced.
+    const bool fromRecording = pitchUntouched(originalNote);
 
-    const auto beforeMap = notetiming::forNote(audioData, originalNote);
     const auto nowMap = notetiming::forNote(audioData, *resized);
     const int oldStart = originalNote.getStartFrame();
     const int oldEnd = originalNote.getEndFrame();
@@ -401,7 +545,12 @@ void applyResizedNoteState(Project& project,
             !baseBefore.empty() ? sampleBasePitchAt(baseBefore, dstBeforePos) : bAfter;
 
         const int oldIdx = s - oldSrcStart;
-        if (s >= oldSrcStart && s < oldSrcEnd &&
+        const float recorded = resized->getF0Values()[static_cast<size_t>(i)];
+        if (fromRecording && recorded > 0.0f)
+        {
+            origDelta[static_cast<size_t>(i)] = freqToMidi(recorded) - bAfter;
+        }
+        else if (s >= oldSrcStart && s < oldSrcEnd &&
             oldIdx >= 0 && oldIdx < static_cast<int>(oldOrig.size()))
         {
             origDelta[static_cast<size_t>(i)] =
@@ -549,7 +698,6 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
 
     int startFrame = note->getStartFrame();
     int endFrame = note->getEndFrame();
-    const float previousPitchCenter = note->getAdjustedMidiNote();
 
     // Keep at least one analysis frame on each side of the split.
     if (splitFrame <= startFrame || splitFrame >= endFrame)
@@ -563,9 +711,21 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
             ? std::vector<float>{}
             : sungPitch(project->getAudioData(), startFrame, endFrame);
     // ...and around it, which the boundaries' smoothing must not bend.
-    const auto pitchAround = sungPitch(project->getAudioData(),
-                                       std::max(0, startFrame - kBoundaryReach),
-                                       endFrame + kBoundaryReach);
+    const int totalFrames =
+        static_cast<int>(project->getAudioData().basePitch.size());
+    const int aroundStart = std::max(0, startFrame - kBoundaryReach);
+    const int aroundEnd = std::min(totalFrames, endFrame + kBoundaryReach);
+    const auto pitchAround = sungPitch(project->getAudioData(), aroundStart, aroundEnd);
+    const bool sourceUntouched = pitchUntouched(originalNote);
+    const float userShift =
+        originalNote.getAdjustedMidiNote() - originalNote.getOriginalMidiNote();
+
+    // Split the analysis, not the edit: the halves' unedited centres and
+    // curves come from the unedited pitch, the edit goes back on after.
+    UneditedSpace unedited(*project);
+    const auto uneditedAround =
+        sungPitch(project->getAudioData(), aroundStart, aroundEnd);
+    const float previousPitchCenter = note->getAdjustedMidiNote();
 
     // Create the second note (right part)
     Note secondNote;
@@ -733,15 +893,38 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
     project->addNote(secondNote);
 
     // Rebuild the drawn pitch curve from the new notes (pitch-neutral edit:
-    // the audio already matches), keeping what an edited note sang.
+    // the audio already matches) and keep the unedited pitch seamless.
     PitchCurveProcessor::rebuildBaseFromNotes(*project);
-    keepSungPitch(*project, {startFrame, splitFrame}, startFrame, endFrame,
-                  pitchBefore);
-    const auto neighbourEdits =
-        startFrame >= kBoundaryReach
-            ? smoothOverBoundaries(*project, startFrame, endFrame, pitchAround,
-                                   {startFrame, splitFrame})
-            : std::vector<NoteCurveEdit>{};
+    smoothOverBoundaries(*project, startFrame, endFrame, uneditedAround,
+                         {startFrame, splitFrame});
+
+    // Edits back on: the neighbours' own, and the source note's on both
+    // halves (its drag over each half's unedited centre), keeping what it sang.
+    unedited.restoreOthers({originalNote.getUid()}, unedited.curves);
+    if (!sourceUntouched)
+    {
+        for (const int half : {startFrame, splitFrame})
+            if (auto* n = noteStartingAt(*project, half))
+            {
+                n->setMidiNote(n->getOriginalMidiNote() + userShift);
+                n->setPitchOffset(0.0f);
+                n->setTiltLeft(originalNote.getTiltLeft());
+                n->setTiltRight(originalNote.getTiltRight());
+                n->setVibrato(originalNote.getVibrato());
+                n->setPitchDrift(originalNote.getPitchDrift());
+                n->setSmoothLeftFrames(originalNote.getSmoothLeftFrames());
+                n->setSmoothRightFrames(originalNote.getSmoothRightFrames());
+                n->setDeltaScale(originalNote.getDeltaScale());
+                n->setDeltaOffset(originalNote.getDeltaOffset());
+            }
+        PitchCurveProcessor::rebuildBaseFromNotes(*project);
+        keepSungPitch(*project, {startFrame, splitFrame}, startFrame, endFrame,
+                      pitchBefore);
+    }
+    // Baked neighbours keep what they sang over the new base.
+    smoothOverBoundaries(*project, startFrame, endFrame, pitchAround,
+                         {startFrame, splitFrame}, {startFrame, splitFrame}, true);
+    const auto neighbourEdits = unedited.neighbourEdits({startFrame, splitFrame});
 
     // Create undo action - don't pass callback to avoid lifetime issues
     // UI refresh is handled by UndoManager's onUndoRedo callback
@@ -829,21 +1012,34 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
         first->getSrcEndFrame() != second->getSrcStartFrame())
         return false;
 
-    const Note firstNote = *first;
-    const Note secondNote = *second;
+    const Note firstEdited = *first;
+    const Note secondEdited = *second;
 
     // Like gluing segments in Cubase's VariAudio, the merged note goes back
     // to the pitch the analysis gave it: the halves' pitch edits (drag,
     // drift, vibrato, tilt, smoothing, drawn curves) are dropped. Undo brings
     // them back.
     const bool reshaped =
-        !(pitchUntouched(firstNote) && pitchUntouched(secondNote));
+        !(pitchUntouched(firstEdited) && pitchUntouched(secondEdited));
+    const auto curvesBefore = project->getDrawnCurves();
+
     // The pitch around the merge: its neighbours must not bend with the base.
-    const int mergeStart = firstNote.getStartFrame();
-    const int mergeEnd = secondNote.getEndFrame();
-    const auto pitchAround = sungPitch(project->getAudioData(),
-                                       std::max(0, mergeStart - kBoundaryReach),
-                                       mergeEnd + kBoundaryReach);
+    const int mergeStart = firstEdited.getStartFrame();
+    const int mergeEnd = secondEdited.getEndFrame();
+    const int totalFrames =
+        static_cast<int>(project->getAudioData().basePitch.size());
+    const int aroundStart = std::max(0, mergeStart - kBoundaryReach);
+    const int aroundEnd = std::min(totalFrames, mergeEnd + kBoundaryReach);
+    const auto pitchAround =
+        sungPitch(project->getAudioData(), aroundStart, aroundEnd);
+
+    // Merge the analysis in the unedited pitch: no note's drag (the halves'
+    // or a neighbour's) bends the base the merged curve is measured against.
+    UneditedSpace unedited(*project);
+    const Note firstNote = *first;
+    const Note secondNote = *second;
+    const auto uneditedAround =
+        sungPitch(project->getAudioData(), aroundStart, aroundEnd);
 
     Note mergedNote = firstNote;
     mergedNote.setEndFrame(secondNote.getEndFrame());
@@ -856,6 +1052,10 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
     }
 
     NoteAmplitude::update(mergedNote, project->getAudioData());
+
+    const bool warpedMerged =
+        mergedNote.getStartFrame() != mergedNote.getSrcStartFrame() ||
+        mergedNote.getDurationFrames() != mergedNote.getSrcDurationFrames();
 
     auto append = [](auto left, const auto &right)
     {
@@ -870,17 +1070,45 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
     const float mergedPitchCenter = calculatePitchCenter(
         project->getAudioData(), mergedNote.getStartFrame(),
         mergedNote.getEndFrame(), firstNote.getAdjustedMidiNote());
-    const auto mergeDeviation = [mergedPitchCenter](
+    const auto mergeDeviation = [&](
                                   const std::vector<float> &firstValues,
                                   float firstCenter,
                                   const std::vector<float> &secondValues,
                                   float secondCenter)
     {
+        const bool bothMatchSrc =
+            static_cast<int>(firstValues.size()) == firstNote.getSrcDurationFrames() &&
+            static_cast<int>(secondValues.size()) == secondNote.getSrcDurationFrames();
+        const bool bothMatchDst =
+            static_cast<int>(firstValues.size()) == firstNote.getDurationFrames() &&
+            static_cast<int>(secondValues.size()) == secondNote.getDurationFrames();
+
+        const std::vector<float> *leftPtr = &firstValues;
+        const std::vector<float> *rightPtr = &secondValues;
+        std::vector<float> leftResampled;
+        std::vector<float> rightResampled;
+        if (!bothMatchSrc && !bothMatchDst &&
+            !firstValues.empty() && !secondValues.empty())
+        {
+            if (static_cast<int>(firstValues.size()) != firstNote.getDurationFrames())
+            {
+                leftResampled = notetiming::curveOnNote(
+                    project->getAudioData(), firstNote, firstValues);
+                leftPtr = &leftResampled;
+            }
+            if (static_cast<int>(secondValues.size()) != secondNote.getDurationFrames())
+            {
+                rightResampled = notetiming::curveOnNote(
+                    project->getAudioData(), secondNote, secondValues);
+                rightPtr = &rightResampled;
+            }
+        }
+
         std::vector<float> values;
-        values.reserve(firstValues.size() + secondValues.size());
-        for (const auto value : firstValues)
+        values.reserve(leftPtr->size() + rightPtr->size());
+        for (const auto value : *leftPtr)
             values.push_back(value + firstCenter - mergedPitchCenter);
-        for (const auto value : secondValues)
+        for (const auto value : *rightPtr)
             values.push_back(value + secondCenter - mergedPitchCenter);
         return values;
     };
@@ -890,25 +1118,14 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
     mergedNote.setDeltaPitch(mergeDeviation(
         firstNote.getDeltaPitch(), firstNote.getAdjustedMidiNote(),
         secondNote.getDeltaPitch(), secondNote.getAdjustedMidiNote()));
-    if (firstNote.hasBakedDeltaPitch() || secondNote.hasBakedDeltaPitch()) {
-        const auto& firstActive = firstNote.hasBakedDeltaPitch()
-                                      ? firstNote.getBakedDeltaPitch()
-                                      : firstNote.getOriginalDeltaPitch();
-        const auto& secondActive = secondNote.hasBakedDeltaPitch()
-                                       ? secondNote.getBakedDeltaPitch()
-                                       : secondNote.getOriginalDeltaPitch();
-        mergedNote.setBakedDeltaPitch(mergeDeviation(
-            firstActive, firstNote.getAdjustedMidiNote(),
-            secondActive, secondNote.getAdjustedMidiNote()));
-    }
     mergedNote.setMidiNote(mergedPitchCenter);
     mergedNote.setOriginalMidiNote(mergedPitchCenter);
     mergedNote.setPitchOffset(0.0f);
-    const bool isDirty = firstNote.isDirty() || secondNote.isDirty();
-    const bool isSynthDirty = firstNote.isSynthDirty() || secondNote.isSynthDirty();
+    const bool isDirty = firstEdited.isDirty() || secondEdited.isDirty();
+    const bool isSynthDirty = firstEdited.isSynthDirty() || secondEdited.isSynthDirty();
     mergedNote.setDirty(isDirty);
-    mergedNote.setRenderedEdit(firstNote.hasRenderedEdit() ||
-                               secondNote.hasRenderedEdit());
+    mergedNote.setRenderedEdit(firstEdited.hasRenderedEdit() ||
+                               secondEdited.hasRenderedEdit());
     if (isSynthDirty)
         mergedNote.markSynthDirty();
     else
@@ -916,7 +1133,8 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
 
     // Back to the analysis: the detected note itself when the merge made it
     // whole again, otherwise the halves' analysed curves joined above.
-    if (!mergedNote.restoreAnalysisPitch())
+    const bool restoredAnalysis = mergedNote.restoreAnalysisPitch();
+    if (!restoredAnalysis)
     {
         mergedNote.setTiltLeft(0.0f);
         mergedNote.setTiltRight(0.0f);
@@ -943,30 +1161,33 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
             mergedNote.setSynthDirty(false);
     }
 
-    // Drawn curves on the halves went with their pitch edits.
-    const auto curvesBefore = project->getDrawnCurves();
-    if (reshaped)
-        project->getDrawnCurves() = drawncurve::without(
-            curvesBefore, firstNote.getStartFrame(), secondNote.getEndFrame());
-
     *first = mergedNote;
     project->removeNoteByStartFrame(secondNote.getStartFrame());
 
-    // Rebuild the drawn pitch curve from the new notes (pitch-neutral edit:
-    // the audio already matches).
+    // Rebuild the drawn pitch curve from the new notes and keep the unedited
+    // pitch seamless. A note the merge made whole again sings its analysis
+    // as it is.
     PitchCurveProcessor::rebuildBaseFromNotes(*project);
-    // The merged note goes back to the analysis; its neighbours keep theirs.
-    const auto neighbourEdits =
-        mergeStart >= kBoundaryReach
-            ? smoothOverBoundaries(*project, mergeStart, mergeEnd, pitchAround,
-                                   {mergeStart}, {mergeStart})
-            : std::vector<NoteCurveEdit>{};
-    mergedNote = *first; // refitted to the recording: what redo puts back
+    smoothOverBoundaries(*project, mergeStart, mergeEnd, uneditedAround, {mergeStart},
+                         restoredAnalysis ? std::vector<int>{mergeStart}
+                                          : std::vector<int>{});
+
+    // The neighbours get their edits back; drawn curves on the halves went
+    // with their pitch edits. Baked neighbours keep what they sang.
+    unedited.restoreOthers(
+        {mergedNote.getUid()},
+        reshaped ? drawncurve::without(curvesBefore, mergeStart, mergeEnd)
+                 : curvesBefore);
+    smoothOverBoundaries(*project, mergeStart, mergeEnd, pitchAround, {mergeStart},
+                         {mergeStart}, true);
+    const auto neighbourEdits = unedited.neighbourEdits({mergeStart});
+    if (const auto *updatedMerged = noteStartingAt(*project, mergeStart))
+        mergedNote = *updatedMerged; // refitted to the recording: what redo puts back
 
     if (undoManager)
     {
         auto action = std::make_unique<NoteMergeAction>(
-            project, firstNote, secondNote, mergedNote, nullptr);
+            project, firstEdited, secondEdited, mergedNote, nullptr);
         action->setDrawnCurves(curvesBefore, project->getDrawnCurves());
         action->setNeighbourEdits(neighbourEdits);
         undoManager->addAction(std::move(action));
@@ -975,6 +1196,40 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
         onNoteSplit();
 
     return true;
+}
+
+std::vector<NoteCurveEdit> NoteSplitter::removeNotes(const std::vector<Note>& removed,
+                                                     std::vector<DrawnCurve> curvesAfter)
+{
+    if (!project || removed.empty())
+        return {};
+    int minStart = std::numeric_limits<int>::max();
+    int maxEnd = std::numeric_limits<int>::min();
+    for (const auto& n : removed)
+    {
+        minStart = std::min(minStart, n.getStartFrame());
+        maxEnd = std::max(maxEnd, n.getEndFrame());
+    }
+    const int totalFrames =
+        static_cast<int>(project->getAudioData().basePitch.size());
+    const int aroundStart = std::max(0, minStart - kBoundaryReach);
+    const int aroundEnd = std::min(totalFrames, maxEnd + kBoundaryReach);
+    const auto pitchAround =
+        sungPitch(project->getAudioData(), aroundStart, aroundEnd);
+
+    // The removed notes' drags must not bend the neighbours' analysed pitch:
+    // compensate in the unedited pitch, then put the edits back.
+    UneditedSpace unedited(*project);
+    const auto uneditedAround =
+        sungPitch(project->getAudioData(), aroundStart, aroundEnd);
+    for (const auto& n : removed)
+        project->removeNoteByStartFrame(n.getStartFrame());
+    PitchCurveProcessor::rebuildBaseFromNotes(*project);
+    smoothOverBoundaries(*project, minStart, maxEnd, uneditedAround, {});
+
+    unedited.restoreOthers({}, std::move(curvesAfter));
+    smoothOverBoundaries(*project, minStart, maxEnd, pitchAround, {}, {}, true);
+    return unedited.neighbourEdits({});
 }
 
 std::optional<NoteSplitter::SeparationGroup>

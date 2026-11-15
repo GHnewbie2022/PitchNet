@@ -42,6 +42,13 @@ public:
     /** Merges two adjacent segments that originated from the same note. */
     bool mergeNotes(Note* first, Note* second);
 
+    /** Removes `removed` (matched by start frame) and puts `curvesAfter` in
+     *  place. The neighbours keep their analysed pitch, worked out without
+     *  any note's drag; baked neighbours keep what they sang. Returns the
+     *  neighbours' curve edits for undo. Records no undo itself. */
+    std::vector<struct NoteCurveEdit> removeNotes(const std::vector<Note>& removed,
+                                                  std::vector<DrawnCurve> curvesAfter);
+
     /** Live preview for Select-mode boundary resizing (does not record undo). */
     bool previewResizeNote(Note* note, const Note& originalNote,
                            int newSrcStartFrame, int newSrcEndFrame);
