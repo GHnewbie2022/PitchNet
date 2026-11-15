@@ -22,7 +22,6 @@
 #include "PianoRoll/States/SplitHandler.h"
 #include "PianoRoll/States/PitchDrawingHandler.h"
 #include "PianoRoll/States/WarpHandler.h"
-#include "PianoRoll/PitchDrawingConfirmationPanel.h"
 #include "Components/PitchPopupMenu.h"
 #include "Components/CanvasPopupMenu.h"
 #include "BinaryData.h"
@@ -467,27 +466,6 @@ PianoRollComponent::PianoRollComponent()
   };
   addAndMakeVisible(resetButton);
 
-  pitchDrawingConfirmationPanel = std::make_unique<PitchDrawingConfirmationPanel>();
-  pitchDrawingConfirmationPanel->onApply = [this]
-  {
-    if (!pitchDrawingHandler_ || !pitchDrawingHandler_->apply())
-      return;
-
-    // The preview has already been rendered. Confirmation only promotes the
-    // current transient state into undo history and persistent project state.
-    invalidateBasePitchCache();
-    if (onPitchEdited)
-      onPitchEdited();
-    if (onPitchEditCommitted)
-      onPitchEditCommitted();
-  };
-  pitchDrawingConfirmationPanel->onCancel = [this]
-  {
-    if (pitchDrawingHandler_)
-      pitchDrawingHandler_->cancel();
-  };
-  addAndMakeVisible(*pitchDrawingConfirmationPanel);
-  pitchDrawingConfirmationPanel->setVisible(false);
 }
 
 PianoRollComponent::~PianoRollComponent()
@@ -713,7 +691,6 @@ void PianoRollComponent::resized()
 
   updateScrollBars();
   updatePreviewButtonBounds();
-  updatePitchDrawingConfirmationPopup();
 }
 
 void PianoRollComponent::drawBackgroundWaveform(
@@ -2675,14 +2652,9 @@ void PianoRollComponent::mouseMove(const juce::MouseEvent &e)
   }
   else if (editMode == EditMode::PitchDrawing)
   {
+    // PitchDrawingHandler owns its cursor (the eraser with Alt).
     if (!isCanvasPoint(e) || !pitchDrawingHandler_)
       setMouseCursor(juce::MouseCursor::NormalCursor);
-    else if (pitchDrawingHandler_->isHoveringAnchor())
-      setMouseCursor(juce::MouseCursor::DraggingHandCursor);
-    else
-      setMouseCursor(pitchDrawingHandler_->isPointerOverPitchRegion()
-                         ? juce::MouseCursor::CrosshairCursor
-                         : juce::MouseCursor::NormalCursor);
   }
   else if (editMode == EditMode::Warp)
   {
@@ -2717,6 +2689,8 @@ void PianoRollComponent::modifierKeysChanged(
     setMouseCursor(zoomMouseCursor);
   else if (editMode == EditMode::Warp && warpHandler_)
     warpHandler_->modifiersChanged(modifiers);
+  else if (editMode == EditMode::PitchDrawing && pitchDrawingHandler_ && mouseOverCanvas)
+    pitchDrawingHandler_->modifiersChanged(modifiers);
   else
     updateMouseCursorForEditMode();
 }
@@ -3443,6 +3417,13 @@ bool PianoRollComponent::keyPressed(const juce::KeyPress &key)
     return false;
 
   const int keyCode = key.getKeyCode();
+  // Esc ends the drawn curve; what it drew stays.
+  if (keyCode == juce::KeyPress::escapeKey && editMode == EditMode::PitchDrawing &&
+      pitchDrawingHandler_ && pitchDrawingHandler_->hasAnchors())
+  {
+    pitchDrawingHandler_->finish();
+    return true;
+  }
   if (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey)
   {
     const int direction = keyCode == juce::KeyPress::upKey ? 1 : -1;
@@ -4037,7 +4018,6 @@ void PianoRollComponent::setEditMode(EditMode mode)
       pitchToolHandles->setHoveredHandleIndex(-1);
   }
   updatePitchToolHandlesFromSelection();
-  updatePitchDrawingConfirmationPopup();
 
   repaint();
 }
@@ -4058,10 +4038,9 @@ void PianoRollComponent::updateMouseCursorForEditMode()
     const float worldX = pointer.x - pianoKeysWidth +
                          static_cast<float>(scrollX);
     if (overCanvas && pitchDrawingHandler_ &&
-        pitchDrawingHandler_->isPitchRegionAtWorldX(worldX))
-      setMouseCursor(pitchDrawingHandler_->isHoveringAnchor()
-                         ? juce::MouseCursor::DraggingHandCursor
-                         : juce::MouseCursor::CrosshairCursor);
+        (pitchDrawingHandler_->isHoveringAnchor() ||
+         pitchDrawingHandler_->isPitchRegionAtWorldX(worldX)))
+      pitchDrawingHandler_->modifiersChanged(juce::ModifierKeys::currentModifiers);
     else
       setMouseCursor(juce::MouseCursor::NormalCursor);
   }
@@ -4789,27 +4768,6 @@ void PianoRollComponent::cancelPitchDrawingPreview()
 {
   if (pitchDrawingHandler_ && pitchDrawingHandler_->isActive())
     pitchDrawingHandler_->cancel();
-}
-
-void PianoRollComponent::updatePitchDrawingConfirmationPopup()
-{
-  if (!pitchDrawingConfirmationPanel)
-    return;
-
-  const bool shouldShow = editMode == EditMode::PitchDrawing && pitchDrawingHandler_ &&
-                          pitchDrawingHandler_->hasAnchors();
-  pitchDrawingConfirmationPanel->setVisible(shouldShow);
-  if (!shouldShow)
-    return;
-
-  constexpr int popupWidth = 213;
-  constexpr int popupHeight = 30;
-  const int canvasWidth = getVisibleContentWidth();
-  const int popupX = pianoKeysWidth + std::max(0, (canvasWidth - popupWidth) / 2);
-  pitchDrawingConfirmationPanel->setBounds(popupX, headerHeight + 10,
-                                     std::min(popupWidth, canvasWidth),
-                                     popupHeight);
-  pitchDrawingConfirmationPanel->toFront(false);
 }
 
 void PianoRollComponent::drawSelectionRect(juce::Graphics &g)

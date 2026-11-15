@@ -299,6 +299,24 @@ juce::var ProjectSerializer::toJson(const Project& project,
     // Tilts no longer move a note's centre (Note::getTiltMean).
     obj->setProperty("tiltKeepsCentre", true);
 
+    // Curves drawn with the Drawing tool: anchor frames and the pitch each
+    // replaced, as its difference from the drawn pitch.
+    {
+        juce::Array<juce::var> curves;
+        for (const auto &curve : project.getDrawnCurves()) {
+            auto *curveObject = new juce::DynamicObject();
+            curveObject->setProperty("id", curve.id);
+            juce::Array<juce::var> anchors;
+            for (const int frame : curve.anchorFrames)
+                anchors.add(frame);
+            curveObject->setProperty("anchors", anchors);
+            curveObject->setProperty("underStart", curve.underStart);
+            curveObject->setProperty("underDiff", floatArrayToString(curve.underDiff, 4));
+            curves.add(juce::var(curveObject));
+        }
+        obj->setProperty("drawnCurves", curves);
+    }
+
     // Breath note gains (a user edit), as [start, end, dB] runs of source
     // frames; the breath labels themselves are rebuilt on load.
     {
@@ -487,6 +505,23 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
         audioData.warpMap = std::move(map);
         audioData.warpedOriginal.setSize(0, 0);
         audioData.warpLayoutPending = false;
+    }
+
+    project.getDrawnCurves().clear();
+    if (auto *curves = json.getProperty("drawnCurves", juce::var()).getArray()) {
+        for (const auto &curveVar : *curves) {
+            DrawnCurve curve;
+            curve.id = static_cast<int>(curveVar.getProperty("id", 0));
+            if (auto *anchors = curveVar.getProperty("anchors", juce::var()).getArray())
+                for (const auto &frame : *anchors)
+                    curve.anchorFrames.push_back(static_cast<int>(frame));
+            std::sort(curve.anchorFrames.begin(), curve.anchorFrames.end());
+            curve.underStart = static_cast<int>(curveVar.getProperty("underStart", 0));
+            curve.underDiff = stringToFloatArray(
+                curveVar.getProperty("underDiff", juce::var()).toString());
+            if (curve.id > 0 && !curve.anchorFrames.empty())
+                project.getDrawnCurves().push_back(std::move(curve));
+        }
     }
 
     audioData.breathGainDb.clear();

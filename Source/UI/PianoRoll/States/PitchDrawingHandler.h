@@ -1,12 +1,27 @@
 #pragma once
 
 #include "InteractionHandler.h"
+#include "../../../Models/DrawnCurve.h"
 #include "../../../Utils/TransformParams.h"
 
 #include <algorithm>
 #include <utility>
 #include <vector>
 
+/**
+ * The Drawing tool, RePitch Shaper style: anchors stay on the pitch line
+ * (DrawnCurve, saved with the project) and can be dragged again later.
+ *
+ *   click on a note        place an anchor; anchors placed one after another
+ *                          make one curve, smoothed between them
+ *   click in empty space,  end the curve (it stays); the next click starts a
+ *   Esc, another tool      new one - or, inside a drawn curve, edits it
+ *   drag an anchor         reshape its curve
+ *   Alt + click an anchor  delete it (double-click and right-click too); the
+ *                          last one gone gives the pitch back
+ *
+ * Every gesture is applied at once and is one undo step.
+ */
 class PitchDrawingHandler final : public InteractionHandler
 {
 public:
@@ -26,8 +41,16 @@ public:
   bool isActive() const override;
   void cancel() override;
 
+  /** Alt pressed or released: the eraser cursor over an anchor. */
+  void modifiersChanged(const juce::ModifierKeys& mods);
+
   bool hasAnchors() const { return !anchors.empty(); }
-  bool isHoveringAnchor() const { return hoveredAnchorId >= 0; }
+  bool isHoveringAnchor() const { return hovered.curveId >= 0; }
+  /** An anchor (of any curve) at this world point. */
+  bool hasAnchorAt(float worldX, float worldY) const
+  {
+    return hitTest(worldX, worldY).curveId >= 0;
+  }
   bool isPointerOverPitchRegion() const { return pointerOverPitchRegion; }
   bool isPitchRegionAtWorldX(float worldX) const;
   bool removeAnchorAt(float worldX, float worldY);
@@ -39,13 +62,13 @@ public:
   {
     if (anchors.empty())
       return {0, -1};
-    const auto [first, last] = std::minmax_element(
-        anchors.begin(), anchors.end(),
-        [](const Anchor& a, const Anchor& b) { return a.frame < b.frame; });
-    return {first->frame, last->frame};
+    return {anchors.front().frame, anchors.back().frame};
   }
   void clearHover();
-  bool apply();
+  // Ends the current curve: its anchors stay on the line, what they drew
+  // stays (every step is already in the undo history). The next click
+  // starts a new curve.
+  void finish();
 
 private:
   struct Anchor
@@ -53,6 +76,15 @@ private:
     int id = 0;
     int frame = 0;
     float midi = 60.0f;
+  };
+
+  // An anchor under the pointer: of the curve being edited (anchorId) or of
+  // a stored one (frame).
+  struct Hit
+  {
+    int curveId = -1;
+    int anchorId = -1;
+    int frame = -1;
   };
 
   struct OriginalNoteState
@@ -64,31 +96,49 @@ private:
 
   int frameFromWorldX(float worldX) const;
   float midiFromWorldY(float worldY) const;
-  juce::Point<float> anchorPosition(const Anchor& anchor) const;
-  int hitTest(float worldX, float worldY) const;
+  juce::Point<float> pointAt(int frame, float midi) const;
+  float sungPitchAt(int frame) const;
+  Hit hitTest(float worldX, float worldY) const;
   Anchor* findAnchorById(int id);
-  const Anchor* findAnchorById(int id) const;
   bool frameBelongsToPitchNote(int frame) const;
-  void captureOriginalCurveIfNeeded();
+  // Starts editing `curve` (or a new curve with nullptr).
+  void beginSession(const DrawnCurve* curve);
+  // Takes stored curves reaching into [start, end] into the one edited.
+  void absorbCurvesIn(int start, int end);
+  void extendRange(int start, int end);
+  std::pair<int, int> affectedRange() const;
   void sortAnchors();
   void rebuildPreview();
   void updateAffectedNotePositions();
   void applyPreviewToProject();
-  void restoreOriginalNoteStates(bool requestRender);
-  const OriginalNoteState* originalStateFor(const Note& note) const;
-  void clearState(bool restoreNoteStates);
+  void restoreOriginalNoteStates();
+  void removeAnchor(int anchorId);
+  void clearState();
   void notifyStateChanged();
+  void updateCursor(const juce::ModifierKeys& mods);
+  // Puts what changed since the last step into the undo history, one step
+  // per gesture (an anchor placed, dragged or removed).
+  bool commitStep();
 
   std::vector<Anchor> anchors;
+  int activeCurveId = -1;
+  std::vector<int> absorbedCurveIds;
+  // Frames the curve controls: its anchors' span and every frame it ever
+  // covered (those get the pitch they had before back when it shrinks).
+  int rangeStart = -1;
+  int rangeEnd = -1;
   std::vector<OriginalNoteState> originalNoteStates;
+  // The notes and curves as the undo history last saw them.
+  std::vector<OriginalNoteState> committedNoteStates;
+  std::vector<DrawnCurve> committedCurves;
   std::vector<float> originalMidiCurve;
   std::vector<float> previewMidiCurve;
   int nextAnchorId = 1;
-  int hoveredAnchorId = -1;
+  Hit hovered;
   int activeAnchorId = -1;
   bool dragging = false;
   bool dragMoved = false;
   bool pointerOverPitchRegion = false;
-  int previewDirtyStart = -1;
-  int previewDirtyEnd = -1;
+  float lastWorldX = 0.0f;
+  float lastWorldY = 0.0f;
 };

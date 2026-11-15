@@ -38,7 +38,6 @@ class SelectHandler;
 class SplitHandler;
 class PitchDrawingHandler;
 class WarpHandler;
-class PitchDrawingConfirmationPanel;
 
 /**
  * Piano roll component for displaying and editing notes.
@@ -346,7 +345,6 @@ private:
   float getDoubleClickSnapTarget(const Note& note) const;
   void drawGameValuesDebugOverlay(juce::Graphics &g);
   void updatePitchToolHandlesFromSelection();
-  void updatePitchDrawingConfirmationPopup();
 
   float midiToY(float midiNote) const;
   float yToMidi(float y) const;
@@ -566,7 +564,6 @@ private:
   std::unique_ptr<WarpHandler> warpHandler_;
   InteractionHandler *currentHandler_ = nullptr;
 
-  std::unique_ptr<PitchDrawingConfirmationPanel> pitchDrawingConfirmationPanel;
 
   // Scrollbars
   juce::ScrollBar horizontalScrollBar{false};

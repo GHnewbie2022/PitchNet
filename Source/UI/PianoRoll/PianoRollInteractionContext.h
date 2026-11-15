@@ -83,7 +83,6 @@ public:
   void updatePitchToolHandlesFromSelection();
   void invalidateWaveformCache();
   void invalidateBasePitchCache();
-  void updatePitchDrawingConfirmation();
 
 private:
   PianoRollComponent &component;

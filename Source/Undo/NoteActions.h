@@ -431,6 +431,7 @@ public:
             }
         }
         project->addNote(secondNote);
+        project->getDrawnCurves() = curvesBefore;
         NoteCurveEdit::apply(*project, neighbourEdits, false);
         markHalvesForRender();
         PitchCurveProcessor::rebuildBaseFromNotes(*project);
@@ -451,6 +452,7 @@ public:
             }
         }
         project->removeNoteByStartFrame(secondNote.getStartFrame());
+        project->getDrawnCurves() = curvesAfter;
         NoteCurveEdit::apply(*project, neighbourEdits, true);
         for (auto &note : project->getNotes())
             if (note.getStartFrame() == firstNote.getStartFrame())
@@ -467,6 +469,13 @@ public:
     // A merge puts the pitch back to the analysis: the audio changes.
     bool requiresAudioResynthesis() const override { return true; }
 
+    /** The drawn curves before the merge and after (it drops those on the
+     *  notes it resets). */
+    void setDrawnCurves(std::vector<DrawnCurve> before, std::vector<DrawnCurve> after)
+    {
+        curvesBefore = std::move(before);
+        curvesAfter = std::move(after);
+    }
     void setNeighbourEdits(std::vector<NoteCurveEdit> edits) { neighbourEdits = std::move(edits); }
 
 private:
@@ -483,6 +492,8 @@ private:
 
     Project *project;
     std::vector<NoteCurveEdit> neighbourEdits;
+    std::vector<DrawnCurve> curvesBefore;
+    std::vector<DrawnCurve> curvesAfter;
     Note firstNote;
     Note secondNote;
     Note mergedNote;

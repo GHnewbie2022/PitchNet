@@ -706,6 +706,12 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
             mergedNote.setSynthDirty(false);
     }
 
+    // Drawn curves on the halves went with their pitch edits.
+    const auto curvesBefore = project->getDrawnCurves();
+    if (reshaped)
+        project->getDrawnCurves() = drawncurve::without(
+            curvesBefore, firstNote.getStartFrame(), secondNote.getEndFrame());
+
     *first = mergedNote;
     project->removeNoteByStartFrame(secondNote.getStartFrame());
 
@@ -724,6 +730,7 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
     {
         auto action = std::make_unique<NoteMergeAction>(
             project, firstNote, secondNote, mergedNote, nullptr);
+        action->setDrawnCurves(curvesBefore, project->getDrawnCurves());
         action->setNeighbourEdits(neighbourEdits);
         undoManager->addAction(std::move(action));
     }

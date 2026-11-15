@@ -3437,7 +3437,7 @@ void MainComponent::notifyProjectDataChanged()
 
 void MainComponent::undo()
 {
-  // Restore any transient anchor preview before changing history.
+  // End any drawn curve first: its steps are in the history already.
   pianoRoll.cancelPitchDrawingPreview();
 
   if (undoManager && undoManager->canUndo())
@@ -3449,7 +3449,7 @@ void MainComponent::undo()
 
 void MainComponent::redo()
 {
-  // Restore any transient anchor preview before changing history.
+  // End any drawn curve first: its steps are in the history already.
   pianoRoll.cancelPitchDrawingPreview();
 
   if (undoManager && undoManager->canRedo())

@@ -5,6 +5,7 @@
 #include "../Audio/WarpMap.h"
 #include "Note.h"
 #include "NoteRef.h"
+#include "DrawnCurve.h"
 #include <cstdint>
 #include <vector>
 #include <memory>
@@ -238,6 +239,17 @@ public:
     void deselectAllNotes();
     void clearAllDirty();
 
+    // Curves drawn with the Drawing tool (DrawnCurve.h).
+    std::vector<DrawnCurve>& getDrawnCurves() { return drawnCurves; }
+    const std::vector<DrawnCurve>& getDrawnCurves() const { return drawnCurves; }
+    int nextDrawnCurveId()
+    {
+        int id = 1;
+        for (const auto& curve : drawnCurves)
+            id = std::max(id, curve.id + 1);
+        return id;
+    }
+
     // Global settings
     float getGlobalPitchOffset() const { return globalPitchOffset; }
     void setGlobalPitchOffset(float offset) { globalPitchOffset = offset; }
@@ -363,6 +375,7 @@ private:
 
     AudioData audioData;
     NoteList notes;
+    std::vector<DrawnCurve> drawnCurves;
 
     float globalPitchOffset = 0.0f;
     float formantShift = 0.0f;

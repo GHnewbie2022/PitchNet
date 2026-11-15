@@ -29,19 +29,27 @@ class PitchDrawingAction final : public UndoableAction
 public:
     PitchDrawingAction(Project* projectToEdit,
                       std::vector<PitchDrawingNoteState> beforeStates,
-                      std::vector<PitchDrawingNoteState> afterStates)
+                      std::vector<PitchDrawingNoteState> afterStates,
+                      std::vector<DrawnCurve> curvesBeforeEdit = {},
+                      std::vector<DrawnCurve> curvesAfterEdit = {})
         : project(projectToEdit), before(std::move(beforeStates)),
-          after(std::move(afterStates))
+          after(std::move(afterStates)),
+          curvesBefore(std::move(curvesBeforeEdit)),
+          curvesAfter(std::move(curvesAfterEdit))
     {
     }
 
-    void undo() override { apply(before); }
-    void redo() override { apply(after); }
+    void undo() override { apply(before, curvesBefore); }
+    void redo() override { apply(after, curvesAfter); }
     juce::String getName() const override { return "Apply Pitch Drawing"; }
 
 private:
-    void apply(const std::vector<PitchDrawingNoteState>& states)
+    void apply(const std::vector<PitchDrawingNoteState>& states,
+               const std::vector<DrawnCurve>& curves)
     {
+        if (project)
+            project->getDrawnCurves() = curves;
+
         int minFrame = std::numeric_limits<int>::max();
         int maxFrame = std::numeric_limits<int>::min();
 
@@ -69,4 +77,6 @@ private:
     Project* project = nullptr;
     std::vector<PitchDrawingNoteState> before;
     std::vector<PitchDrawingNoteState> after;
+    std::vector<DrawnCurve> curvesBefore;
+    std::vector<DrawnCurve> curvesAfter;
 };

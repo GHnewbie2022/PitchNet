@@ -122,6 +122,8 @@ const juce::MouseCursor &deleteCursor()
 }
 } // namespace
 
+const juce::MouseCursor &WarpHandler::eraserCursor() { return deleteCursor(); }
+
 WarpHandler::WarpHandler(PianoRollComponent &owner)
     : InteractionHandler(owner),
       boundaries(std::make_unique<TimingHandler>(owner))
