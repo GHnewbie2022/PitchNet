@@ -1024,21 +1024,28 @@ else()
     message(STATUS "Release runtime resources will be loaded from the platform resource directory")
 endif()
 
-# Re-sign bundles on macOS after all resources are copied
+# Re-sign bundles on macOS after all resources are copied.
+#
+# With a stable code signing identity the bundle's designated requirement is
+# "this identifier, signed by this certificate", so macOS keeps the privacy
+# permissions (Documents folder, microphone) it granted across rebuilds. An
+# ad-hoc signature is pinned to the code's hash instead, and every rebuild
+# asks again. Machines without the identity fall back to ad-hoc.
 if(APPLE)
-    add_custom_command(TARGET PitchNet POST_BUILD
-        COMMAND codesign --force --deep -s - "$<TARGET_BUNDLE_DIR:PitchNet>" 2>/dev/null || true
-        COMMENT "Re-signing PitchNet bundle")
-    add_custom_command(TARGET PitchNetPlugin_VST3 POST_BUILD
-        COMMAND codesign --force --deep -s - "$<TARGET_BUNDLE_DIR:PitchNetPlugin_VST3>" 2>/dev/null || true
-        COMMENT "Re-signing VST3 bundle")
-    add_custom_command(TARGET PitchNetPlugin_AU POST_BUILD
-        COMMAND codesign --force --deep -s - "$<TARGET_BUNDLE_DIR:PitchNetPlugin_AU>" 2>/dev/null || true
-        COMMENT "Re-signing AU bundle")
+    set(PITCHNET_CODESIGN_IDENTITY "PitchNet Dev Signing" CACHE STRING
+        "Keychain code signing identity for local builds (falls back to ad-hoc)")
+    function(pitchnet_resign target label)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND codesign --force --deep -s "${PITCHNET_CODESIGN_IDENTITY}" "$<TARGET_BUNDLE_DIR:${target}>" 2>/dev/null
+                    || codesign --force --deep -s - "$<TARGET_BUNDLE_DIR:${target}>" 2>/dev/null
+                    || true
+            COMMENT "Re-signing ${label} bundle")
+    endfunction()
+    pitchnet_resign(PitchNet PitchNet)
+    pitchnet_resign(PitchNetPlugin_VST3 VST3)
+    pitchnet_resign(PitchNetPlugin_AU AU)
     if(TARGET PitchNetPlugin_AAX)
-        add_custom_command(TARGET PitchNetPlugin_AAX POST_BUILD
-            COMMAND codesign --force --deep -s - "$<TARGET_BUNDLE_DIR:PitchNetPlugin_AAX>" 2>/dev/null || true
-            COMMENT "Re-signing AAX bundle")
+        pitchnet_resign(PitchNetPlugin_AAX AAX)
     endif()
 endif()
 
