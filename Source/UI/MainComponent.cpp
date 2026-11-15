@@ -2864,6 +2864,172 @@ void MainComponent::finishPreviewRegion(bool restorePosition)
 
 void MainComponent::auditionDraggedNote(const Note &note)
 {
+  if (!dragAuditionEnabled || note.isRest())
+    return;
+  if (isPluginMode())
+  {
+    auditionDraggedNoteResampled(note);
+    return;
+  }
+
+  // Standalone: play the note itself, whole, as the synthesizer renders it at
+  // the pitch it is dragged to - what playback will sound like - looping
+  // while the mouse is held.
+  auto *engine = editorController ? editorController->getAudioEngine() : nullptr;
+  if (!engine || !getProject())
+    return;
+
+  const float midi = note.getAdjustedMidiNote();
+  if (!noteDragAuditionActive)
+  {
+    noteDragAuditionActive = true;
+    noteDragAuditionBackendPreviewStarted = false;
+    noteDragAuditionPending = false;
+    noteDragAuditionWasPlaying = engine->isPlaying();
+    noteDragAuditionReturnTime = engine->getPosition();
+    dragRenderTouched = false;
+    resynthRequestedDuringDrag = false;
+    noteDragAuditionStartFrame = note.getStartFrame();
+    noteDragAuditionEndFrame = note.getEndFrame();
+    // At mouse down the note sounds as it is now.
+    dragAuditionRenderedMidi = midi;
+    playDraggedNoteFromComposite(false);
+    return;
+  }
+
+  // Multi-note drag: the pointer moved onto another of the dragged notes.
+  if (note.getStartFrame() != noteDragAuditionStartFrame ||
+      note.getEndFrame() != noteDragAuditionEndFrame)
+  {
+    noteDragAuditionStartFrame = note.getStartFrame();
+    noteDragAuditionEndFrame = note.getEndFrame();
+    if (!dragRenderInFlight)
+      playDraggedNoteFromComposite(false);
+  }
+
+  if (!noteDragAuditionPending &&
+      std::abs(midi - dragAuditionRenderedMidi) < 1.0e-4f)
+    return;
+  pendingNoteDragAuditionMidiNote = midi;
+  noteDragAuditionLastInputMs = juce::Time::currentTimeMillis();
+  noteDragAuditionPending = true;
+}
+
+void MainComponent::startDragRender()
+{
+  auto *project = getProject();
+  if (!project || !editorController)
+    return;
+
+  // The drag keeps its notes dirty and the pitch curve current, so the
+  // ordinary incremental render renders exactly the dragged notes.
+  dragRenderInFlight = true;
+  dragRenderTouched = true;
+  const float requested = pendingNoteDragAuditionMidiNote;
+  juce::Component::SafePointer<MainComponent> safeThis(this);
+  editorController->resynthesizeIncrementalAsync(
+      *project, nullptr,
+      [safeThis, requested](bool success)
+      {
+        auto finish = [safeThis, requested, success]()
+        {
+          if (safeThis == nullptr)
+            return;
+          safeThis->dragRenderInFlight = false;
+          if (success)
+          {
+            safeThis->pianoRoll.invalidateWaveformCache();
+            safeThis->pianoRoll.repaint();
+            if (safeThis->noteDragAuditionActive)
+            {
+              safeThis->dragAuditionRenderedMidi = requested;
+              safeThis->playDraggedNoteFromComposite(true);
+            }
+          }
+          if (safeThis->resynthAfterDragRender)
+          {
+            // The edit asked for its render while ours ran, and our commit
+            // then cleared every dirty mark - the edit's too. Mark the
+            // dragged notes again so its render finds them.
+            safeThis->resynthAfterDragRender = false;
+            safeThis->markDraggedNotesDirty();
+            safeThis->resynthesizeIncremental();
+          }
+        };
+        if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+          finish();
+        else
+          juce::MessageManager::callAsync(finish);
+      },
+      dragRenderRerun, false);
+}
+
+void MainComponent::markDraggedNotesDirty()
+{
+  auto *project = getProject();
+  if (!project)
+    return;
+  int first = noteDragAuditionStartFrame;
+  int last = noteDragAuditionEndFrame;
+  for (auto &n : project->getNotes())
+  {
+    if (n.isRest())
+      continue;
+    const bool dragged =
+        n.isSelected() || (n.getStartFrame() == noteDragAuditionStartFrame &&
+                           n.getEndFrame() == noteDragAuditionEndFrame);
+    if (!dragged)
+      continue;
+    n.markDirty();
+    n.markSynthDirty();
+    first = std::min(first, n.getStartFrame());
+    last = std::max(last, n.getEndFrame());
+  }
+  project->markNoteEditDirtyRange(first, last);
+}
+
+void MainComponent::playDraggedNoteFromComposite(bool keepPosition)
+{
+  auto *project = getProject();
+  auto *engine = editorController ? editorController->getAudioEngine() : nullptr;
+  if (!project || !engine)
+    return;
+
+  const auto &audioData = project->getAudioData();
+  const auto &waveform = audioData.waveform;
+  const int total = waveform.getNumSamples();
+  if (total <= 0 || waveform.getNumChannels() <= 0)
+    return;
+  const int start =
+      juce::jlimit(0, total, noteDragAuditionStartFrame * HOP_SIZE);
+  const int end =
+      juce::jlimit(start, total, noteDragAuditionEndFrame * HOP_SIZE);
+  if (end - start < 64)
+    return;
+
+  const int sampleRate =
+      audioData.sampleRate > 0 ? audioData.sampleRate : SAMPLE_RATE;
+  const int noteSamples = end - start;
+  // Half a second of silence after each pass, so the loop reads as the note
+  // played again rather than a stuck record.
+  const int gapSamples = juce::roundToInt(0.5 * sampleRate);
+  juce::AudioBuffer<float> clip(1, noteSamples + gapSamples);
+  clip.clear();
+  clip.copyFrom(0, 0, waveform, 0, start, noteSamples);
+  // A few milliseconds of fade at each end so the note does not click.
+  const int fade =
+      std::min(noteSamples / 4, juce::roundToInt(0.005 * sampleRate));
+  if (fade > 1)
+  {
+    clip.applyGainRamp(0, 0, fade, 0.0f, 1.0f);
+    clip.applyGainRamp(0, noteSamples - fade, fade, 1.0f, 0.0f);
+  }
+  // The loop join falls inside the silence: no crossfade needed.
+  engine->beginAuditionLoop(clip, sampleRate, keepPosition, 1);
+}
+
+void MainComponent::auditionDraggedNoteResampled(const Note &note)
+{
   if (!dragAuditionEnabled || !resampledLoopAudition || note.isRest())
     return;
 
@@ -2925,8 +3091,27 @@ void MainComponent::auditionDraggedNote(const Note &note)
 
 void MainComponent::dispatchPendingDragAudition()
 {
-  if (!noteDragAuditionActive || !noteDragAuditionPending ||
-      !resampledLoopAudition)
+  if (!noteDragAuditionActive || !noteDragAuditionPending)
+    return;
+
+  if (!isPluginMode())
+  {
+    // One render at a time, and never on top of an edit's own render.
+    if (dragRenderInFlight)
+      return;
+    if (juce::Time::currentTimeMillis() - noteDragAuditionLastInputMs <
+        noteDragAuditionDebounceMs)
+      return;
+    auto *synth =
+        editorController ? editorController->getIncrementalSynth() : nullptr;
+    if (!synth || synth->isSynthesizing())
+      return;
+    noteDragAuditionPending = false;
+    startDragRender();
+    return;
+  }
+
+  if (!resampledLoopAudition)
     return;
 
   const auto now = juce::Time::currentTimeMillis();
@@ -2966,6 +3151,21 @@ void MainComponent::finishDraggedNoteAudition()
     else
       engine->pause();
   }
+
+  // The drag rendered the note at pitches along the way but ended without an
+  // edit (let go where it started): nothing else will render it, so render
+  // it back the way it sounds.
+  if (dragRenderTouched && !resynthRequestedDuringDrag)
+  {
+    if (getProject())
+    {
+      markDraggedNotesDirty();
+      noteDragAuditionActive = false;
+      resynthesizeIncremental();
+    }
+  }
+  dragRenderTouched = false;
+  resynthRequestedDuringDrag = false;
 
   noteDragAuditionActive = false;
   noteDragAuditionBackendPreviewStarted = false;
@@ -3101,6 +3301,17 @@ void MainComponent::resynthesizeIncremental()
   auto *project = getProject();
   if (!project || !editorController)
   {
+    return;
+  }
+
+  // A note drag that renders as it goes: an edit's render then follows it
+  // rather than cancelling it (a cancelled job hands its rerun to whoever
+  // started it).
+  if (noteDragAuditionActive)
+    resynthRequestedDuringDrag = true;
+  if (dragRenderInFlight)
+  {
+    resynthAfterDragRender = true;
     return;
   }
 

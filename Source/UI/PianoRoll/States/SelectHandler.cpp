@@ -676,6 +676,9 @@ bool SelectHandler::mouseUp(const juce::MouseEvent &e, float worldX,
       const float finalMidiNote = originalMidiNote + newOffset;
       draggedNote->setMidiNote(finalMidiNote);
       draggedNote->setPitchOffset(0.0f);
+      // Dirty as well (see PitchEditor::endMultiNoteDrag): the render must
+      // anchor on this note, not on the whole edited pitch range.
+      draggedNote->markDirty();
       draggedNote->markSynthDirty();
 
       // Rebuild base pitch curve and F0

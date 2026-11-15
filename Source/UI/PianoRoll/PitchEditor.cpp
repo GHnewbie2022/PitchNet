@@ -360,6 +360,11 @@ void PitchEditor::endMultiNoteDrag()
       auto *note = draggedNotes[i];
       note->setMidiNote(originalMidiNotes[i] + newOffset);
       note->setPitchOffset(0.0f);
+      // Dirty as well: the render must anchor on these notes. A drag
+      // audition may have rendered (and cleared) them mid-drag; without a
+      // dirty note the render commits the whole edited pitch range and
+      // re-renders unedited neighbours.
+      note->markDirty();
       note->markSynthDirty();
 
       expandedStart = std::min(expandedStart, note->getStartFrame());

@@ -312,6 +312,15 @@ private:
   void auditionDraggedNote(const Note &note);
   void finishDraggedNoteAudition();
   void dispatchPendingDragAudition();
+  // Plugin mode: a short resampled loop of the note's recording.
+  void auditionDraggedNoteResampled(const Note &note);
+  // Standalone: the dragged note rendered by the real synthesizer at the
+  // pitch it is dragged to, looped whole.
+  void startDragRender();
+  void playDraggedNoteFromComposite(bool keepPosition);
+  // Marks the notes of the drag (the dragged note, and the selection of a
+  // multi-note drag) dirty for a render.
+  void markDraggedNotesDirty();
   void auditionPianoKey(int midiNote);
   void finishPianoKeyAudition();
   void jumpTransport(bool forward);
@@ -395,6 +404,13 @@ private:
   float pendingNoteDragAuditionMidiNote = 60.0f;
   std::vector<float> pendingNoteDragAuditionSource;
   static constexpr juce::int64 noteDragAuditionDebounceMs = 20;
+  // Standalone drag audition through the real synthesizer.
+  bool dragRenderInFlight = false;
+  bool dragRenderTouched = false;      // a render committed during this drag
+  bool resynthRequestedDuringDrag = false;
+  bool resynthAfterDragRender = false; // an edit's render waits for ours
+  float dragAuditionRenderedMidi = 0.0f;
+  std::atomic<bool> dragRenderRerun{false};
 
   // New modular components
   std::unique_ptr<AudioFileManager> fileManager;

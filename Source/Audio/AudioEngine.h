@@ -41,8 +41,13 @@ public:
 
   // Temporary audition source. It loops independently of the project
   // transport, so previewing a note never moves the timeline playhead.
+  // keepPosition: a new take of the same audio (the dragged note rendered
+  // at a new pitch) carries on where the old one was, crossfaded, instead
+  // of starting over. loopOverlapSamples: how much of the tail is
+  // crossfaded into the head at the loop join.
   void beginAuditionLoop(const juce::AudioBuffer<float> &buffer,
-                         int sampleRate);
+                         int sampleRate, bool keepPosition = false,
+                         int loopOverlapSamples = 8192);
   void endAuditionLoop();
   bool isAuditioning() const { return auditionActive.load(); }
 
@@ -107,6 +112,8 @@ private:
   int auditionSampleRate = 44100;
   juce::AudioBuffer<float> previousAuditionWaveform;
   int previousAuditionSampleRate = 44100;
+  int auditionLoopOverlap = 8192;
+  int previousAuditionLoopOverlap = 8192;
 
   std::atomic<int64_t> currentPosition{0}; // Position in waveform samples
   std::atomic<int64_t> auditionPosition{0};
