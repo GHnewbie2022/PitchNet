@@ -603,8 +603,11 @@ void ToolbarComponent::setProject(Project* project)
 {
     if (!pluginMode && project != nullptr)
         project->setUseProjectKey(true);
-    scaleSelectionButton.setProjectKeyScope(!pluginMode || trackViewButton.getToggleState());
+    // Bind the new project first: setProjectKeyScope() redraws the label
+    // from the bound project, and when a project replaces another the old
+    // one has already been deleted.
     scaleSelectionButton.setProject(project);
+    scaleSelectionButton.setProjectKeyScope(!pluginMode || trackViewButton.getToggleState());
 }
 
 void ToolbarComponent::setCurrentTime(double time)
