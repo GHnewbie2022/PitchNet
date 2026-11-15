@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PitchPopupMenu.h"
+#include "WarpToolIcon.h"
 #include "../../Utils/Localization.h"
 #include "BinaryData.h"
 #include <array>
@@ -19,7 +20,7 @@ public:
     void drawResizableFrame(juce::Graphics&, int, int,
                             const juce::BorderSize<int>&) override {}
     int getPopupMenuBorderSize() override { return 0; }
-    // The upper action paints its own outline; keep the tool strip unframed.
+    // The content paints its own rounded background and outline.
     int getMenuWindowFlags() override { return 0; }
 };
 
@@ -29,107 +30,106 @@ inline LookAndFeel& getLookAndFeel()
     return instance;
 }
 
-class ActionButton final : public juce::Button
+// One row of the menu: the tool's icon (its normal, hovered and pressed
+// frames) and its name.
+class ToolRow final : public juce::Button
 {
 public:
-    explicit ActionButton(const juce::String& label) : juce::Button(label) {}
-    juce::Image sprite;
+    ToolRow(const juce::String& name, juce::Image icon)
+        : juce::Button(name), sprite(std::move(icon)) {}
+
+    static constexpr int iconLeft = 8, iconWidth = 22, iconHeight = 21, gap = 10;
 
     void paintButton(juce::Graphics& g, bool over, bool down) override
     {
+        if (over || down)
+        {
+            g.setColour(juce::Colour(0xFF171717u));
+            g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(4, 1), 5);
+        }
         if (sprite.isValid())
         {
             const int frameHeight = sprite.getHeight() / 3;
-            g.drawImage(sprite, 0, 0, getWidth(), getHeight(), 0,
-                        (down ? 2 : over ? 1 : 0) * frameHeight,
+            g.drawImage(sprite, iconLeft, (getHeight() - iconHeight) / 2, iconWidth,
+                        iconHeight, 0, (down ? 2 : over ? 1 : 0) * frameHeight,
                         sprite.getWidth(), frameHeight);
-            return;
         }
-        if (isEnabled() && (over || down || hasKeyboardFocus(false)))
-        {
-            g.setColour(juce::Colour(0xFF171717u));
-            g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(2, 1), 5);
-        }
-        g.setColour(APP_COLOR_TEXT_PRIMARY.withMultipliedAlpha(isEnabled() ? 1.0f : 0.4f));
+        g.setColour(APP_COLOR_TEXT_PRIMARY);
         g.setFont(AppFont::getFont(14));
-        g.drawText(getButtonText(), getLocalBounds().withTrimmedLeft(12),
+        g.drawText(getButtonText(),
+                   getLocalBounds().withTrimmedLeft(iconLeft + iconWidth + gap),
                    juce::Justification::centredLeft);
     }
+
+private:
+    juce::Image sprite;
 };
 
 class Content final : public juce::PopupMenu::CustomComponent
 {
 public:
+    // The tools only, one per row: undo, redo and select all have their
+    // shortcuts and toolbar buttons, and are not part of a vocal edit's flow.
     static juce::Rectangle<int> getTargetArea(juce::Point<int> mousePosition)
     {
-        const juce::Point<int> selectCentre(buttonWidth / 2,
-                                           topHeight + 1 + buttonHeight / 2);
-        // JUCE places the menu below the target rectangle's bottom edge.
-        return { mousePosition.x - selectCentre.x,
-                 mousePosition.y - selectCentre.y - 1, 1, 1 };
+        // The Select tool's icon lands under the pointer. JUCE places the
+        // menu below the target rectangle's bottom edge.
+        const juce::Point<int> selectIcon(ToolRow::iconLeft + ToolRow::iconWidth / 2,
+                                          padding + rowHeight / 2);
+        return { mousePosition.x - selectIcon.x,
+                 mousePosition.y - selectIcon.y - 1, 1, 1 };
     }
 
-    Content(std::shared_ptr<int> result, bool canUndo, bool canRedo)
+    explicit Content(std::shared_ptr<int> result)
         : juce::PopupMenu::CustomComponent(false), choice(std::move(result))
     {
-        const juce::String names[] = {
-            TR("canvas.select_all"), TR("canvas.select"), TR("canvas.split"),
-            TR("canvas.pitch_drawing"),    TR("canvas.warp"), TR("command.undo"),
-            TR("command.redo")
-        };
+        const juce::String names[] = { TR("canvas.select"), TR("canvas.split"),
+                                       TR("canvas.pitch_drawing"), TR("canvas.warp") };
         const void* data[] = { BinaryData::selectmenu_png, BinaryData::splitmenu_png,
-                               BinaryData::drawingmenu_png, BinaryData::timingmenu_png };
+                               BinaryData::drawingmenu_png };
         const int sizes[] = { BinaryData::selectmenu_pngSize, BinaryData::splitmenu_pngSize,
-                              BinaryData::drawingmenu_pngSize, BinaryData::timingmenu_pngSize };
-        for (int i = 0; i < 7; ++i)
+                              BinaryData::drawingmenu_pngSize };
+        int textWidth = 0;
+        for (int i = 0; i < 4; ++i)
         {
-            buttons[i] = std::make_unique<ActionButton>(names[i]);
-            if (i > 0 && i < 5)
-                buttons[i]->sprite = juce::ImageCache::getFromMemory(data[i - 1], sizes[i - 1]);
-            buttons[i]->onClick = [this, i]
+            // The warp tool is drawn like the toolbar's (WarpToolIcon.h).
+            rows[i] = std::make_unique<ToolRow>(
+                names[i], i < 3 ? juce::ImageCache::getFromMemory(data[i], sizes[i])
+                                : warpToolIcon::makeMenuSprite());
+            rows[i]->onClick = [this, i]
             {
                 *choice = i + 1;
                 triggerMenuItem();
             };
-            addAndMakeVisible(*buttons[i]);
+            addAndMakeVisible(*rows[i]);
+            textWidth = juce::jmax(textWidth, juce::GlyphArrangement::getStringWidthInt(
+                                                  AppFont::getFont(14), names[i]));
         }
-        buttons[5]->setEnabled(canUndo);
-        buttons[6]->setEnabled(canRedo);
-        topWidth = juce::GlyphArrangement::getStringWidthInt(
-                      AppFont::getFont(14), names[0]) + 24;
+        width = ToolRow::iconLeft + ToolRow::iconWidth + ToolRow::gap + textWidth + 16;
     }
 
-    void getIdealSize(int& width, int& height) override
+    void getIdealSize(int& idealWidth, int& idealHeight) override
     {
-        width = juce::jmax(topWidth, 4 * buttonWidth + 3);
-        height = topHeight + 1 + buttonHeight;
+        idealWidth = width;
+        idealHeight = 2 * padding + 4 * rowHeight;
     }
 
     void paint(juce::Graphics& g) override
     {
-        pitchPopupMenu::getLookAndFeel().drawPopupMenuBackground(g, topWidth, topHeight);
-        g.setColour(juce::Colour(0xFF3E3E3Eu));
-        g.fillRect(8, padding + 2 * rowHeight + separatorHeight / 2,
-                   topWidth - 16, 1);
+        pitchPopupMenu::getLookAndFeel().drawPopupMenuBackground(g, getWidth(),
+                                                                 getHeight());
     }
 
     void resized() override
     {
-        buttons[5]->setBounds(0, padding, topWidth, rowHeight);
-        buttons[6]->setBounds(0, padding + rowHeight, topWidth, rowHeight);
-        buttons[0]->setBounds(0, padding + 2 * rowHeight + separatorHeight,
-                              topWidth, rowHeight);
-        for (int i = 1; i < 5; ++i)
-            buttons[i]->setBounds((i - 1) * (buttonWidth + 1), topHeight + 1,
-                                  buttonWidth, buttonHeight);
+        for (int i = 0; i < 4; ++i)
+            rows[i]->setBounds(0, padding + i * rowHeight, getWidth(), rowHeight);
     }
 
 private:
-    static constexpr int padding = 4, rowHeight = 26, separatorHeight = 8;
-    static constexpr int topHeight = 2 * padding + 3 * rowHeight + separatorHeight;
-    static constexpr int buttonWidth = 22, buttonHeight = 21;
-    int topWidth = 0;
+    static constexpr int padding = 4, rowHeight = 28;
+    int width = 0;
     std::shared_ptr<int> choice;
-    std::array<std::unique_ptr<ActionButton>, 7> buttons;
+    std::array<std::unique_ptr<ToolRow>, 4> rows;
 };
 }

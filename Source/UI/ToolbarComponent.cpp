@@ -5,35 +5,8 @@
 #include "../Utils/Localization.h"
 #include "../Utils/UI/TimecodeFont.h"
 #include "BinaryData.h"
+#include "Components/WarpToolIcon.h"
 
-namespace
-{
-// The warp tool's icon, drawn like the PNG sprites the other tools use:
-// four 22 px rows at 2x (off, off hovered, on, on hovered). A warp anchor -
-// a vertical line under a tab - with arrows pointing both ways.
-juce::Image makeWarpToolImage()
-{
-    constexpr int width = 46, row = 22;
-    juce::Image image(juce::Image::ARGB, width, row * 4, true);
-    juce::Graphics g(image);
-    const juce::Colour colours[] = { juce::Colour(0xFF9A9A9Au), juce::Colour(0xFFFFFFFFu),
-                                     juce::Colour(0xFFFF5600u), juce::Colour(0xFFF9855Du) };
-    for (int i = 0; i < 4; ++i)
-    {
-        const float top = static_cast<float>(i * row);
-        g.setColour(colours[i]);
-        juce::Path tab;
-        tab.addTriangle(16.0f, top + 1.5f, 30.0f, top + 1.5f, 23.0f, top + 8.5f);
-        g.fillPath(tab);
-        g.fillRect(21.5f, top + 6.0f, 3.0f, 15.0f);
-        juce::Path arrows;
-        arrows.addArrow({ 18.0f, top + 14.0f, 3.0f, top + 14.0f }, 2.6f, 8.0f, 6.0f);
-        arrows.addArrow({ 28.0f, top + 14.0f, 43.0f, top + 14.0f }, 2.6f, 8.0f, 6.0f);
-        g.fillPath(arrows);
-    }
-    return image;
-}
-} // namespace
 
 ToolbarComponent::ToolbarComponent()
 {
@@ -53,7 +26,7 @@ ToolbarComponent::ToolbarComponent()
     selectModeButton.setImage(loadImage(BinaryData::select_png, BinaryData::select_pngSize));
     splitModeButton.setImage(loadImage(BinaryData::split_png, BinaryData::split_pngSize));
     pitchDrawingModeButton.setImage(loadImage(BinaryData::drawing_png, BinaryData::drawing_pngSize));
-    warpModeButton.setImage(makeWarpToolImage());
+    warpModeButton.setImage(warpToolIcon::makeToolbarSprite());
     logoImage = loadImage(BinaryData::logo_png, BinaryData::logo_pngSize);
 
     followButton.setImage(loadImage(BinaryData::scroll_png, BinaryData::scroll_pngSize));

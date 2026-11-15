@@ -2212,9 +2212,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e)
     juce::PopupMenu menu;
     menu.setLookAndFeel(&canvasPopupMenu::getLookAndFeel());
     auto choice = std::make_shared<int>(0);
-    menu.addCustomItem(1, std::make_unique<canvasPopupMenu::Content>(
-        choice, undoManager && undoManager->canUndo() && bool(onUndoRequested),
-        undoManager && undoManager->canRedo() && bool(onRedoRequested)));
+    menu.addCustomItem(1, std::make_unique<canvasPopupMenu::Content>(choice));
     juce::Component::SafePointer<PianoRollComponent> safeThis(this);
     menu.showMenuAsync(juce::PopupMenu::Options()
                           .withTargetScreenArea(canvasPopupMenu::Content::getTargetArea(
@@ -2224,22 +2222,11 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e)
     {
       if (safeThis == nullptr || !safeThis->project || result == 0)
         return;
-      if (*choice == 1)
-      {
-        safeThis->project->selectAllNotes();
-        safeThis->updatePitchToolHandlesFromSelection();
-        safeThis->updatePreviewButtonBounds();
-        safeThis->repaint();
-      }
-      else if (*choice == 6 && safeThis->onUndoRequested)
-        safeThis->onUndoRequested();
-      else if (*choice == 7 && safeThis->onRedoRequested)
-        safeThis->onRedoRequested();
-      else if (*choice >= 2 && *choice <= 5)
+      if (*choice >= 1 && *choice <= 4)
       {
         const EditMode modes[] = { EditMode::Select, EditMode::Split,
                                    EditMode::PitchDrawing, EditMode::Warp };
-        const auto mode = modes[*choice - 2];
+        const auto mode = modes[*choice - 1];
         if (safeThis->onEditModeRequested)
           safeThis->onEditModeRequested(mode);
         else
