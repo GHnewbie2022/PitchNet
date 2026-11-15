@@ -207,6 +207,19 @@ int main() {
   CHECK(c.getNotes()[0].getStartFrame() == 10 && c.getNotes()[0].getEndFrame() == 40);
   CHECK(std::abs(c.getNotes()[0].getMidiNote() - 88.0f) < 0.01f);
 
+  // Backspace deletes selected notes with Undo/Redo support.
+  c.getNotes()[0].setSelected(true);
+  CHECK(roll.keyPressed(juce::KeyPress(juce::KeyPress::backspaceKey)));
+  CHECK(c.getNotes().empty());
+  CHECK(resizeHistory.getUndoName() == "Delete Note");
+
+  resizeHistory.undo();
+  CHECK(c.getNotes().size() == 1);
+  CHECK(c.getNotes()[0].getStartFrame() == 10 && c.getNotes()[0].getEndFrame() == 40);
+
+  resizeHistory.redo();
+  CHECK(c.getNotes().empty());
+
   // Resizing a warped note adjacent to another pitch preserves its pitch center
   // and does not introduce a boundary spike on either note.
   Project d;

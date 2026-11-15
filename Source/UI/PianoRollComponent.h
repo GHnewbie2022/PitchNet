@@ -401,6 +401,7 @@ private:
   void setHoveredNote(Note *note);
   void updateScrollBars();
   bool nudgeSelectedNotesBySemitones(int semitoneDelta);
+  bool deleteSelectedNotes();
   void reapplyBasePitchForNote(
       Note *note); // Recalculate F0 from base pitch + delta after undo/redo
 

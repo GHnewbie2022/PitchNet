@@ -14,6 +14,7 @@
 #include "../Utils/PitchCurveProcessor.h"
 #include "../Utils/ScaleUtils.h"
 #include "../Undo/WarpAction.h"
+#include "../Undo/NoteActions.h"
 #include "PianoRoll/BreathSibilanceRenderer.h"
 #include "PianoRoll/PianoRollViewHelpers.h"
 #include "PianoRoll/VisualWaveformEnvelope.h"
@@ -3519,8 +3520,143 @@ bool PianoRollComponent::keyPressed(const juce::KeyPress &key)
     const int step = mods.isShiftDown() ? 12 : 1;
     return nudgeSelectedNotesBySemitones(direction * step);
   }
+  if (keyCode == juce::KeyPress::deleteKey ||
+      keyCode == juce::KeyPress::backspaceKey)
+  {
+    return deleteSelectedNotes();
+  }
 
   return false;
+}
+
+bool PianoRollComponent::deleteSelectedNotes()
+{
+  if (!project)
+    return false;
+
+  std::vector<Note *> targets;
+  for (Note *n : project->getSelectedNotes())
+  {
+    if (n && !n->isRest())
+      targets.push_back(n);
+  }
+  if (targets.empty() && hoveredNote != nullptr && !hoveredNote->isRest())
+    targets.push_back(hoveredNote);
+
+  if (targets.empty())
+    return false;
+
+  std::vector<Note> deletedNotes;
+  deletedNotes.reserve(targets.size());
+  for (Note *n : targets)
+  {
+    const bool alreadyAdded = std::any_of(
+        deletedNotes.begin(), deletedNotes.end(),
+        [n](const Note &existing)
+        {
+          return (n->getUid() != 0 && existing.getUid() == n->getUid()) ||
+                 existing.getStartFrame() == n->getStartFrame();
+        });
+    if (!alreadyAdded)
+      deletedNotes.push_back(*n);
+  }
+
+  std::sort(deletedNotes.begin(), deletedNotes.end(),
+            [](const Note &a, const Note &b)
+            { return a.getStartFrame() < b.getStartFrame(); });
+
+  int minStart = std::numeric_limits<int>::max();
+  int maxEnd = std::numeric_limits<int>::min();
+  bool needsResynthesis = std::abs(project->getFormantShift()) > 0.001f;
+  const auto curvesBefore = project->getDrawnCurves();
+  auto curvesAfter = curvesBefore;
+
+  for (const auto &note : deletedNotes)
+  {
+    minStart = std::min(minStart, note.getStartFrame());
+    maxEnd = std::max(maxEnd, note.getEndFrame());
+    if (!note.isNeutralForOriginalWaveform() || note.hasRenderedEdit())
+      needsResynthesis = true;
+    curvesAfter = drawncurve::without(curvesAfter, note.getStartFrame(),
+                                      note.getEndFrame());
+  }
+
+  const int reachStart = std::max(0, minStart - 12);
+  const int reachEnd = maxEnd + 12;
+  std::vector<std::pair<int, std::vector<float>>> prior;
+  for (const auto &existing : project->getNotes())
+  {
+    if (existing.isRest() || existing.getEndFrame() <= reachStart ||
+        existing.getStartFrame() >= reachEnd)
+      continue;
+    const bool isDeleted = std::any_of(
+        deletedNotes.begin(), deletedNotes.end(),
+        [&existing](const Note &d)
+        {
+          return (d.getUid() != 0 && existing.getUid() == d.getUid()) ||
+                 existing.getStartFrame() == d.getStartFrame();
+        });
+    if (!isDeleted)
+      prior.emplace_back(existing.getStartFrame(),
+                         existing.getOriginalDeltaPitch());
+  }
+
+  project->getDrawnCurves() = curvesAfter;
+  for (const auto &note : deletedNotes)
+    project->removeNoteByStartFrame(note.getStartFrame());
+
+  setHoveredNote(nullptr);
+  if (selectHandler_)
+    selectHandler_->clearEdgeHover();
+
+  PitchCurveProcessor::rebuildBaseFromNotes(*project);
+  std::vector<NoteCurveEdit> neighbourEdits;
+  for (const int changedStart :
+       PitchCurveProcessor::refitUntouchedCurves(*project, reachStart, reachEnd))
+  {
+    const auto was = std::find_if(
+        prior.begin(), prior.end(),
+        [changedStart](const auto &p) { return p.first == changedStart; });
+    if (was == prior.end())
+      continue;
+    for (const auto &existing : project->getNotes())
+    {
+      if (!existing.isRest() && existing.getStartFrame() == changedStart)
+      {
+        neighbourEdits.push_back({changedStart, was->second,
+                                  existing.getOriginalDeltaPitch(),
+                                  existing.getBakedDeltaPitch(),
+                                  existing.getBakedDeltaPitch()});
+        break;
+      }
+    }
+  }
+
+  if (needsResynthesis)
+  {
+    project->getAudioData().warpLayoutPending = true;
+    project->markNoteEditDirtyRange(minStart, maxEnd);
+  }
+
+  if (undoManager)
+  {
+    undoManager->addAction(std::make_unique<NoteDeleteAction>(
+        project, std::move(deletedNotes), std::move(neighbourEdits),
+        std::move(curvesBefore), std::move(curvesAfter),
+        needsResynthesis, minStart, maxEnd));
+  }
+
+  project->setModified(true);
+  invalidateBasePitchCache();
+  updatePitchToolHandlesFromSelection();
+  updatePreviewButtonBounds();
+
+  if (onPitchEdited)
+    onPitchEdited();
+  if (needsResynthesis && onPitchEditFinished)
+    onPitchEditFinished();
+  repaint();
+  return true;
 }
 
 bool PianoRollComponent::keyPressed(const juce::KeyPress &key,

@@ -668,3 +668,89 @@ private:
     std::function<void()> onChanged;
 };
 
+/**
+ * Action for deleting one or more notes and returning their frames to the recording.
+ */
+class NoteDeleteAction : public UndoableAction
+{
+public:
+    NoteDeleteAction(Project *proj, std::vector<Note> deleted,
+                     std::vector<NoteCurveEdit> edits,
+                     std::vector<DrawnCurve> cBefore,
+                     std::vector<DrawnCurve> cAfter,
+                     bool resynth, int dirtyStartFrame, int dirtyEndFrame)
+        : project(proj),
+          deletedNotes(std::move(deleted)),
+          neighbourEdits(std::move(edits)),
+          curvesBefore(std::move(cBefore)),
+          curvesAfter(std::move(cAfter)),
+          needsResynthesis(resynth),
+          dirtyStart(dirtyStartFrame),
+          dirtyEnd(dirtyEndFrame) {}
+
+    void undo() override
+    {
+        if (!project)
+            return;
+        for (const auto &note : deletedNotes)
+            project->addNote(note);
+        project->getDrawnCurves() = curvesBefore;
+        NoteCurveEdit::apply(*project, neighbourEdits, false);
+        PitchCurveProcessor::rebuildBaseFromNotes(*project);
+        if (needsResynthesis)
+        {
+            project->getAudioData().warpLayoutPending = true;
+            for (auto &note : project->getNotes())
+            {
+                for (const auto &deleted : deletedNotes)
+                {
+                    const bool uidMatch =
+                        deleted.getUid() != 0 && note.getUid() == deleted.getUid();
+                    const bool frameMatch =
+                        !note.isRest() && note.getStartFrame() == deleted.getStartFrame();
+                    if (uidMatch || frameMatch)
+                    {
+                        note.markDirty();
+                        note.markSynthDirty();
+                        break;
+                    }
+                }
+            }
+            project->markNoteEditDirtyRange(dirtyStart, dirtyEnd);
+        }
+        project->setModified(true);
+    }
+
+    void redo() override
+    {
+        if (!project)
+            return;
+        for (const auto &note : deletedNotes)
+            project->removeNoteByStartFrame(note.getStartFrame());
+        project->getDrawnCurves() = curvesAfter;
+        NoteCurveEdit::apply(*project, neighbourEdits, true);
+        PitchCurveProcessor::rebuildBaseFromNotes(*project);
+        if (needsResynthesis)
+        {
+            project->getAudioData().warpLayoutPending = true;
+            project->markNoteEditDirtyRange(dirtyStart, dirtyEnd);
+        }
+        project->setModified(true);
+    }
+
+    juce::String getName() const override
+    {
+        return deletedNotes.size() == 1 ? "Delete Note" : "Delete Notes";
+    }
+    bool requiresAudioResynthesis() const override { return needsResynthesis; }
+
+private:
+    Project *project;
+    std::vector<Note> deletedNotes;
+    std::vector<NoteCurveEdit> neighbourEdits;
+    std::vector<DrawnCurve> curvesBefore;
+    std::vector<DrawnCurve> curvesAfter;
+    bool needsResynthesis = false;
+    int dirtyStart = 0;
+    int dirtyEnd = 0;
+};
