@@ -1,4 +1,5 @@
 #include "NoteRenderer.h"
+#include <functional>
 #include "BreathSibilanceRenderer.h"
 #include "PitchToolController.h"
 #include "PitchToolHandles.h"
@@ -124,6 +125,49 @@ void setNoteGradientFill(juce::Graphics &g,
                                 false);
   gradient.addColour(gradientCentre, colours.centre);
   g.setGradientFill(gradient);
+}
+
+// Fills a note body (and hatches its noise parts) with JUCE's own software
+// renderer into an image of just its visible part, then draws that image.
+// macOS renders the context's paths asynchronously, scanline by scanline on
+// every frame; a body several hundred pixels tall at high zoom made scrolling
+// and playback stutter, where blitting an image costs next to nothing.
+// Returns false when there is nothing visible to draw.
+bool fillBodyAsImage(juce::Graphics &g, const juce::Path &shape,
+                     const juce::Rectangle<float> &gradientBounds,
+                     float centreY, const NoteGradientColours &colours,
+                     const std::function<void(juce::Graphics &)> &extra)
+{
+  const auto area = shape.getBounds()
+                        .getSmallestIntegerContainer()
+                        .expanded(1)
+                        .getIntersection(g.getClipBounds());
+  if (area.isEmpty())
+    return false;
+  const float scale = std::max(
+      1.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
+  const int width = static_cast<int>(std::ceil(area.getWidth() * scale));
+  const int height = static_cast<int>(std::ceil(area.getHeight() * scale));
+
+  juce::Image image(juce::Image::ARGB, width, height, true,
+                    juce::SoftwareImageType());
+  {
+    juce::Graphics ig(image);
+    ig.addTransform(juce::AffineTransform::translation(
+                        static_cast<float>(-area.getX()),
+                        static_cast<float>(-area.getY()))
+                        .scaled(scale));
+    setNoteGradientFill(ig, gradientBounds, centreY, colours);
+    ig.fillPath(shape);
+    if (extra)
+      extra(ig);
+  }
+  // drawImage draws at the current fill's opacity: whatever was drawn last
+  // (a translucent waveform, a hover shadow) would fade the note.
+  juce::Graphics::ScopedSaveState state(g);
+  g.setOpacity(1.0f);
+  g.drawImage(image, area.toFloat());
+  return true;
 }
 
 bool isContinuousSplitPair(const Note &left, const Note &right)
@@ -369,6 +413,8 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
       juce::Rectangle<float> noteVisualBounds(x, y, renderedWidth, h);
       // The shape that was filled, for the pinned-track outline.
       juce::Path bodyShape;
+      // The image path below hatches the body itself.
+      bool bodyHatched = false;
       // Outline-only pass: fill nothing, but build the same shapes.
       std::optional<juce::Graphics::ScopedSaveState> noFill;
       if (!fillBodies)
@@ -458,12 +504,19 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
                            (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t3);
           };
 
-          juce::Path waveformPath;
-
-          waveformPath.startNewSubPath(
-              x, centerY - waveValues[0] * waveHeight * 0.5f);
-
-          constexpr int curveSegments = 4;
+          // Outline vertices: the top edge left to right, then the bottom
+          // edge back. The envelope already has two points a pixel; the
+          // Catmull-Rom subdivision only adds vertices while the points are
+          // further apart than that (at most 2 a pixel). Each vertex is an
+          // edge for the path clip the gradient fill renders through, so a
+          // wide note at high zoom used to cost tens of thousands of them.
+          const float spacing =
+              w / static_cast<float>(std::max<size_t>(1, numPoints - 1));
+          const int curveSegments =
+              juce::jlimit(1, 4, static_cast<int>(std::floor(spacing * 2.0f)));
+          std::vector<juce::Point<float>> outline;
+          outline.reserve((numPoints - 1) * 2 * curveSegments + 4);
+          outline.emplace_back(x, centerY - waveValues[0] * waveHeight * 0.5f);
           for (size_t i = 0; i + 1 < numPoints; ++i)
           {
             const float px1 = (static_cast<float>(i) /
@@ -489,13 +542,12 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
                   static_cast<float>(seg) / static_cast<float>(curveSegments);
               const float px = px1 + (px2 - px1) * t;
               const float val = catmullRom(t, val0, val1, val2, val3);
-              const float yPos = centerY - val * waveHeight * 0.5f;
-              waveformPath.lineTo(x + px, yPos);
+              outline.emplace_back(x + px, centerY - val * waveHeight * 0.5f);
             }
           }
 
-          waveformPath.lineTo(x + w, centerY + waveValues[numPoints - 1] *
-                                                   waveHeight * 0.5f);
+          outline.emplace_back(x + w, centerY + waveValues[numPoints - 1] *
+                                                    waveHeight * 0.5f);
 
           for (int i = static_cast<int>(numPoints) - 2; i >= 0; --i)
           {
@@ -522,22 +574,55 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
                   static_cast<float>(seg) / static_cast<float>(curveSegments);
               const float px = px1 + (px2 - px1) * t;
               const float val = catmullRom(t, val0, val1, val2, val3);
-              const float yPos = centerY + val * waveHeight * 0.5f;
-              waveformPath.lineTo(x + px, yPos);
+              outline.emplace_back(x + px, centerY + val * waveHeight * 0.5f);
             }
           }
 
+          // Off-screen runs collapse to their two ends: the edge into the
+          // visible part keeps its slope, and what lies outside the clip is
+          // never seen.
+          // The outline-only pass clips everything away to build bodyShape;
+          // it keeps the full shape.
+          const auto visible = g.getClipBounds();
+          const auto clip = visible.toFloat().expanded(2.0f, 0.0f);
+          const bool cull = fillBodies && !visible.isEmpty();
+          const auto offscreen = [&](const juce::Point<float> &p)
+          { return cull && (p.x < clip.getX() || p.x > clip.getRight()); };
+          juce::Path waveformPath;
+          waveformPath.preallocateSpace(
+              static_cast<int>(outline.size()) * 3 + 8);
+          waveformPath.startNewSubPath(outline.front());
+          for (size_t i = 1; i < outline.size(); ++i)
+          {
+            const bool inRun = offscreen(outline[i]) &&
+                               offscreen(outline[i - 1]) &&
+                               i + 1 < outline.size() &&
+                               offscreen(outline[i + 1]);
+            if (!inRun)
+              waveformPath.lineTo(outline[i]);
+          }
+
           waveformPath.closeSubPath();
+          // Bounds of the whole shape, off-screen parts included, so the
+          // gradient does not shift while the note scrolls past the edge.
+          auto outlineBounds =
+              juce::Rectangle<float>::findAreaContainingPoints(
+                  outline.data(), static_cast<int>(outline.size()));
           // Consonants and breaths follow the waveform like the rest of the
           // note, so their size shows their level - and the sibilant
           // balance. A 1 px band keeps a near-silent one visible, never
           // thicker than the note's own loudest part.
           const float noiseBandHeight =
-              std::min(1.0f, waveformPath.getBounds().getHeight());
+              std::min(1.0f, outlineBounds.getHeight());
           if (showBreathsAndSibilance)
-            waveformPath.addPath(BreathSibilanceRenderer::noiseBands(
-                audioData, note, x, renderedWidth, centerY, noiseBandHeight));
-          noteVisualBounds = waveformPath.getBounds();
+          {
+            const auto bands = BreathSibilanceRenderer::noiseBands(
+                audioData, note, x, renderedWidth, centerY, noiseBandHeight);
+            waveformPath.addPath(bands);
+            if (!bands.isEmpty())
+              outlineBounds = outlineBounds.getUnion(bands.getBounds());
+          }
+          noteVisualBounds = outlineBounds;
           bodyShape = waveformPath;
 
           if (isPreviewPlaybackNote)
@@ -560,6 +645,18 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
               setNoteGradientFill(g, noteVisualBounds, centerY, noteColours);
               g.fillPath(waveformPath);
             }
+          }
+          else if (fillBodies)
+          {
+            const auto hatchInImage = [&](juce::Graphics &ig)
+            {
+              if (showBreathsAndSibilance)
+                BreathSibilanceRenderer::hatchNoteBody(
+                    ig, audioData, note, waveformPath, x, renderedWidth);
+            };
+            fillBodyAsImage(g, waveformPath, noteVisualBounds, centerY,
+                            noteColours, hatchInImage);
+            bodyHatched = true;
           }
           else
           {
@@ -601,7 +698,7 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
       }
 
       // Hatch the unpitched parts (sibilants, breaths) of the body.
-      if (fillBodies && showBreathsAndSibilance)
+      if (fillBodies && showBreathsAndSibilance && !bodyHatched)
         BreathSibilanceRenderer::hatchNoteBody(g, audioData, note, bodyShape,
                                                x, renderedWidth);
 
