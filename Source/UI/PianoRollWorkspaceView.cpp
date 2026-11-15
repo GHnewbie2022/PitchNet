@@ -78,6 +78,9 @@ PianoRollWorkspaceView::PianoRollWorkspaceView(PianoRollComponent &piano)
   zoomXSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
   zoomXSlider.setLookAndFeel(&floatingZoomSliderLookAndFeel);
   zoomXSlider.setRange(MIN_PIXELS_PER_SECOND, MAX_PIXELS_PER_SECOND, 0.1);
+  // The range is wide now; keep the slider's middle where it was (260 px/s)
+  // so the everyday zooms still get most of its travel.
+  zoomXSlider.setSkewFactorFromMidPoint(260.0);
   zoomXSlider.setValue(pianoRoll.getPixelsPerSecond(),
                        juce::dontSendNotification);
   zoomXSlider.onValueChange = [this]()
@@ -92,6 +95,7 @@ PianoRollWorkspaceView::PianoRollWorkspaceView(PianoRollComponent &piano)
   zoomYSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
   zoomYSlider.setLookAndFeel(&floatingZoomSliderLookAndFeel);
   zoomYSlider.setRange(MIN_PIXELS_PER_SEMITONE, MAX_PIXELS_PER_SEMITONE, 0.1);
+  zoomYSlider.setSkewFactorFromMidPoint(64.0);
   zoomYSlider.setValue(pianoRoll.getPixelsPerSemitone(),
                        juce::dontSendNotification);
   zoomYSlider.onValueChange = [this]()
@@ -107,7 +111,9 @@ PianoRollWorkspaceView::PianoRollWorkspaceView(PianoRollComponent &piano)
   blobHeightSlider.setRange(CoordinateMapper::minBlobHeightScale,
                             CoordinateMapper::maxBlobHeightScale, 0.01);
   blobHeightSlider.setSkewFactorFromMidPoint(1.0);
-  blobHeightSlider.setDoubleClickReturnValue(true, 1.0);
+  // Double-click returns to the default, the maximum.
+  blobHeightSlider.setDoubleClickReturnValue(
+      true, CoordinateMapper::maxBlobHeightScale);
   blobHeightSlider.setValue(pianoRoll.getBlobHeightScale(),
                             juce::dontSendNotification);
   blobHeightSlider.setTooltip(TR("tooltip.blob_height"));

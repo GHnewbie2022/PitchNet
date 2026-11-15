@@ -21,9 +21,11 @@ constexpr float FREQ_A4 = 440.0f;
 constexpr float DEFAULT_PIXELS_PER_SECOND = 100.0f;
 constexpr float DEFAULT_PIXELS_PER_SEMITONE = 45.0f;
 constexpr float MIN_PIXELS_PER_SECOND = 20.0f;
-constexpr float MAX_PIXELS_PER_SECOND = 500.0f;
+// Zoomed in far enough to edit a note a few frames long (one analysis frame
+// is about 23 px at the maximum).
+constexpr float MAX_PIXELS_PER_SECOND = 2000.0f;
 constexpr float MIN_PIXELS_PER_SEMITONE = 8.0f;
-constexpr float MAX_PIXELS_PER_SEMITONE = 120.0f;
+constexpr float MAX_PIXELS_PER_SEMITONE = 240.0f;
 constexpr float DEFAULT_EMPTY_PROJECT_DURATION_SECONDS = 30.0f;
 
 // UI colors moved to Source/Utils/UI/Theme.h

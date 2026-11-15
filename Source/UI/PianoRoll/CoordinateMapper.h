@@ -124,7 +124,8 @@ public:
 private:
     float pixelsPerSecond = DEFAULT_PIXELS_PER_SECOND;
     float pixelsPerSemitone = DEFAULT_PIXELS_PER_SEMITONE;
-    float blobHeightScale = 1.0f;
+    // Starts at the maximum: the tallest note blobs are the easiest to read.
+    float blobHeightScale = maxBlobHeightScale;
     double scrollX = 0.0;
     double scrollY = 0.0;
     double timelineDisplayOffset = 0.0;
