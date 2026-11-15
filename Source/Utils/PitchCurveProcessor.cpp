@@ -293,6 +293,48 @@ namespace PitchCurveProcessor
         return one;
     }
 
+    std::vector<int> refitUntouchedCurves(Project& project, int start, int end)
+    {
+        std::vector<int> changed;
+        auto& audio = project.getAudioData();
+        const auto& dense = audio.denseF0;
+        if (dense.empty() || audio.basePitch.empty())
+            return changed;
+        for (auto& note : project.getNotes())
+        {
+            if (note.isRest() || note.getEndFrame() <= start || note.getStartFrame() >= end ||
+                !note.isPitchUntouched() ||
+                note.getStartFrame() != note.getSrcStartFrame() ||
+                note.getDurationFrames() != note.getSrcDurationFrames())
+                continue;
+            auto curve = note.getOriginalDeltaPitch();
+            if (static_cast<int>(curve.size()) != note.getDurationFrames())
+                continue;
+            bool touched = false;
+            for (int i = 0; i < note.getDurationFrames(); ++i)
+            {
+                const auto f = static_cast<size_t>(note.getStartFrame() + i);
+                if (f >= dense.size() || f >= audio.basePitch.size() || !(dense[f] > 0.0f))
+                    continue;
+                const float fitted = freqToMidi(dense[f]) - audio.basePitch[f];
+                if (std::abs(fitted - curve[static_cast<size_t>(i)]) > 0.0001f)
+                {
+                    curve[static_cast<size_t>(i)] = fitted;
+                    touched = true;
+                }
+            }
+            if (!touched)
+                continue;
+            note.setOriginalDeltaPitch(curve);
+            if (note.getDeltaPitch().size() == curve.size())
+                note.setDeltaPitch(curve);
+            changed.push_back(note.getStartFrame());
+        }
+        if (!changed.empty())
+            rebuildBaseFromNotes(project);
+        return changed;
+    }
+
     void rebuildBaseFromNotes(Project& project)
     {
         auto& audioData = project.getAudioData();

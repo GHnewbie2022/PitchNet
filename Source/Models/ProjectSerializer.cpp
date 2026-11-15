@@ -237,7 +237,13 @@ bool ProjectSerializer::loadFromFile(Project& project, const juce::File& file) {
     if (!json.isObject())
         return false;
 
-    return fromJson(project, json);
+    if (!fromJson(project, json))
+        return false;
+    // Untouched notes show the recorded pitch over the base as it is now.
+    PitchCurveProcessor::refitUntouchedCurves(project, 0,
+                                              project.getAudioData().getNumFrames());
+    project.setModified(false);
+    return true;
 }
 
 juce::var ProjectSerializer::toJson(const Project& project,
@@ -1038,6 +1044,10 @@ bool ProjectSerializer::fromBinaryArchive(Project& project, const void* data,
     // are not stored in the archive either. Host-backed archives get them
     // when ARA hydrates the source.
     breathsibilance::ensure(audioData);
+
+    // Untouched notes show the recorded pitch over the base as it is now
+    // (curves saved before the refit could carry a spike at an edge).
+    PitchCurveProcessor::refitUntouchedCurves(project, 0, audioData.getNumFrames());
 
     project.setModified(false);
     return true;

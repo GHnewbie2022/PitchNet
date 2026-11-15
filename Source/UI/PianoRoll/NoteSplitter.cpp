@@ -1,10 +1,12 @@
 #include "NoteSplitter.h"
+#include "../../Undo/NoteActions.h"
 #include "../../Audio/NoteTiming.h"
 #include "../../Utils/NoteAmplitude.h"
 #include "../../Utils/PitchCurveProcessor.h"
 #include "../../Utils/Constants.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace
 {
@@ -147,6 +149,122 @@ void keepSungPitch(Project& project, const std::vector<int>& starts, int start,
         }
     PitchCurveProcessor::rebuildBaseFromNotes(project);
 }
+
+// Frames either side of a boundary the base pitch's smoothing reaches
+// (an 80 ms window at the analysis frame rate, with room to spare).
+constexpr int kBoundaryReach = 12;
+
+/**
+ * A split or merge re-centres notes, and the base pitch bends smoothly from
+ * one centre to the next across each boundary - a bend the notes' curves,
+ * shifted by a constant, did not follow: a spike at the boundary, in the
+ * note itself and in its neighbour's first frames. Fold the difference into
+ * the curves of the notes around [start, end) so they sing `before` again
+ * (it covers [start - kBoundaryReach, end + kBoundaryReach)). Notes starting
+ * at `skip` are left alone. Returns the neighbours' edits for undo; notes
+ * starting at `own` (the edited notes, which the undo restores whole) are
+ * changed but not listed.
+ */
+std::vector<NoteCurveEdit> smoothOverBoundaries(Project& project, int start, int end,
+                                               const std::vector<float>& before,
+                                               const std::vector<int>& own,
+                                               const std::vector<int>& skip = {})
+{
+    std::vector<NoteCurveEdit> edits;
+    const int first = start - kBoundaryReach;
+    if (before.empty())
+        return edits;
+
+    // Untouched notes sing the recording: refit them to it over the new base
+    // (PitchCurveProcessor::refitUntouchedCurves). Only edited notes keep the
+    // pitch they sang through the compensation below.
+    {
+        std::vector<std::pair<int, std::vector<float>>> prior;
+        for (const auto& note : project.getNotes())
+            if (!note.isRest() && note.getEndFrame() > first &&
+                note.getStartFrame() < end + kBoundaryReach)
+                prior.emplace_back(note.getStartFrame(), note.getOriginalDeltaPitch());
+        for (const int changed : PitchCurveProcessor::refitUntouchedCurves(
+                 project, first, end + kBoundaryReach))
+        {
+            if (std::find(own.begin(), own.end(), changed) != own.end() ||
+                std::find(skip.begin(), skip.end(), changed) != skip.end())
+                continue;
+            const auto was = std::find_if(prior.begin(), prior.end(),
+                                          [changed](const auto& p) { return p.first == changed; });
+            for (const auto& note : project.getNotes())
+                if (!note.isRest() && note.getStartFrame() == changed && was != prior.end())
+                    edits.push_back({changed, was->second, note.getOriginalDeltaPitch(),
+                                     note.getBakedDeltaPitch(), note.getBakedDeltaPitch()});
+        }
+    }
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        const auto& audio = project.getAudioData();
+        bool changed = false;
+        for (auto& note : project.getNotes())
+        {
+            const int noteStart = note.getStartFrame();
+            if (note.isRest() || note.getEndFrame() <= first ||
+                noteStart >= end + kBoundaryReach ||
+                std::find(skip.begin(), skip.end(), noteStart) != skip.end())
+                continue;
+            if (note.isPitchUntouched() && note.getStartFrame() == note.getSrcStartFrame())
+                continue; // refitted to the recording above
+            const bool baked = note.hasBakedDeltaPitch();
+            auto curve = baked ? note.getBakedDeltaPitch() : note.getOriginalDeltaPitch();
+            if (static_cast<int>(curve.size()) != note.getDurationFrames())
+                continue; // laid out over another length: leave it be
+            bool touched = false;
+            for (int f = std::max(noteStart, first);
+                 f < std::min(note.getEndFrame(), end + kBoundaryReach); ++f)
+            {
+                const auto k = static_cast<size_t>(f - first);
+                const auto i = static_cast<size_t>(f);
+                if (k >= before.size() || i >= audio.basePitch.size() ||
+                    i >= audio.deltaPitch.size())
+                    continue;
+                const float diff = before[k] - (audio.basePitch[i] + audio.deltaPitch[i]);
+                if (std::abs(diff) > 0.0001f)
+                {
+                    curve[static_cast<size_t>(f - noteStart)] += diff;
+                    touched = true;
+                }
+            }
+            if (!touched)
+                continue;
+            changed = true;
+            const bool listed = std::find(own.begin(), own.end(), noteStart) == own.end();
+            auto edit = std::find_if(edits.begin(), edits.end(),
+                                     [noteStart](const NoteCurveEdit& e)
+                                     { return e.startFrame == noteStart; });
+            if (listed && edit == edits.end())
+            {
+                edits.push_back({noteStart, note.getOriginalDeltaPitch(), {},
+                                 note.getBakedDeltaPitch(), {}});
+                edit = std::prev(edits.end());
+            }
+            if (baked)
+                note.setBakedDeltaPitch(curve);
+            else
+            {
+                note.setOriginalDeltaPitch(curve);
+                if (!note.getDeltaPitch().empty() &&
+                    note.getDeltaPitch().size() == curve.size())
+                    note.setDeltaPitch(curve);
+            }
+            if (listed)
+            {
+                edit->originalAfter = note.getOriginalDeltaPitch();
+                edit->bakedAfter = note.getBakedDeltaPitch();
+            }
+        }
+        if (!changed)
+            break;
+        PitchCurveProcessor::rebuildBaseFromNotes(project);
+    }
+    return edits;
+}
 }
 
 Note* NoteSplitter::findNoteAt(float x, float y) {
@@ -192,6 +310,10 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
         pitchUntouched(originalNote)
             ? std::vector<float>{}
             : sungPitch(project->getAudioData(), startFrame, endFrame);
+    // ...and around it, which the boundaries' smoothing must not bend.
+    const auto pitchAround = sungPitch(project->getAudioData(),
+                                       std::max(0, startFrame - kBoundaryReach),
+                                       endFrame + kBoundaryReach);
 
     // Create the second note (right part)
     Note secondNote;
@@ -363,6 +485,11 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
     PitchCurveProcessor::rebuildBaseFromNotes(*project);
     keepSungPitch(*project, {startFrame, splitFrame}, startFrame, endFrame,
                   pitchBefore);
+    const auto neighbourEdits =
+        startFrame >= kBoundaryReach
+            ? smoothOverBoundaries(*project, startFrame, endFrame, pitchAround,
+                                   {startFrame, splitFrame})
+            : std::vector<NoteCurveEdit>{};
 
     // Create undo action - don't pass callback to avoid lifetime issues
     // UI refresh is handled by UndoManager's onUndoRedo callback
@@ -370,8 +497,12 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
         const Note* left = noteStartingAt(*project, startFrame);
         const Note* right = noteStartingAt(*project, splitFrame);
         if (left && right)
-            undoManager->addAction(std::make_unique<NoteSplitAction>(
-                project, originalNote, *left, *right, nullptr));
+        {
+            auto action = std::make_unique<NoteSplitAction>(
+                project, originalNote, *left, *right, nullptr);
+            action->setNeighbourEdits(neighbourEdits);
+            undoManager->addAction(std::move(action));
+        }
     }
     if (onNoteSplit)
         onNoteSplit();
@@ -470,6 +601,12 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
     // them back.
     const bool reshaped =
         !(pitchUntouched(firstNote) && pitchUntouched(secondNote));
+    // The pitch around the merge: its neighbours must not bend with the base.
+    const int mergeStart = firstNote.getStartFrame();
+    const int mergeEnd = secondNote.getEndFrame();
+    const auto pitchAround = sungPitch(project->getAudioData(),
+                                       std::max(0, mergeStart - kBoundaryReach),
+                                       mergeEnd + kBoundaryReach);
 
     Note mergedNote = firstNote;
     mergedNote.setEndFrame(secondNote.getEndFrame());
@@ -575,11 +712,21 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
     // Rebuild the drawn pitch curve from the new notes (pitch-neutral edit:
     // the audio already matches).
     PitchCurveProcessor::rebuildBaseFromNotes(*project);
-
+    // The merged note goes back to the analysis; its neighbours keep theirs.
+    const auto neighbourEdits =
+        mergeStart >= kBoundaryReach
+            ? smoothOverBoundaries(*project, mergeStart, mergeEnd, pitchAround,
+                                   {mergeStart}, {mergeStart})
+            : std::vector<NoteCurveEdit>{};
+    mergedNote = *first; // refitted to the recording: what redo puts back
 
     if (undoManager)
-        undoManager->addAction(std::make_unique<NoteMergeAction>(
-            project, firstNote, secondNote, mergedNote, nullptr));
+    {
+        auto action = std::make_unique<NoteMergeAction>(
+            project, firstNote, secondNote, mergedNote, nullptr);
+        action->setNeighbourEdits(neighbourEdits);
+        undoManager->addAction(std::move(action));
+    }
     if (onNoteSplit)
         onNoteSplit();
 
@@ -738,6 +885,24 @@ bool NoteSplitter::restoreSeparation(const SeparationGroup& group,
 
     undoManager = savedUndo;
     onNoteSplit = savedCallback;
+
+    // Step 3 moved the centres again: refit the untouched notes in and
+    // around the group to the recording over the base as it ends up.
+    PitchCurveProcessor::rebuildBaseFromNotes(*project);
+    {
+        int first = std::numeric_limits<int>::max();
+        int last = std::numeric_limits<int>::min();
+        for (const auto& n : project->getNotes())
+            if (!n.isRest() && n.getSrcStartFrame() >= group.srcStart &&
+                n.getSrcEndFrame() <= group.srcEnd)
+            {
+                first = std::min(first, n.getStartFrame());
+                last = std::max(last, n.getEndFrame());
+            }
+        if (first <= last)
+            PitchCurveProcessor::refitUntouchedCurves(*project, first - kBoundaryReach,
+                                                      last + kBoundaryReach);
+    }
 
     after.clear();
     for (const auto& n : project->getNotes())

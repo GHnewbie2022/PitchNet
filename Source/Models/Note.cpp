@@ -67,6 +67,18 @@ bool Note::containsFrame(int frame) const
     return frame >= startFrame && frame < endFrame;
 }
 
+bool Note::isPitchUntouched() const
+{
+    constexpr float eps = 0.001f;
+    return std::abs(midiNote - originalMidiNote) <= eps &&
+           std::abs(pitchOffset) <= eps && !hasBakedDeltaPitch() &&
+           std::abs(tiltLeft) <= eps && std::abs(tiltRight) <= eps &&
+           frozenTilt.empty() && std::abs(vibrato - 1.0f) <= eps &&
+           std::abs(pitchDrift - 1.0f) <= eps && smoothLeftFrames == 0 &&
+           smoothRightFrames == 0 && std::abs(deltaScale - 1.0f) <= eps &&
+           std::abs(deltaOffset) <= eps;
+}
+
 bool Note::isNeutralForOriginalWaveform() const
 {
     constexpr float kPitchEpsilon = 0.001f;

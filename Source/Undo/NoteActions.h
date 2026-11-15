@@ -320,6 +320,31 @@ private:
 /**
  * Action for splitting a note into two.
  */
+/**
+ * A neighbouring note's curve changed by a split or merge, which bends the
+ * base pitch around the boundary (NoteSplitter keeps what the notes sang).
+ * Found again by start frame: the neighbours do not move.
+ */
+struct NoteCurveEdit
+{
+    int startFrame = 0;
+    std::vector<float> originalBefore, originalAfter;
+    std::vector<float> bakedBefore, bakedAfter;
+
+    static void apply(Project &project, const std::vector<NoteCurveEdit> &edits,
+                      bool after)
+    {
+        for (const auto &edit : edits)
+            for (auto &note : project.getNotes())
+                if (!note.isRest() && note.getStartFrame() == edit.startFrame)
+                {
+                    note.setOriginalDeltaPitch(after ? edit.originalAfter : edit.originalBefore);
+                    note.setBakedDeltaPitch(after ? edit.bakedAfter : edit.bakedBefore);
+                    break;
+                }
+    }
+};
+
 class NoteSplitAction : public UndoableAction
 {
 public:
@@ -341,6 +366,7 @@ public:
                 break;
             }
         }
+        NoteCurveEdit::apply(*project, neighbourEdits, false);
         // The drawn pitch curve is built from the notes: rebuild it for the
         // notes now in place, or it keeps the other layout's curve.
         PitchCurveProcessor::rebuildBaseFromNotes(*project);
@@ -361,6 +387,7 @@ public:
             }
         }
         project->addNote(secondNote);
+        NoteCurveEdit::apply(*project, neighbourEdits, true);
         PitchCurveProcessor::rebuildBaseFromNotes(*project);
         if (onChanged)
             onChanged();
@@ -369,7 +396,10 @@ public:
     juce::String getName() const override { return "Split Note"; }
     bool requiresAudioResynthesis() const override { return false; }
 
+    void setNeighbourEdits(std::vector<NoteCurveEdit> edits) { neighbourEdits = std::move(edits); }
+
 private:
+    std::vector<NoteCurveEdit> neighbourEdits;
     Project *project;
     Note originalNote;
     Note firstNote;
@@ -401,6 +431,8 @@ public:
             }
         }
         project->addNote(secondNote);
+        NoteCurveEdit::apply(*project, neighbourEdits, false);
+        markHalvesForRender();
         PitchCurveProcessor::rebuildBaseFromNotes(*project);
         if (onChanged)
             onChanged();
@@ -419,16 +451,38 @@ public:
             }
         }
         project->removeNoteByStartFrame(secondNote.getStartFrame());
+        NoteCurveEdit::apply(*project, neighbourEdits, true);
+        for (auto &note : project->getNotes())
+            if (note.getStartFrame() == firstNote.getStartFrame())
+            {
+                note.markDirty();
+                note.markSynthDirty();
+            }
         PitchCurveProcessor::rebuildBaseFromNotes(*project);
         if (onChanged)
             onChanged();
     }
 
     juce::String getName() const override { return "Merge Notes"; }
-    bool requiresAudioResynthesis() const override { return false; }
+    // A merge puts the pitch back to the analysis: the audio changes.
+    bool requiresAudioResynthesis() const override { return true; }
+
+    void setNeighbourEdits(std::vector<NoteCurveEdit> edits) { neighbourEdits = std::move(edits); }
 
 private:
+    void markHalvesForRender()
+    {
+        for (auto &note : project->getNotes())
+            if (note.getStartFrame() == firstNote.getStartFrame() ||
+                note.getStartFrame() == secondNote.getStartFrame())
+            {
+                note.markDirty();
+                note.markSynthDirty();
+            }
+    }
+
     Project *project;
+    std::vector<NoteCurveEdit> neighbourEdits;
     Note firstNote;
     Note secondNote;
     Note mergedNote;
@@ -471,6 +525,10 @@ private:
         }
         project->setModified(true);
         PitchCurveProcessor::rebuildBaseFromNotes(*project);
+        // The centres changed: untouched notes around sing the recording
+        // over the new base (PitchCurveProcessor::refitUntouchedCurves).
+        if (first <= last)
+            PitchCurveProcessor::refitUntouchedCurves(*project, first - 12, last + 12);
         if (first <= last)
             project->markNoteEditDirtyRange(first, last);
     }

@@ -300,6 +300,9 @@ public:
     // Check if frame is within note
     bool containsFrame(int frame) const;
     bool isNeutralForOriginalWaveform() const;
+    /** No pitch edit of any kind (centre, drag, pitch tools, drawn curve,
+     *  frozen tilt): the note sings what was recorded. */
+    bool isPitchUntouched() const;
 
     // Identifies the note across edits that move it in memory (a split or
     // merge inserts into and erases from the project's note list): copies

@@ -270,10 +270,10 @@ void separationCheck(Project &project)
   Note *second = find(b);
   const int mid = (second->getStartFrame() + second->getEndFrame()) / 2;
   check("manual split", splitter.splitNoteAtFrame(second, mid));
-  // Move the new piece's pitch.
+  // Move the new piece's pitch (the right half only: the note after it is
+  // not part of this split).
   for (auto &n : project.getNotes())
-    if (!n.isRest() && n.getSrcStartFrame() > b && n.getSrcEndFrame() <= find(b)->getSrcEndFrame() + 100 &&
-        n.getSrcStartFrame() < 90)
+    if (!n.isRest() && n.getStartFrame() == mid)
       n.setMidiNote(n.getMidiNote() - 3.0f);
   std::printf("split:    %s\n", cuts().toRawUTF8());
   auto splitGroup = splitter.separationGroupFor(*find(b));
@@ -284,8 +284,8 @@ void separationCheck(Project &project)
   check("restore after split gives the analysis pitch", compare("after split+restore"));
 
   // Split, move one half, merge back by hand: the cuts are the analysis
-  // cuts again (nothing for "Note Separation"), but the Pitch restore must
-  // still see the edit: its baseline is the analysed pitch.
+  // cuts again, and the merge itself gives the analysed pitch back (Cubase's
+  // glue drops the halves' pitch edits; undo brings them back).
   {
     Note *n2 = find(b);
     const int m2 = (n2->getStartFrame() + n2->getEndFrame()) / 2;
@@ -299,9 +299,15 @@ void separationCheck(Project &project)
     const Note *merged = find(b);
     const auto *span = merged->exactAnalysisSpan();
     check("re-merged note is a detected note again", span != nullptr);
-    check("pitch restore sees the edit (baseline is the analysed pitch)",
-          span && (std::abs(merged->getMidiNote() - span->midi) > 0.01f ||
-                   merged->getOriginalDeltaPitch() != span->originalDelta));
+    float curveOff = span ? 0.0f : 99.0f;
+    if (span)
+      for (size_t i = 0; i < std::min(span->originalDelta.size(),
+                                      merged->getOriginalDeltaPitch().size()); ++i)
+        curveOff = std::max(curveOff, std::abs(span->originalDelta[i] -
+                                               merged->getOriginalDeltaPitch()[i]));
+    check("merging back gives the analysed pitch (Cubase glue)",
+          span && std::abs(merged->getMidiNote() - span->midi) < 0.001f &&
+              merged->isPitchUntouched() && curveOff < 0.002f);
     Note copy = *merged;
     copy.restoreAnalysisPitch();
     const Note *orig = nullptr;
@@ -691,6 +697,58 @@ void mergeCheck(Project &project)
       {"left vibrato 0 + tilt", [](Note &l, Note &) { l.setVibrato(0.0f); l.setTiltRight(0.8f); }},
   };
   int failures = 0;
+  // Splitting and merging an untouched note anywhere: nothing around it may
+  // move - not at the boundary, not in its neighbours' first frames.
+  {
+    int worstSplit = 0, worstMerge = 0, worstUndo = 0;
+    float maxSplit = 0.0f, maxMerge = 0.0f, maxUndo = 0.0f;
+    int tried = 0;
+    for (size_t k = 0; k < starts.size() && tried < 30; ++k)
+    {
+      Note *note = noteAt(starts[k]);
+      if (!note || note->hasBakedDeltaPitch() || note->getStartFrame() < 20)
+        continue;
+      const int start = note->getStartFrame(), end = note->getEndFrame();
+      if (end - start < 12)
+        continue;
+      ++tried;
+      const int split = start + (end - start) / 2;
+      // Only frames some note sings: a gap's line is a transition, not pitch.
+      const auto inNote = [&](int f)
+      {
+        return std::any_of(project.getNotes().begin(), project.getNotes().end(),
+                           [f](const Note &n)
+                           { return !n.isRest() && n.getStartFrame() <= f && n.getEndFrame() > f; });
+      };
+      const auto sungInNotes = [&](int from, int to)
+      {
+        auto pitch = sung(from, to);
+        for (int f = from; f < to; ++f)
+          if (!inNote(f))
+            pitch[static_cast<size_t>(f - from)] = 0.0f;
+        return pitch;
+      };
+      const auto around = sungInNotes(start - 12, end + 12);
+      PitchUndoManager undo;
+      NoteSplitter splitter;
+      splitter.setProject(&project);
+      splitter.setUndoManager(&undo);
+      splitter.splitNoteAtFrame(note, split);
+      const float s1 = maxDiff(around, sungInNotes(start - 12, end + 12));
+      splitter.mergeNotes(noteAt(start), noteAt(split));
+      const float m1 = maxDiff(around, sungInNotes(start - 12, end + 12));
+      undo.undo();
+      undo.undo();
+      const float u1 = maxDiff(around, sungInNotes(start - 12, end + 12));
+      if (s1 > maxSplit) { maxSplit = s1; worstSplit = start; }
+      if (m1 > maxMerge) { maxMerge = m1; worstMerge = start; }
+      if (u1 > maxUndo) { maxUndo = u1; worstUndo = start; }
+    }
+    std::printf("untouched split/merge over %d notes: split %.4f (at %d), merge %.4f (at %d), undo %.4f (at %d)\n",
+                tried, maxSplit, worstSplit, maxMerge, worstMerge, maxUndo, worstUndo);
+    if (maxSplit > 0.002f || maxMerge > 0.02f || maxUndo > 0.002f)
+      ++failures;
+  }
   size_t next = 0;
   for (const auto &scenario : scenarios)
   {
@@ -772,6 +830,61 @@ void mergeCheck(Project &project)
       if (splitDiff > 0.002f || mergeDiff > 0.002f)
         ++failures;
     }
+  }
+  // Split a note and merge its right half with the next detected note, again
+  // and again: every untouched note must keep singing the recording.
+  {
+    const auto recorded = [&](int f)
+    { return freqToMidi(audio.denseF0[static_cast<size_t>(f)]); };
+    Note *left = nullptr, *next = nullptr;
+    for (auto &n : project.getNotes())
+    {
+      if (n.isRest() || !n.isPitchUntouched() || n.getDurationFrames() < 16 ||
+          n.getStartFrame() < 40)
+        continue;
+      for (auto &m : project.getNotes())
+        if (!m.isRest() && m.getStartFrame() == n.getEndFrame() &&
+            m.getSrcStartFrame() == n.getSrcEndFrame() && m.isPitchUntouched() &&
+            std::abs(m.getMidiNote() - n.getMidiNote()) > 2.0f)
+          next = &m;
+      if (next)
+      {
+        left = &n;
+        break;
+      }
+      next = nullptr;
+    }
+    if (left && next)
+    {
+      const int s0 = left->getStartFrame(), boundary = next->getStartFrame(),
+                e0 = next->getEndFrame(), cut = (s0 + boundary) / 2;
+      NoteSplitter splitter;
+      splitter.setProject(&project);
+      float worst = 0.0f;
+      for (int round = 0; round < 3; ++round)
+      {
+        splitter.splitNoteAtFrame(noteAt(s0), cut);
+        splitter.mergeNotes(noteAt(cut), noteAt(boundary));
+        for (int f = s0 - 12; f < e0 + 12; ++f)
+        {
+          const auto i = static_cast<size_t>(f);
+          bool untouchedNote = false;
+          for (const auto &n : project.getNotes())
+            if (!n.isRest() && n.getStartFrame() <= f && n.getEndFrame() > f)
+              untouchedNote = n.isPitchUntouched();
+          if (untouchedNote && audio.denseF0[i] > 0.0f)
+            worst = std::max(worst, std::abs(audio.basePitch[i] + audio.deltaPitch[i] - recorded(f)));
+        }
+        // Back to how it was cut, for the next round.
+        splitter.splitNoteAtFrame(noteAt(cut), boundary);
+        splitter.mergeNotes(noteAt(s0), noteAt(cut));
+      }
+      std::printf("cross merge rounds: untouched notes off the recording by %.4f\n", worst);
+      if (worst > 0.002f)
+        ++failures;
+    }
+    else
+      std::printf("cross merge rounds: no adjacent pair found\n");
   }
   std::printf("merge check: %d failure(s)\n", failures);
 }
