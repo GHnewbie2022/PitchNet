@@ -27,7 +27,10 @@ const OrtApiBase *getApiBase()
     return nullptr;
   }
 
-  const auto plugInBinary = juce::File(imageInfo.dli_fname);
+  // dladdr returns the path as UTF-8; juce::File(const char*) would read it
+  // as Latin-1 and break any non-ASCII path.
+  const auto plugInBinary =
+      juce::File(juce::String::fromUTF8(imageInfo.dli_fname));
   const auto runtimePath = plugInBinary.getParentDirectory()
                                .getParentDirectory()
                                .getChildFile("Frameworks")
