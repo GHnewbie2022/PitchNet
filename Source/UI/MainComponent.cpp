@@ -637,43 +637,6 @@ MainComponent::MainComponent(bool enableAudioDevice)
       project->setTimelineDisplayMode(TimelineDisplayMode::Time);
 
   }
-  juce::Component::SafePointer<MainComponent> safeThis(this);
-  resampledLoopAudition = std::make_unique<ResampledLoopAudition>(
-      [safeThis](juce::AudioBuffer<float> preview) mutable
-      {
-        if (!safeThis || preview.getNumSamples() == 0 ||
-            !safeThis->noteDragAuditionActive)
-          return;
-        double auditionSampleRate = SAMPLE_RATE;
-        if (auto *project = safeThis->getProject())
-          auditionSampleRate = project->getAudioData().sampleRate > 0
-              ? static_cast<double>(project->getAudioData().sampleRate)
-              : auditionSampleRate;
-        if (safeThis->isPluginMode())
-        {
-          // Start the host/ARA preview using the established transport path.
-          // The callback below then replaces that path's source with the
-          // resampled audition buffer.
-          if (!safeThis->noteDragAuditionBackendPreviewStarted)
-          {
-            if (auto *project = safeThis->getProject(); project &&
-                safeThis->onRequestBackendPreview)
-            {
-              safeThis->onRequestBackendPreview(
-                  *project, safeThis->noteDragAuditionStartFrame,
-                  safeThis->noteDragAuditionEndFrame);
-            }
-            safeThis->noteDragAuditionBackendPreviewStarted = true;
-          }
-          if (safeThis->onRequestDragAudition)
-            safeThis->onRequestDragAudition(preview, auditionSampleRate);
-          return;
-        }
-        if (auto *engine = safeThis->editorController->getAudioEngine())
-        {
-          engine->beginAuditionLoop(preview, auditionSampleRate);
-        }
-      });
   if (!isPluginMode())
   {
     ownedUndoManager = std::make_unique<PitchUndoManager>(100);
@@ -1588,7 +1551,6 @@ MainComponent::~MainComponent()
   updateRequest.reset();
 
   noteDragAuditionActive = false;
-  resampledLoopAudition.reset();
 #if JUCE_MAC
   if (!isPluginMode() && menuHandler)
     juce::MenuBarModel::setMacMainMenu(nullptr);
@@ -2912,17 +2874,13 @@ void MainComponent::auditionDraggedNote(const Note &note)
 {
   if (!dragAuditionEnabled || note.isRest())
     return;
-  if (isPluginMode())
-  {
-    auditionDraggedNoteResampled(note);
-    return;
-  }
 
-  // Standalone: play the note itself, whole, as the synthesizer renders it at
-  // the pitch it is dragged to - what playback will sound like - looping
-  // while the mouse is held.
+  // Play the note itself, whole, as the synthesizer renders it at the pitch
+  // it is dragged to - what playback will sound like - looping while the
+  // mouse is held. The plugin does the same; only the output differs (the
+  // host's preview path instead of the app's audio engine).
   auto *engine = editorController ? editorController->getAudioEngine() : nullptr;
-  if (!engine || !getProject())
+  if (!getProject() || !editorController || (!isPluginMode() && !engine))
     return;
 
   const float midi = note.getAdjustedMidiNote();
@@ -2931,8 +2889,8 @@ void MainComponent::auditionDraggedNote(const Note &note)
     noteDragAuditionActive = true;
     noteDragAuditionBackendPreviewStarted = false;
     noteDragAuditionPending = false;
-    noteDragAuditionWasPlaying = engine->isPlaying();
-    noteDragAuditionReturnTime = engine->getPosition();
+    noteDragAuditionWasPlaying = engine != nullptr && engine->isPlaying();
+    noteDragAuditionReturnTime = engine != nullptr ? engine->getPosition() : 0.0;
     dragRenderTouched = false;
     resynthRequestedDuringDrag = false;
     noteDragAuditionStartFrame = note.getStartFrame();
@@ -3038,7 +2996,7 @@ void MainComponent::playDraggedNoteFromComposite(bool keepPosition)
 {
   auto *project = getProject();
   auto *engine = editorController ? editorController->getAudioEngine() : nullptr;
-  if (!project || !engine)
+  if (!project || (!isPluginMode() && !engine))
     return;
 
   const auto &audioData = project->getAudioData();
@@ -3071,68 +3029,21 @@ void MainComponent::playDraggedNoteFromComposite(bool keepPosition)
     clip.applyGainRamp(0, noteSamples - fade, fade, 1.0f, 0.0f);
   }
   // The loop join falls inside the silence: no crossfade needed.
+  if (isPluginMode())
+  {
+    // Start the host's preview signal flow once; each take then replaces
+    // its source.
+    if (!noteDragAuditionBackendPreviewStarted && onRequestBackendPreview)
+    {
+      onRequestBackendPreview(*project, noteDragAuditionStartFrame,
+                              noteDragAuditionEndFrame);
+      noteDragAuditionBackendPreviewStarted = true;
+    }
+    if (onRequestDragAudition)
+      onRequestDragAudition(clip, sampleRate, keepPosition, 1);
+    return;
+  }
   engine->beginAuditionLoop(clip, sampleRate, keepPosition, 1);
-}
-
-void MainComponent::auditionDraggedNoteResampled(const Note &note)
-{
-  if (!dragAuditionEnabled || !resampledLoopAudition || note.isRest())
-    return;
-
-  std::vector<float> source;
-  if (auto *project = getProject())
-  {
-    // Use the same timeline audio that the normal note-preview signal path
-    // reads, rather than depending on optional/stale per-note clip caches.
-    const auto &audioData = project->getAudioData();
-    const auto &waveform = audioData.originalWaveform.getNumSamples() > 0
-                               ? audioData.originalWaveform
-                               : audioData.waveform;
-    const int startFrame = note.getSrcStartFrame() >= 0
-                               ? note.getSrcStartFrame()
-                               : note.getStartFrame();
-    const int endFrame = note.getSrcEndFrame() > startFrame
-                             ? note.getSrcEndFrame()
-                             : note.getEndFrame();
-    const int startSample = juce::jlimit(0, waveform.getNumSamples(),
-                                         startFrame * HOP_SIZE);
-    const int endSample = juce::jlimit(startSample, waveform.getNumSamples(),
-                                       endFrame * HOP_SIZE);
-    if (endSample > startSample)
-    {
-      const auto *samples = waveform.getReadPointer(0);
-      source.assign(samples + startSample, samples + endSample);
-    }
-  }
-
-  if (source.empty())
-    return;
-
-  if (!noteDragAuditionActive)
-  {
-    noteDragAuditionActive = true;
-    noteDragAuditionBackendPreviewStarted = false;
-    if (!isPluginMode())
-    {
-      auto *engine = editorController ? editorController->getAudioEngine() : nullptr;
-      if (!engine)
-      {
-        noteDragAuditionActive = false;
-        return;
-      }
-      noteDragAuditionWasPlaying = engine->isPlaying();
-      noteDragAuditionReturnTime = engine->getPosition();
-    }
-  }
-
-  const float shift = note.getAdjustedMidiNote() - note.getOriginalMidiNote();
-  noteDragAuditionStartFrame = note.getStartFrame();
-  noteDragAuditionEndFrame = note.getEndFrame();
-  pendingNoteDragAuditionSource = std::move(source);
-  pendingNoteDragAuditionShift = shift;
-  pendingNoteDragAuditionMidiNote = note.getAdjustedMidiNote();
-  noteDragAuditionLastInputMs = juce::Time::currentTimeMillis();
-  noteDragAuditionPending = true;
 }
 
 void MainComponent::dispatchPendingDragAudition()
@@ -3140,34 +3051,18 @@ void MainComponent::dispatchPendingDragAudition()
   if (!noteDragAuditionActive || !noteDragAuditionPending)
     return;
 
-  if (!isPluginMode())
-  {
-    // One render at a time, and never on top of an edit's own render.
-    if (dragRenderInFlight)
-      return;
-    if (juce::Time::currentTimeMillis() - noteDragAuditionLastInputMs <
-        noteDragAuditionDebounceMs)
-      return;
-    auto *synth =
-        editorController ? editorController->getIncrementalSynth() : nullptr;
-    if (!synth || synth->isSynthesizing())
-      return;
-    noteDragAuditionPending = false;
-    startDragRender();
+  // One render at a time, and never on top of an edit's own render.
+  if (dragRenderInFlight)
     return;
-  }
-
-  if (!resampledLoopAudition)
+  if (juce::Time::currentTimeMillis() - noteDragAuditionLastInputMs <
+      noteDragAuditionDebounceMs)
     return;
-
-  const auto now = juce::Time::currentTimeMillis();
-  if (now - noteDragAuditionLastInputMs < noteDragAuditionDebounceMs)
+  auto *synth =
+      editorController ? editorController->getIncrementalSynth() : nullptr;
+  if (!synth || synth->isSynthesizing())
     return;
-
   noteDragAuditionPending = false;
-  resampledLoopAudition->request(std::move(pendingNoteDragAuditionSource),
-                                 pendingNoteDragAuditionShift,
-                                 pendingNoteDragAuditionMidiNote);
+  startDragRender();
 }
 
 void MainComponent::finishDraggedNoteAudition()
@@ -3175,21 +3070,15 @@ void MainComponent::finishDraggedNoteAudition()
   if (!noteDragAuditionActive)
     return;
 
-  if (resampledLoopAudition)
-    resampledLoopAudition->cancel();
   noteDragAuditionPending = false;
-  pendingNoteDragAuditionSource.clear();
 
   if (isPluginMode())
   {
     if (onStopDragAudition)
       onStopDragAudition();
-    noteDragAuditionActive = false;
-    noteDragAuditionBackendPreviewStarted = false;
-    return;
   }
-
-  if (auto *engine = editorController ? editorController->getAudioEngine() : nullptr)
+  else if (auto *engine = editorController ? editorController->getAudioEngine()
+                                           : nullptr)
   {
     engine->endAuditionLoop();
     if (noteDragAuditionWasPlaying)
@@ -3253,7 +3142,7 @@ void MainComponent::auditionPianoKey(int midiNote)
     if (auto *project = getProject(); project && onRequestBackendPreview)
       onRequestBackendPreview(*project, 0, 1);
     if (onRequestDragAudition)
-      onRequestDragAudition(tone, sampleRate);
+      onRequestDragAudition(tone, sampleRate, false, 8192);
   }
   else if (auto *engine = editorController ? editorController->getAudioEngine()
                                             : nullptr)

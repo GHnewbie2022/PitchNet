@@ -547,8 +547,10 @@ void PitchNetAudioProcessorEditor::setupARAMode() {
       [pitchDocController]() { pitchDocController->stopPreview(); });
   mainView->setOnRequestDragAudition(
       [pitchDocController](const juce::AudioBuffer<float> &buffer,
-                           double sampleRate) {
-        pitchDocController->startPreviewAudio(buffer, sampleRate);
+                           double sampleRate, bool keepPosition,
+                           int loopOverlapSamples) {
+        pitchDocController->startPreviewAudio(buffer, sampleRate, keepPosition,
+                                              loopOverlapSamples);
       });
   mainView->setOnStopDragAudition(
       [pitchDocController]() { pitchDocController->stopPreview(); });
@@ -1509,8 +1511,10 @@ void PitchNetAudioProcessorEditor::setupNonARAMode() {
   mainView->setOnStopBackendPreview(
       [this]() { audioProcessor.stopPluginPreview(); });
   mainView->setOnRequestDragAudition(
-      [this](const juce::AudioBuffer<float> &buffer, double sampleRate) {
-        audioProcessor.startPluginAudition(buffer, sampleRate);
+      [this](const juce::AudioBuffer<float> &buffer, double sampleRate,
+             bool keepPosition, int loopOverlapSamples) {
+        audioProcessor.startPluginAudition(buffer, sampleRate, keepPosition,
+                                           loopOverlapSamples);
       });
   mainView->setOnStopDragAudition(
       [this]() { audioProcessor.stopPluginAudition(); });

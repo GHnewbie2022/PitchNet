@@ -134,6 +134,15 @@ namespace PlatformPaths
         if (probe.exists())
             return probe;
 
+        // The bundle's own models (<bundle>/Contents/Resources/models): a
+        // development plugin carries the models the shared folder of an
+        // official install lacks. getModelsDirectory() prefers that shared
+        // folder whenever it exists, and the walk below starts above the
+        // bundle, so neither looks inside it.
+        auto bundled = getDefaultLocalResourcesModelsDirectory().getChildFile(fileName);
+        if (bundled.exists())
+            return bundled;
+
         // Development fallback: <repo>/Resources/models/
         auto cwdProbe = juce::File::getCurrentWorkingDirectory()
                             .getChildFile("Resources/models")

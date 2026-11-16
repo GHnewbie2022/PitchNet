@@ -232,7 +232,7 @@ html { scroll-behavior: smooth; }
         <div><dt>相鄰音符的判斷</dt><dd>合併音符、剪刀工具的合併線、音高曲線相連，這 3 個功能拿掉「同一個區段」的條件，只看兩個音符是否緊貼。<span class="why">區段由音量門檻決定，跟畫面上的音符排列無關。例如把第一句尾音拉到貼上第二句的短音，兩個音符在畫面上緊貼，卻分屬不同區段，音高曲線會斷開、也不能合併。</span></dd></div>
         <div><dt>點音符試聽</dt><dd>比照 Cubase：只播被點的那一個音符，從頭播到尾，播的是編輯後的實際結果。<span class="why">取代原本「從前一個音符播到後一個音符」（原本的範圍是同一個區段內的前後音符）。不採用 Melodyne 那種按住時循環播放一小段的方式。</span></dd></div>
         <div><dt>試聽的觸發</dt><dd>在音符上按下滑鼠就播放，取代原本要先等試聽按鈕出現再點的方式。<span class="why">播放會一路播到音符結尾，跟滑鼠何時放開無關。PitchNet 在選取模式下，按住音符本來就會開始改音高；按下後如果拖曳，就變成改音高，試聽方式見下一項。</span></dd></div>
-        <div><dt>拖音高時的試聽</dt><dd>改成播放聲碼器合成的實際結果，一樣只播那一個音符、完整播放；取代原本把原始錄音變速移調、循環播放的近似效果。<span class="why">PitchNet 目前只在放開滑鼠時才重新合成（<code>onPitchEditFinished</code>），拖曳中聽到的都是近似效果。它的合成本來就是在背景執行：新的請求會中斷還沒算完的那一次，改算最新的音高（<code>EditorController</code> 的 pendingRerun）。所以拖曳中可以一再送出合成請求，只會算到最新的音高；畫音高曲線的工具已經是這樣邊畫邊合成。合成需要時間，音高改變後要等合成完成才會聽到新版本；這段延遲有多長，文件沒有寫，要建置後實測。</span></dd></div>
+        <div><dt>拖音高時的試聽</dt><dd>播放聲碼器合成的實際結果：整顆音符循環播放，每輪之間停 0.5 秒；拖到新音高時重算這顆音符，從原播放位置接著播並交叉淡化。獨立版與外掛（ARA）行為相同。取代原本把原始錄音變速移調、循環播放的近似效果。<span class="why">循環播放由使用者確認（2026-11-16），原本這裡寫「只播一次」。PitchNet 目前只在放開滑鼠時才重新合成（<code>onPitchEditFinished</code>），拖曳中聽到的都是近似效果。它的合成本來就是在背景執行：新的請求會中斷還沒算完的那一次，改算最新的音高（<code>EditorController</code> 的 pendingRerun）。所以拖曳中可以一再送出合成請求，只會算到最新的音高；畫音高曲線的工具已經是這樣邊畫邊合成。合成需要時間，音高改變後要等合成完成才會聽到新版本；這段延遲有多長，文件沒有寫，要建置後實測。</span></dd></div>
         <div><dt>切分、黏合、刪除、拉伸後的音高</dt><dd>比照 VariAudio：先把所有音符暫時切回未編輯狀態，在未編輯的音高上計算音符的分析中心（<code>originalMidiNote</code>）、分析曲線（<code>originalDeltaPitch</code>）和邊界補償，再把各音符的移調和音高工具放回去。黏合後的音符回到分析音高；被切開的音符兩半保留原本的移調。<span class="why">原本直接在含移調的音高上計算，已移調片段或鄰居的移調會被寫進分析曲線，黏合或刪除後白線出現多個半音的斷層（測試素材女友感台本第二版，Note 98–100）。只帶已烘焙曲線的鄰居，回到編輯狀態後再補償一次，維持原本唱的音高；只移調的鄰居，邊界附近跟著新的基準音高平滑過渡。實作在 <code>NoteSplitter.cpp</code> 的 <code>UneditedSpace</code>。</span></dd></div>
         <div><dt>未編輯音符的音高</dt><dd>依「所有音符都未編輯」時的基準音高貼回錄音：鄰居沒移調時完全等於錄音；鄰居移調時，邊界隨基準音高平滑過渡到鄰居。拖音高、Reset、拉邊界、切分、黏合、刪除、伸縮後都照這個標準。<span class="why">使用者選擇平滑過渡（2026-11-16）。原本貼回時用含鄰居移調的基準，貼回結果會隨當下鄰居狀態改變：同一顆音符拖音高時平滑、Reset 後卻直接跳過去，而且拖音高再 Reset 鄰居、一路 undo 後留下尖角（測試 0.78 半音）。改成未編輯基準後，未編輯音符的曲線只跟錄音有關。實作在 <code>PitchCurveProcessor::refitUntouchedCurves</code>。</span></dd></div>
         <div><dt>Restore All Edits 的順序</dt><dd>先還原音符切法，再還原時間伸縮，最後把未編輯的音符貼回錄音音高。<span class="why">先貼回錄音再還原時間伸縮的話，音符的時間配置會在貼合之後改變，邊界留下白線尖角。重切音符時對鄰居曲線做的補償也記錄進 undo。</span></dd></div>
@@ -394,6 +394,9 @@ html { scroll-behavior: smooth; }
             <tr><td style="white-space:nowrap">檔案</td><td>雙擊 .pitchnet 開啟；存檔記住畫面位置與 playhead；修正開專案時調性按鈕讀到已刪除的舊專案而閃退</td><td class="num" style="white-space:normal">00dc1d2 3b40c65 748e479</td></tr>
             <tr><td style="white-space:nowrap">介面</td><td>提高縮放上限、Blob Height 預設最大、縮放滑桿 Alt＋左鍵回到中間、修正最大倍率卡頓；右鍵選單改成直式工具列表</td><td class="num" style="white-space:normal">6489ac1 b8fc14e 6ba5505 cdaa354</td></tr>
             <tr><td style="white-space:nowrap">音符編輯</td><td>相鄰音符的判斷完成：白線連接、剪刀工具的黏合線與高亮，拿掉「同一個區段」的條件，只看兩顆是否緊貼（跟黏合功能一致）；把一句尾音拉過靜音貼到下一句時，白線不再斷開、黏合線會出現</td><td class="num" style="white-space:normal">354572b</td></tr>
+            <tr><td style="white-space:nowrap">試聽</td><td>外掛（ARA）拖音高試聽改成跟獨立版同一套流程（合成結果、循環、間隔 0.5 秒、接續位置）；移除舊的變速近似試聽 <code>ResampledLoopAudition</code></td><td class="num" style="white-space:normal">本次</td></tr>
+            <tr><td style="white-space:nowrap">試聽</td><td>外掛試聽、單點預覽、Context Audition 時有時無：Cubase 同時跑 2 個編輯器渲染器，只有被指派區域的那個會出聲，原本先搶先播；改成被指派區域的渲染器優先</td><td class="num" style="white-space:normal">本次</td></tr>
+            <tr><td style="white-space:nowrap">建置</td><td>外掛讀不到 fork 新增的模型（swift_f0、rmvpe）：找模型時加上外掛自己的 Contents/Resources/models；Dev 版建置自動放入模型、簽章並安裝到 ~/Library/Audio/Plug-Ins/VST3</td><td class="num" style="white-space:normal">本次</td></tr>
             <tr><td style="white-space:nowrap">修正</td><td>跨過切開或黏回音符連續復原時閃退</td><td class="num" style="white-space:normal">6cfa79b</td></tr>
             <tr><td style="white-space:nowrap">建置</td><td>本機編譯改用固定憑證簽章，重開不再重問權限</td><td class="num" style="white-space:normal">c45bce1</td></tr>
           </tbody>
@@ -405,7 +408,8 @@ html { scroll-behavior: smooth; }
         <li>Q7 氣泡音偵測（程式碼裡還沒有相關實作）。</li>
         <li>音高自動修正：自動折回與 Viterbi 解碼。</li>
         <li>Q5 取樣率：外掛播放仍用 <code>LagrangeInterpolator</code>（<code>ARADocumentController.cpp</code>）。</li>
-        <li>拖音高時的試聽：獨立版已改播合成結果，但目前是循環播放，跟第 2 節「一樣只播那一個音符、完整播放」不同；外掛模式還沒改。</li>
+        <li>外掛與獨立版全面比對：所有規則與行為都要一致（獨立版只是開發測試用）。<code>isPluginMode()</code> 分支約 85 處，外掛另有自己的 undo、渲染、存檔路徑，尚未逐一檢查。</li>
+        <li>非 ARA 的 insert 外掛：試聽播放器有同樣的選項，但渲染器規則與實際播放沒有在宿主裡測過（目前只用 ARA）。</li>
       </ul>
 
       <h3>已知風險</h3>

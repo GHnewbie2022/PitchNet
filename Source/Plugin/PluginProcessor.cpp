@@ -941,7 +941,8 @@ void PitchNetAudioProcessor::stopPluginPreview() {
 }
 
 void PitchNetAudioProcessor::startPluginAudition(
-    const juce::AudioBuffer<float> &buffer, double sampleRate) {
+    const juce::AudioBuffer<float> &buffer, double sampleRate,
+    bool keepPosition, int loopOverlapSamples) {
   if (buffer.getNumSamples() <= 0)
     return;
 
@@ -985,6 +986,10 @@ void PitchNetAudioProcessor::startPluginAudition(
     }
   }
 
+  pluginAuditionLoopOverlap.store(std::max(
+      1, static_cast<int>(std::lround(std::max(1, loopOverlapSamples) *
+                                      targetRate / sourceRate))));
+  pluginAuditionKeepPosition.store(keepPosition);
   std::atomic_store(&pluginAuditionBuffer, std::move(preview));
   pluginPreview.restart.store(true);
   pluginPreview.active.store(true);
@@ -1011,10 +1016,18 @@ bool PitchNetAudioProcessor::processPluginPreview(
   if (auto audition = std::atomic_load(&pluginAuditionBuffer)) {
     buffer.clear();
     if (audition != activePluginAuditionBuffer) {
+      const bool keep = activePluginAuditionBuffer != nullptr &&
+                        pluginAuditionKeepPosition.load();
       previousPluginAuditionBuffer = activePluginAuditionBuffer;
       previousPluginAuditionCursor = pluginAuditionCursor;
+      previousPluginAuditionOverlap = activePluginAuditionOverlap;
+      activePluginAuditionOverlap = pluginAuditionLoopOverlap.load();
       activePluginAuditionBuffer = audition;
-      pluginAuditionCursor = 0;
+      // A new take of the same note carries on where the old one was.
+      pluginAuditionCursor =
+          keep ? juce::jlimit<juce::int64>(0, audition->getNumSamples() - 1,
+                                           pluginAuditionCursor)
+               : 0;
       pluginAuditionTransitionTotal = 4096;
       pluginAuditionTransitionRemaining =
           previousPluginAuditionBuffer ? pluginAuditionTransitionTotal : 0;
@@ -1032,10 +1045,16 @@ bool PitchNetAudioProcessor::processPluginPreview(
                              ? numChannels
                              : std::min(numChannels, sourceChannels);
 
-    auto renderLoopSample = [](const juce::AudioBuffer<float> &source,
-                               juce::int64 cursor, int channel) {
+    const auto overlapFor = [this](const juce::AudioBuffer<float> &source) {
+      return &source == previousPluginAuditionBuffer.get()
+                 ? previousPluginAuditionOverlap
+                 : activePluginAuditionOverlap;
+    };
+    auto renderLoopSample = [overlapFor](const juce::AudioBuffer<float> &source,
+                                         juce::int64 cursor, int channel) {
       const int length = source.getNumSamples();
-      const int overlap = std::min(8192, std::max(1, length / 2));
+      const int overlap = std::min(std::max(1, overlapFor(source)),
+                                   std::max(1, length / 2));
       const int overlapStart = length - overlap;
       const int position = static_cast<int>(cursor);
       float value = source.getSample(channel, position);
@@ -1047,10 +1066,11 @@ bool PitchNetAudioProcessor::processPluginPreview(
       }
       return value;
     };
-    auto advanceLoopCursor = [](const juce::AudioBuffer<float> &source,
-                                juce::int64 &cursor) {
+    auto advanceLoopCursor = [overlapFor](const juce::AudioBuffer<float> &source,
+                                          juce::int64 &cursor) {
       const int length = source.getNumSamples();
-      const int overlap = std::min(8192, std::max(1, length / 2));
+      const int overlap = std::min(std::max(1, overlapFor(source)),
+                                   std::max(1, length / 2));
       if (++cursor >= length)
         cursor -= length - overlap;
     };

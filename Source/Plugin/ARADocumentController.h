@@ -108,9 +108,19 @@ struct AraPreviewState {
   std::atomic<std::uint32_t> previewGeneration{0};
   std::atomic<juce::ARAPlaybackRegion *> previewedRegion{nullptr};
   std::atomic<PitchNetEditorRenderer *> previewClaimedRenderer{nullptr};
+  // A host can run several editor renderers at once (Cubase runs two), and
+  // only one reaches the speakers: the one the host assigned regions or
+  // region sequences to. Previews go to that one; a renderer with nothing
+  // assigned plays only while no assigned renderer has claimed the preview.
+  std::atomic<bool> previewClaimedHasAssignment{false};
   std::shared_ptr<juce::AudioBuffer<float>> auditionBuffer;
   std::atomic<double> editorRendererSampleRate{0.0};
   std::atomic<bool> auditionActive{false};
+  // Set with each audition buffer (startPreviewAudio): a new take of the same
+  // audio carries on where the old one was instead of starting over, and the
+  // loop join crossfades this many samples (as AudioEngine::beginAuditionLoop).
+  std::atomic<bool> auditionKeepPosition{false};
+  std::atomic<int> auditionLoopOverlap{8192};
 };
 
 /**
@@ -301,6 +311,11 @@ private:
   std::map<juce::ARAAudioSource *, std::unique_ptr<juce::ARAAudioSourceReader>>
       readers;
   std::set<juce::ARARegionSequence *> listenedRegionSequences;
+  // Region sequences the host assigned, readable from the render thread.
+  std::atomic<int> assignedSequenceCount{0};
+  // Claims the preview for this renderer when it should play it (see
+  // AraPreviewState::previewClaimedHasAssignment); false when another does.
+  bool claimPreview(AraPreviewState &state);
   AraAsyncConfigurationCallback asyncConfigCallback{[this] { configure(); }};
   // Offline rendering intentionally starts with no readers and does not run on
   // a realtime thread, so it may still create one on demand mid-render.
@@ -310,6 +325,8 @@ private:
   juce::Range<juce::int64> previewLoopRange;
   juce::int64 previewLoopPosition = 0;
   juce::int64 previousPreviewLoopPosition = 0;
+  int previewLoopOverlap = 8192;
+  int previousPreviewLoopOverlap = 8192;
   int previewTransitionRemaining = 0;
   int previewTransitionTotal = 0;
   std::uint32_t lastPreviewGeneration = 0;
@@ -444,7 +461,8 @@ public:
   void startPreviewRange(double previewStartInModificationSeconds,
                          double previewEndInModificationSeconds);
   void startPreviewAudio(const juce::AudioBuffer<float> &buffer,
-                         double sampleRate);
+                         double sampleRate, bool keepPosition = false,
+                         int loopOverlapSamples = 8192);
   void stopPreview();
   AraPreviewState &getPreviewState() { return previewState; }
   const AraPreviewState &getPreviewState() const { return previewState; }

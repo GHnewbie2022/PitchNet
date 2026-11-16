@@ -271,7 +271,8 @@ public:
   void startPluginPreview(double startSeconds, double endSeconds);
   void stopPluginPreview();
   void startPluginAudition(const juce::AudioBuffer<float> &buffer,
-                           double sampleRate);
+                           double sampleRate, bool keepPosition = false,
+                           int loopOverlapSamples = 8192);
   void stopPluginAudition();
 
   // Non-ARA mode: capture control
@@ -571,6 +572,11 @@ private:
   juce::int64 previousPluginAuditionCursor = 0;
   int pluginAuditionTransitionRemaining = 0;
   int pluginAuditionTransitionTotal = 0;
+  // As AraPreviewState: carry the position into a new take, loop overlap.
+  std::atomic<bool> pluginAuditionKeepPosition{false};
+  std::atomic<int> pluginAuditionLoopOverlap{8192};
+  int activePluginAuditionOverlap = 8192;
+  int previousPluginAuditionOverlap = 8192;
 
   // Plugin state version for forward/backward compatibility
   static constexpr int PLUGIN_STATE_VERSION = 1;

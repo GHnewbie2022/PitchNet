@@ -1024,6 +1024,24 @@ else()
     message(STATUS "Release runtime resources will be loaded from the platform resource directory")
 endif()
 
+# The development plugin reads its models from the shared folder the
+# official PitchNet installer fills, which lacks the models this fork added
+# (the three-detector pitch ensemble). Bundle those into the plugin, where
+# PlatformPaths::getModelFile() finds them next (<bundle>/Contents/Resources/
+# models), before the bundle is signed below.
+if(APPLE AND PITCHNET_DEV_BUILD)
+    set(PITCHNET_DEV_PLUGIN_MODELS swift_f0.onnx rmvpe.onnx)
+    foreach(_pn_model ${PITCHNET_DEV_PLUGIN_MODELS})
+        add_custom_command(TARGET PitchNetPlugin_VST3 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_DIR:PitchNetPlugin_VST3>/Contents/Resources/models"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/Resources/models/${_pn_model}"
+                "$<TARGET_BUNDLE_DIR:PitchNetPlugin_VST3>/Contents/Resources/models/${_pn_model}"
+            COMMENT "Bundling ${_pn_model} into the development VST3")
+    endforeach()
+endif()
+
 # Re-sign bundles on macOS after all resources are copied.
 #
 # With a stable code signing identity the bundle's designated requirement is
@@ -1044,6 +1062,23 @@ if(APPLE)
     pitchnet_resign(PitchNet PitchNet)
     pitchnet_resign(PitchNetPlugin_VST3 VST3)
     pitchnet_resign(PitchNetPlugin_AU AU)
+    # Install the signed development VST3 where Cubase scans for it. The old
+    # copy is removed first, so a host that has it loaded keeps reading the
+    # old files instead of having them overwritten under it.
+    if(PITCHNET_DEV_BUILD)
+        option(PITCHNET_INSTALL_DEV_PLUGIN
+            "Copy the development VST3 to ~/Library/Audio/Plug-Ins/VST3 after each build" ON)
+        if(PITCHNET_INSTALL_DEV_PLUGIN)
+            set(_pn_vst3_install_dir "$ENV{HOME}/Library/Audio/Plug-Ins/VST3")
+            add_custom_command(TARGET PitchNetPlugin_VST3 POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${_pn_vst3_install_dir}"
+                COMMAND ${CMAKE_COMMAND} -E rm -rf
+                    "${_pn_vst3_install_dir}/$<TARGET_BUNDLE_DIR_NAME:PitchNetPlugin_VST3>"
+                COMMAND ditto "$<TARGET_BUNDLE_DIR:PitchNetPlugin_VST3>"
+                    "${_pn_vst3_install_dir}/$<TARGET_BUNDLE_DIR_NAME:PitchNetPlugin_VST3>"
+                COMMENT "Installing the development VST3 to ${_pn_vst3_install_dir}")
+        endif()
+    endif()
     if(TARGET PitchNetPlugin_AAX)
         pitchnet_resign(PitchNetPlugin_AAX AAX)
     endif()

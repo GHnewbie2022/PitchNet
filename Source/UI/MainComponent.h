@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../Audio/EditorController.h"
-#include "../Audio/ResampledLoopAudition.h"
 #include "IMainView.h"
 #include "../Audio/IO/AudioFileManager.h"
 #include "../JuceHeader.h"
@@ -172,7 +171,7 @@ public:
     onStopBackendPreview = std::move(callback);
   }
   void setOnRequestDragAudition(
-      std::function<void(const juce::AudioBuffer<float> &, double)> callback) override {
+      std::function<void(const juce::AudioBuffer<float> &, double, bool, int)> callback) override {
     onRequestDragAudition = std::move(callback);
   }
   void setOnStopDragAudition(std::function<void()> callback) override {
@@ -261,7 +260,7 @@ public:
   std::function<void(const Project &)> onRequestBackendRender;
   std::function<void(const Project &, int, int)> onRequestBackendPreview;
   std::function<void()> onStopBackendPreview;
-  std::function<void(const juce::AudioBuffer<float> &, double)> onRequestDragAudition;
+  std::function<void(const juce::AudioBuffer<float> &, double, bool, int)> onRequestDragAudition;
   std::function<void()> onStopDragAudition;
 
   // Plugin mode - request host transport control (optional; only works if host
@@ -313,7 +312,6 @@ private:
   void finishDraggedNoteAudition();
   void dispatchPendingDragAudition();
   // Plugin mode: a short resampled loop of the note's recording.
-  void auditionDraggedNoteResampled(const Note &note);
   // Standalone: the dragged note rendered by the real synthesizer at the
   // pitch it is dragged to, looped whole.
   void startDragRender();
@@ -393,7 +391,6 @@ private:
   double previewRegionStartTime = 0.0;
   double previewRegionWallClockStartMs = 0.0;
   bool previewRegionWasProjectPlaying = false;
-  std::unique_ptr<ResampledLoopAudition> resampledLoopAudition;
   bool dragAuditionEnabled = false;
   bool noteDragAuditionActive = false;
   bool noteDragAuditionBackendPreviewStarted = false;
@@ -403,9 +400,7 @@ private:
   int noteDragAuditionStartFrame = 0;
   int noteDragAuditionEndFrame = 0;
   juce::int64 noteDragAuditionLastInputMs = 0;
-  float pendingNoteDragAuditionShift = 0.0f;
   float pendingNoteDragAuditionMidiNote = 60.0f;
-  std::vector<float> pendingNoteDragAuditionSource;
   static constexpr juce::int64 noteDragAuditionDebounceMs = 20;
   // Standalone drag audition through the real synthesizer.
   bool dragRenderInFlight = false;
