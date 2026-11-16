@@ -293,6 +293,59 @@ namespace PitchCurveProcessor
         return one;
     }
 
+    void resetNoteToUnedited(Note& n)
+    {
+        n.setMidiNote(n.getOriginalMidiNote());
+        n.setPitchOffset(0.0f);
+        n.setTiltLeft(0.0f);
+        n.setTiltRight(0.0f);
+        n.setVibrato(1.0f);
+        n.setPitchDrift(1.0f);
+        n.setSmoothLeftFrames(0);
+        n.setSmoothRightFrames(0);
+        n.setDeltaScale(1.0f);
+        n.setDeltaOffset(0.0f);
+        n.setFrozenTilt({});
+        n.setBakedDeltaPitch({});
+        n.setDeltaPitch(n.getOriginalDeltaPitch());
+    }
+
+    namespace
+    {
+    // The base pitch with every note at its analysed centre and no pitch
+    // tool or drawn curve: what an unedited note's contour is measured
+    // against. The notes and the base are left as they were.
+    std::vector<float> uneditedBase(Project& project)
+    {
+        const bool anyEdit = !project.getDrawnCurves().empty() ||
+            std::any_of(project.getNotes().begin(), project.getNotes().end(),
+                        [](const Note& n) { return !n.isRest() && !n.isPitchUntouched(); });
+        if (!anyEdit)
+            return project.getAudioData().basePitch;
+        auto& audio = project.getAudioData();
+        const auto notes = project.getNotes();
+        const auto curves = project.getDrawnCurves();
+        auto basePitch = audio.basePitch;
+        auto deltaPitch = audio.deltaPitch;
+        auto f0 = audio.f0;
+        for (auto& n : project.getNotes())
+            if (!n.isRest())
+                resetNoteToUnedited(n);
+        project.getDrawnCurves().clear();
+        rebuildBaseFromNotes(project);
+        auto base = audio.basePitch;
+        // Put everything back as it was (a rebuild would also resize f0).
+        project.getNotes() = notes;
+        project.getDrawnCurves() = curves;
+        audio.basePitch = std::move(basePitch);
+        audio.deltaPitch = std::move(deltaPitch);
+        audio.f0 = std::move(f0);
+        if (base.size() != audio.basePitch.size())
+            base.resize(audio.basePitch.size(), 0.0f);
+        return base;
+    }
+    } // namespace
+
     std::vector<int> refitUntouchedCurves(Project& project, int start, int end)
     {
         std::vector<int> changed;
@@ -300,6 +353,10 @@ namespace PitchCurveProcessor
         const auto& dense = audio.denseF0;
         if (dense.empty() || audio.basePitch.empty())
             return changed;
+        // Unedited notes are fitted to the recording against the unedited
+        // base: a neighbour's drag then bends their edges smoothly, the same
+        // whichever edits came and went before the refit.
+        const auto base = uneditedBase(project);
         for (auto& note : project.getNotes())
         {
             if (note.isRest() || note.getEndFrame() <= start || note.getStartFrame() >= end ||
@@ -330,7 +387,7 @@ namespace PitchCurveProcessor
                 for (int i = 0; i < frames; ++i)
                 {
                     const int t = note.getStartFrame() + i;
-                    if (t < 0 || static_cast<size_t>(t) >= audio.basePitch.size())
+                    if (t < 0 || static_cast<size_t>(t) >= base.size())
                         continue;
                     const double src = std::clamp(
                         map.sourceAt(static_cast<double>(t) + 0.5) - 0.5, srcFirst, srcLast);
@@ -341,7 +398,7 @@ namespace PitchCurveProcessor
                     const float k = static_cast<float>(src - static_cast<double>(a));
                     const float value = freqToMidi(dense[a]) * (1.0f - k) +
                                         freqToMidi(dense[b]) * k -
-                                        audio.basePitch[static_cast<size_t>(t)];
+                                        base[static_cast<size_t>(t)];
                     if (std::abs(value - fitted[static_cast<size_t>(i)]) > 0.0001f)
                     {
                         fitted[static_cast<size_t>(i)] = value;
@@ -363,9 +420,9 @@ namespace PitchCurveProcessor
             for (int i = 0; i < note.getDurationFrames(); ++i)
             {
                 const auto f = static_cast<size_t>(note.getStartFrame() + i);
-                if (f >= dense.size() || f >= audio.basePitch.size() || !(dense[f] > 0.0f))
+                if (f >= dense.size() || f >= base.size() || !(dense[f] > 0.0f))
                     continue;
-                const float fitted = freqToMidi(dense[f]) - audio.basePitch[f];
+                const float fitted = freqToMidi(dense[f]) - base[f];
                 if (std::abs(fitted - curve[static_cast<size_t>(i)]) > 0.0001f)
                 {
                     curve[static_cast<size_t>(i)] = fitted;

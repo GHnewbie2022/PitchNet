@@ -2,6 +2,7 @@
 #include "../Source/UI/PianoRoll/NoteSplitter.h"
 #include "../Source/Audio/NoteTiming.h"
 #include "../Source/Undo/PitchUndoManager.h"
+#include "../Source/Undo/DragActions.h"
 #include "../Source/Utils/PitchCurveProcessor.h"
 #include "TestAssert.h"
 #include <iostream>
@@ -447,8 +448,14 @@ static float maxErrorFromRecording(const Project& proj, int from, int to) {
 }
 
 // A stretched note dragged up, its neighbour dragged down, then Restore Pitch
-// on the stretched note: it sings the recording again, its ends included.
+// on the stretched note: it sings as it would had only the neighbour been
+// dragged - the recording, its end bending smoothly toward the neighbour.
 static void warpedRestorePitchNextToShiftedNeighbour(PianoRollComponent& roll) {
+  Project reference;
+  buildWarpedTrio(reference);
+  shiftNote(reference, 70, -5.0f);
+  const auto f0Expected = reference.getAudioData().f0;
+
   Project proj;
   buildWarpedTrio(proj);
   PitchUndoManager history;
@@ -460,12 +467,11 @@ static void warpedRestorePitchNextToShiftedNeighbour(PianoRollComponent& roll) {
   roll.setTrackViewMode(false);
   proj.deselectAllNotes();
   roll.resetNoteEdits(*noteAt(proj, 40), PianoRollComponent::NoteRestoreMode::Pitch);
-  const float err = maxErrorFromRecording(proj, 40, 41);
+  const float err = maxF0ErrorSemitones(proj, f0Expected, 20, 92);
   if (err >= 0.02f)
     std::cerr << "restore pitch next to shifted neighbour max error " << err << " st\n";
   roll.setUndoManager(nullptr);
-  // Before the refit covered stretched notes, the end bent 1.24 st toward
-  // the neighbour.
+  // Before the refit covered stretched notes, the end bent 1.24 st off.
   CHECK(err < 0.02f);
 }
 
@@ -496,6 +502,40 @@ static void warpedRestorePitchThenNeighbourKeepsBoundary(PianoRollComponent& rol
   roll.setUndoManager(nullptr);
 }
 
+// Drag a note's pitch (undoable), Restore Pitch on its stretched neighbour,
+// then undo both: back to the starting pitch, with no spike at the boundary.
+static void dragThenRestoreNeighbourThenUndoAll(PianoRollComponent& roll) {
+  Project proj;
+  buildWarpedTrio(proj);
+  const auto f0Initial = proj.getAudioData().f0;
+  PitchUndoManager history;
+  auto drag = [&](int start, float semitones) {
+    Note* n = noteAt(proj, start);
+    const float from = n->getMidiNote();
+    auto action = std::make_unique<NotePitchDragAction>(
+        n, nullptr, from, from + semitones, std::vector<F0FrameEdit>{},
+        [&proj](Note*) { PitchCurveProcessor::rebuildBaseFromNotes(proj); });
+    action->redo();
+    history.addAction(std::move(action));
+  };
+
+  drag(70, 6.0f);
+  drag(40, 3.0f);
+  roll.setProject(&proj);
+  roll.setUndoManager(&history);
+  roll.setTrackViewMode(false);
+  proj.deselectAllNotes();
+  roll.resetNoteEdits(*noteAt(proj, 40), PianoRollComponent::NoteRestoreMode::Pitch);
+  history.undo();
+  history.undo();
+  history.undo();
+  const float err = maxF0ErrorSemitones(proj, f0Initial, 20, 92);
+  if (err >= 0.02f)
+    std::cerr << "drag, restore neighbour, undo all max error " << err << " st\n";
+  roll.setUndoManager(nullptr);
+  CHECK(err < 0.02f);
+}
+
 int main() {
   juce::ScopedJuceInitialiser_GUI gui;
   {
@@ -505,6 +545,7 @@ int main() {
     warpedRestoreAllEditsSingsRecording(scratchRoll);
     warpedRestorePitchNextToShiftedNeighbour(scratchRoll);
     warpedRestorePitchThenNeighbourKeepsBoundary(scratchRoll);
+    dragThenRestoreNeighbourThenUndoAll(scratchRoll);
   }
   warpedQuarteredShiftedPairMergeRestoresAnalysis();
   warpedResplitShiftedCrossNoteMergeRestoresAnalysis();

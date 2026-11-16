@@ -21,14 +21,18 @@ namespace PitchCurveProcessor
 
     /**
      * Notes nobody edited the pitch of sing what was recorded, so their curve
-     * is the recorded pitch (denseF0) over the base pitch as it stands. The
-     * stored curve was fitted to the base at analysis; a split, merge or an
-     * edited neighbour bends the base near a boundary and the old curve then
-     * shows a spike there. Refit the curves of such notes reaching into
-     * [start, end) (not re-timed ones), rebuild, and return the start frames
-     * of the notes changed.
+     * is the recorded pitch (denseF0) over the base pitch every note would
+     * have unedited. A split or merge moves that base near a boundary and the
+     * old curve then shows a spike there. An edited neighbour does not change
+     * the curve: the note's edge follows the base's bend toward it smoothly.
+     * Stretched notes are fitted per timeline frame through the warp. Refit
+     * the curves of such notes reaching into [start, end), rebuild, and
+     * return the start frames of the notes changed.
      */
     std::vector<int> refitUntouchedCurves(Project& project, int start, int end);
+
+    /** Drop every pitch edit on the note: it sings what the analysis gave it. */
+    void resetNoteToUnedited(Note& note);
 
     // Cache the linear drift response once for interactive display previews.
     std::vector<float> getDriftPreviewResponse(const Project& project, const Note& note);

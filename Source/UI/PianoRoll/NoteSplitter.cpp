@@ -288,23 +288,7 @@ std::vector<NoteCurveEdit> smoothOverBoundaries(Project& project, int start, int
     return edits;
 }
 
-/** Drop every pitch edit: the note sings what the analysis gave it. */
-void resetNoteToUnedited(Note& n)
-{
-    n.setMidiNote(n.getOriginalMidiNote());
-    n.setPitchOffset(0.0f);
-    n.setTiltLeft(0.0f);
-    n.setTiltRight(0.0f);
-    n.setVibrato(1.0f);
-    n.setPitchDrift(1.0f);
-    n.setSmoothLeftFrames(0);
-    n.setSmoothRightFrames(0);
-    n.setDeltaScale(1.0f);
-    n.setDeltaOffset(0.0f);
-    n.setFrozenTilt({});
-    n.setBakedDeltaPitch({});
-    n.setDeltaPitch(n.getOriginalDeltaPitch());
-}
+using PitchCurveProcessor::resetNoteToUnedited;
 
 /**
  * A split or merge works out the notes' unedited pitch (originalMidiNote,
