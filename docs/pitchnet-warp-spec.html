@@ -394,9 +394,9 @@ html { scroll-behavior: smooth; }
             <tr><td style="white-space:nowrap">檔案</td><td>雙擊 .pitchnet 開啟；存檔記住畫面位置與 playhead；修正開專案時調性按鈕讀到已刪除的舊專案而閃退</td><td class="num" style="white-space:normal">00dc1d2 3b40c65 748e479</td></tr>
             <tr><td style="white-space:nowrap">介面</td><td>提高縮放上限、Blob Height 預設最大、縮放滑桿 Alt＋左鍵回到中間、修正最大倍率卡頓；右鍵選單改成直式工具列表</td><td class="num" style="white-space:normal">6489ac1 b8fc14e 6ba5505 cdaa354</td></tr>
             <tr><td style="white-space:nowrap">音符編輯</td><td>相鄰音符的判斷完成：白線連接、剪刀工具的黏合線與高亮，拿掉「同一個區段」的條件，只看兩顆是否緊貼（跟黏合功能一致）；把一句尾音拉過靜音貼到下一句時，白線不再斷開、黏合線會出現</td><td class="num" style="white-space:normal">354572b</td></tr>
-            <tr><td style="white-space:nowrap">試聽</td><td>外掛（ARA）拖音高試聽改成跟獨立版同一套流程（合成結果、循環、間隔 0.5 秒、接續位置）；移除舊的變速近似試聽 <code>ResampledLoopAudition</code></td><td class="num" style="white-space:normal">本次</td></tr>
-            <tr><td style="white-space:nowrap">試聽</td><td>外掛試聽、單點預覽、Context Audition 時有時無：Cubase 同時跑 2 個編輯器渲染器，只有被指派區域的那個會出聲，原本先搶先播；改成被指派區域的渲染器優先</td><td class="num" style="white-space:normal">本次</td></tr>
-            <tr><td style="white-space:nowrap">建置</td><td>外掛讀不到 fork 新增的模型（swift_f0、rmvpe）：找模型時加上外掛自己的 Contents/Resources/models；Dev 版建置自動放入模型、簽章並安裝到 ~/Library/Audio/Plug-Ins/VST3</td><td class="num" style="white-space:normal">本次</td></tr>
+            <tr><td style="white-space:nowrap">試聽</td><td>外掛（ARA）拖音高試聽改成跟獨立版同一套流程（合成結果、循環、間隔 0.5 秒、接續位置）；移除舊的變速近似試聽 <code>ResampledLoopAudition</code></td><td class="num" style="white-space:normal">3fbd78e</td></tr>
+            <tr><td style="white-space:nowrap">試聽</td><td>外掛試聽、單點預覽、Context Audition 時有時無：Cubase 同時跑 2 個編輯器渲染器，只有被指派區域的那個會出聲，原本先搶先播；改成被指派區域的渲染器優先</td><td class="num" style="white-space:normal">3fbd78e</td></tr>
+            <tr><td style="white-space:nowrap">建置</td><td>外掛讀不到 fork 新增的模型（swift_f0、rmvpe）：找模型時加上外掛自己的 Contents/Resources/models；Dev 版建置自動放入模型、簽章並安裝到 ~/Library/Audio/Plug-Ins/VST3</td><td class="num" style="white-space:normal">3fbd78e</td></tr>
             <tr><td style="white-space:nowrap">修正</td><td>跨過切開或黏回音符連續復原時閃退</td><td class="num" style="white-space:normal">6cfa79b</td></tr>
             <tr><td style="white-space:nowrap">建置</td><td>本機編譯改用固定憑證簽章，重開不再重問權限</td><td class="num" style="white-space:normal">c45bce1</td></tr>
           </tbody>
