@@ -247,35 +247,18 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
               [](const Note *left, const Note *right)
               { return left->getStartFrame() < right->getStartFrame(); });
 
-    const auto &chunkRanges = audioData.segmentChunkRanges;
-    const auto getRegionIndex = [&chunkRanges](const Note &candidate)
-    {
-      if (chunkRanges.empty())
-        return 0;
-      const int midpoint = candidate.getSrcStartFrame() +
-                           std::max(0, candidate.getSrcDurationFrames()) / 2;
-      for (size_t i = 0; i < chunkRanges.size(); ++i)
-        if (midpoint >= chunkRanges[i].first && midpoint < chunkRanges[i].second)
-          return static_cast<int>(i);
-      return -1;
-    };
-
     const auto it = std::find(timelineNotes.begin(), timelineNotes.end(), &note);
     if (it == timelineNotes.end())
       return std::pair {leftLimit, rightLimit};
 
     const auto index = static_cast<size_t>(std::distance(timelineNotes.begin(), it));
-    const int noteRegion = getRegionIndex(note);
-    if (index > 0 && noteRegion >= 0 &&
-        getRegionIndex(*timelineNotes[index - 1]) == noteRegion &&
-        isContinuousSplitPair(*timelineNotes[index - 1], note))
+    if (index > 0 && isContinuousSplitPair(*timelineNotes[index - 1], note))
     {
       leftLimit = static_cast<int>(std::lround(
           0.5f * framesToSeconds(timelineNotes[index - 1]->getEndFrame() +
                                   note.getStartFrame()) * pixelsPerSecond)) + 2;
     }
-    if (index + 1 < timelineNotes.size() && noteRegion >= 0 &&
-        getRegionIndex(*timelineNotes[index + 1]) == noteRegion &&
+    if (index + 1 < timelineNotes.size() &&
         isContinuousSplitPair(note, *timelineNotes[index + 1]))
     {
       rightLimit = static_cast<int>(std::lround(
@@ -915,30 +898,12 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
                 return left->getStartFrame() < right->getStartFrame();
               });
 
-    const auto &chunkRanges = audioData.segmentChunkRanges;
-    auto getRegionIndex = [&chunkRanges](const Note &note)
-    {
-      if (chunkRanges.empty())
-        return 0;
-
-      const int midpoint = note.getSrcStartFrame() +
-                           std::max(0, note.getSrcDurationFrames()) / 2;
-      for (size_t i = 0; i < chunkRanges.size(); ++i)
-      {
-        if (midpoint >= chunkRanges[i].first && midpoint < chunkRanges[i].second)
-          return static_cast<int>(i);
-      }
-      return -1;
-    };
-
     g.setColour(juce::Colour(0xFF9A9A9Au)); // Pitch-grid note-name colour
     for (size_t i = 0; i + 1 < timelineNotes.size(); ++i)
     {
       const auto &left = *timelineNotes[i];
       const auto &right = *timelineNotes[i + 1];
-      const int leftRegion = getRegionIndex(left);
-      if (leftRegion < 0 || leftRegion != getRegionIndex(right) ||
-          !isContinuousSplitPair(left, right))
+      if (!isContinuousSplitPair(left, right))
         continue;
 
       const float boundaryX =
@@ -960,15 +925,13 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
         const int boundaryPixel = static_cast<int>(std::lround(boundaryX));
         int firstHighlightLeft = std::numeric_limits<int>::min();
         int secondHighlightRight = std::numeric_limits<int>::max();
-        if (i > 0 && getRegionIndex(*timelineNotes[i - 1]) == leftRegion &&
-            isContinuousSplitPair(*timelineNotes[i - 1], left))
+        if (i > 0 && isContinuousSplitPair(*timelineNotes[i - 1], left))
         {
           firstHighlightLeft = static_cast<int>(std::lround(
               0.5f * framesToSeconds(timelineNotes[i - 1]->getEndFrame() +
                                       left.getStartFrame()) * pixelsPerSecond)) + 2;
         }
         if (i + 2 < timelineNotes.size() &&
-            getRegionIndex(*timelineNotes[i + 2]) == leftRegion &&
             isContinuousSplitPair(right, *timelineNotes[i + 2]))
         {
           secondHighlightRight = static_cast<int>(std::lround(
@@ -1004,11 +967,9 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
                      adjacentBoundaryX,
                      std::max(firstY, secondY) + pixelsPerSemitone, 1.5f);
         };
-        if (i > 0 && getRegionIndex(*timelineNotes[i - 1]) == leftRegion &&
-            isContinuousSplitPair(*timelineNotes[i - 1], left))
+        if (i > 0 && isContinuousSplitPair(*timelineNotes[i - 1], left))
           drawAdjacentBoundary(*timelineNotes[i - 1], left);
         if (i + 2 < timelineNotes.size() &&
-            getRegionIndex(*timelineNotes[i + 2]) == leftRegion &&
             isContinuousSplitPair(right, *timelineNotes[i + 2]))
           drawAdjacentBoundary(right, *timelineNotes[i + 2]);
         continue;

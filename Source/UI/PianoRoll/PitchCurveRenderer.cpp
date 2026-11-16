@@ -187,26 +187,8 @@ void PitchCurveRenderer::draw(juce::Graphics &g, const Params &params)
       hasPreviousPoint = false;
     };
 
-    const auto &chunkRanges = audioData.segmentChunkRanges;
-    auto getRegionIndex = [&chunkRanges](const Note &note)
-    {
-      if (chunkRanges.empty())
-        return 0;
-
-      const int midpoint = note.getSrcStartFrame() +
-                           std::max(0, note.getSrcDurationFrames()) / 2;
-      for (size_t i = 0; i < chunkRanges.size(); ++i)
-      {
-        if (midpoint >= chunkRanges[i].first &&
-            midpoint < chunkRanges[i].second)
-          return static_cast<int>(i);
-      }
-      return -1;
-    };
-
     bool hasPreviousNote = false;
     float previousVisualEndFrame = -1.0f;
-    int previousRegion = -1;
 
     // Only build path geometry for notes that can touch the viewport. Without
     // this, every repaint (drag, zoom, scroll) walked and stroked the pitch
@@ -249,11 +231,12 @@ void PitchCurveRenderer::draw(juce::Graphics &g, const Params &params)
           std::min(note.getEndFrame(), static_cast<int>(audioData.f0.size()));
       const float visualStartFrame = note.getVisualStartFrame();
       const float visualEndFrame = note.getVisualEndFrame();
-      const int currentRegion = getRegionIndex(note);
+      // Touching notes join, whichever analysis chunk each came from: the
+      // chunks only fed the model, and a note stretched across the silence
+      // between two of them touches the next one.
       const bool continuesPreviousPath =
           hasPreviousNote &&
-          std::abs(visualStartFrame - previousVisualEndFrame) < 0.001f &&
-          currentRegion >= 0 && currentRegion == previousRegion;
+          std::abs(visualStartFrame - previousVisualEndFrame) < 0.001f;
 
       if (!continuesPreviousPath)
         breakCurve();
@@ -379,7 +362,6 @@ void PitchCurveRenderer::draw(juce::Graphics &g, const Params &params)
 
       hasPreviousNote = true;
       previousVisualEndFrame = visualEndFrame;
-      previousRegion = currentRegion;
     }
 
     strokeCurrentPath();
