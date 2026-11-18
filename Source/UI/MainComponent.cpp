@@ -915,6 +915,8 @@ MainComponent::MainComponent(bool enableAudioDevice)
   {
     pianoRoll.setScaleModePreview(mode);
   };
+  toolbar.onLoopButtonState = [this](bool on)
+  { pianoRoll.setLoopEditEnabled(on); };
   toolbar.onToggleLoop = [this](bool enabled)
   {
     if (auto *project = getProject())

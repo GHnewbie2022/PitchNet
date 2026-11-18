@@ -484,6 +484,8 @@ void ToolbarComponent::buttonClicked(juce::Button *button)
     {
         loopEnabled = !loopEnabled;
         loopButton.setToggleState(loopEnabled, juce::dontSendNotification);
+        if (onLoopButtonState)
+            onLoopButtonState(loopEnabled);
         if (onToggleLoop)
             onToggleLoop(loopEnabled);
     }
@@ -656,6 +658,8 @@ void ToolbarComponent::setLoopEnabled(bool enabled)
 {
     loopEnabled = enabled;
     loopButton.setToggleState(loopEnabled, juce::dontSendNotification);
+    if (onLoopButtonState)
+        onLoopButtonState(loopEnabled);
 }
 
 void ToolbarComponent::setAuditionEnabled(bool enabled)

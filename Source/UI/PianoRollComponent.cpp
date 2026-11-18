@@ -3392,6 +3392,16 @@ void PianoRollComponent::setTimelineSnapWarp(bool enabled)
     project->setTimelineSnapWarp(enabled);
 }
 
+void PianoRollComponent::setLoopEditEnabled(bool enabled)
+{
+  if (viewState.loopEditEnabled == enabled)
+    return;
+  viewState.loopEditEnabled = enabled;
+  if (!enabled && loopDragHandler_)
+    loopDragHandler_->cancel();
+  repaint();
+}
+
 void PianoRollComponent::setCycleEditEnabled(bool enabled)
 {
   if (cycleEditEnabled == enabled)

@@ -167,6 +167,7 @@ public:
   // to drive.
   void setCycleEditEnabled(bool enabled);
   bool isCycleEditEnabled() const { return cycleEditEnabled; }
+  void setLoopEditEnabled(bool enabled);
 
   // Scroll
   void setScrollX(double x);

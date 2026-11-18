@@ -123,6 +123,8 @@ public:
     std::function<void(float)> onZoomChanged;
     std::function<void(EditMode)> onEditModeChanged;
     std::function<void(bool)> onToggleLoop;
+    // Whenever the loop button's shown state changes, by click or from code.
+    std::function<void(bool)> onLoopButtonState;
     std::function<void()> onUndo;
     std::function<void()> onRedo;
     std::function<void(bool)> onToggleRecord;

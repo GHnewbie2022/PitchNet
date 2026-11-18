@@ -19,6 +19,12 @@ bool LoopDragHandler::mouseDown(const juce::MouseEvent &e, float worldX,
       e.x < PianoRollComponent::pianoKeysWidth)
     return false;
 
+  // The loop button is the switch: while it is off the range cannot be made
+  // or changed here, so a stray click never turns looping on. The click is
+  // still taken, so it does not reach the tools below.
+  if (!owner_.viewState.loopEditEnabled)
+    return true;
+
   auto *project = owner_.project;
   if (!project)
     return false;
@@ -168,7 +174,7 @@ void LoopDragHandler::mouseMove(const juce::MouseEvent &e, float worldX,
   juce::ignoreUnused(worldX, worldY);
 
   hoveringHandle = false;
-  if (!owner_.viewState.cycleEditEnabled)
+  if (!owner_.viewState.cycleEditEnabled || !owner_.viewState.loopEditEnabled)
     return;
 
   if (!owner_.project || e.y < PianoRollComponent::timelineHeight ||

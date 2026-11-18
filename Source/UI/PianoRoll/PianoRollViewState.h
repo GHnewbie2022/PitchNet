@@ -56,6 +56,8 @@ struct PianoRollViewState
   // Cycle (loop) range editing on the timeline. Disabled when the plugin
   // cannot drive the host transport (non-ARA plugin mode).
   bool cycleEditEnabled = true;
+  // Mirrors the toolbar's loop button; the range is editable only while on.
+  bool loopEditEnabled = false;
 
   ScaleMode selectedScaleMode = ScaleMode::Chromatic;
   int selectedScaleRootNote = 0;
