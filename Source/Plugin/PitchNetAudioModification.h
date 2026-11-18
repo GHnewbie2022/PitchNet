@@ -2,6 +2,7 @@
 
 #include "../JuceHeader.h"
 #include "../Audio/SourceAudio.h"
+#include "../Utils/AudioResampler.h"
 #include <limits>
 
 #if JucePlugin_Enable_ARA
@@ -124,6 +125,7 @@ public:
     processedAudio->setAudio(buffer, sampleRateIn, startSampleInModificationIn);
     processedAudio->pieces.clear();
     processedAudio->piecesSampleRate = 0.0;
+    contentChangedLocked();
   }
 
   // Sets the composite and its playback pieces together, so the renderer
@@ -139,11 +141,55 @@ public:
     processedAudio->setAudio(buffer, sampleRateIn, startSampleInModificationIn);
     processedAudio->pieces = std::move(pieces);
     processedAudio->piecesSampleRate = piecesSampleRate;
+    contentChangedLocked();
   }
 
   void clearProcessedAudio() {
     const juce::SpinLock::ScopedLockType lock(processedAudioLock);
     processedAudio.reset();
+    contentChangedLocked();
+  }
+
+  //============================================================================
+  // Spec Q5 at a host rate that differs from the source: the playback audio
+  // (the host's audio with the edit pieces laid over it) converted once with
+  // r8brain, as the standalone converts for its device, instead of Lagrange
+  // per block. Built on a worker thread; until it is ready the renderer keeps
+  // its per-block conversion.
+  struct HostRateAudio {
+    juce::AudioBuffer<float> audio;
+    double rate = 0.0;
+  };
+
+  // Message/model thread. `now`: build on this thread (offline rendering).
+  void requestHostRate(double hostRate, bool now = false) {
+    auto *source = getAudioSource();
+    if (source == nullptr || hostRate <= 0.0 ||
+        juce::approximatelyEqual(hostRate, source->getSampleRate()))
+      return;
+    {
+      const juce::SpinLock::ScopedLockType lock(processedAudioLock);
+      if (juce::approximatelyEqual(hostRate, requestedHostRate) && !now &&
+          hostRateAudio != nullptr)
+        return;
+      requestedHostRate = hostRate;
+    }
+    if (now) {
+      buildHostRateAudio();
+      return;
+    }
+    if (hostRateBuilder == nullptr)
+      hostRateBuilder = std::make_unique<HostRateBuilder>(*this);
+    hostRateBuilder->notify();
+  }
+
+  // Audio thread, while holding tryLockProcessedAudio(): the converted audio
+  // if it is current for `rate`, else nullptr.
+  const HostRateAudio *getHostRateAudio(double rate) const noexcept {
+    return hostRateAudio != nullptr &&
+                   juce::approximatelyEqual(hostRateAudio->rate, rate)
+               ? hostRateAudio.get()
+               : nullptr;
   }
 
   void setProjectArchive(const void *data, size_t sizeInBytes) const {
@@ -281,6 +327,88 @@ public:
   }
 
 private:
+  class HostRateBuilder final : public juce::Thread {
+  public:
+    explicit HostRateBuilder(PitchNetAudioModification &ownerIn)
+        : juce::Thread("PitchNet host rate"), owner(ownerIn) {
+      startThread(juce::Thread::Priority::background);
+    }
+    ~HostRateBuilder() override { stopThread(30000); }
+    void run() override {
+      while (!threadShouldExit()) {
+        owner.buildHostRateAudio();
+        wait(-1);
+      }
+    }
+
+  private:
+    PitchNetAudioModification &owner;
+  };
+
+  // Called with processedAudioLock held: the edit changed, so any converted
+  // audio is stale. It is dropped at once (the renderer falls back) and
+  // rebuilt if a host rate was asked for.
+  void contentChangedLocked() {
+    ++contentVersion;
+    staleHostRateAudio = std::move(hostRateAudio);
+    if (requestedHostRate > 0.0 && hostRateBuilder != nullptr)
+      hostRateBuilder->notify();
+  }
+
+  void buildHostRateAudio() {
+    auto *source = getAudioSource();
+    if (source == nullptr || source->getSampleRate() <= 0.0 ||
+        source->getChannelCount() <= 0 || source->getSampleCount() <= 0 ||
+        source->getSampleCount() > std::numeric_limits<int>::max())
+      return;
+
+    double rate = 0.0;
+    juce::uint64 version = 0;
+    std::vector<sourceaudio::Piece> pieces;
+    {
+      const juce::SpinLock::ScopedLockType lock(processedAudioLock);
+      rate = requestedHostRate;
+      version = contentVersion;
+      staleHostRateAudio.reset();
+      if (processedAudio != nullptr && processedAudio->hasAudio()) {
+        // An archive from before the pieces holds only the 44.1 kHz render;
+        // the source alone would drop its edit, so leave it to the renderer.
+        if (!processedAudio->hasPieces() ||
+            !juce::approximatelyEqual(processedAudio->piecesSampleRate,
+                                      source->getSampleRate()))
+          return;
+        ProcessedRegionData copy;
+        copyPieces(*processedAudio, copy);
+        pieces = std::move(copy.pieces);
+      }
+    }
+    if (rate <= 0.0)
+      return;
+
+    const int channels = source->getChannelCount();
+    const int samples = static_cast<int>(source->getSampleCount());
+    juce::AudioBuffer<float> recording(channels, samples);
+    juce::ARAAudioSourceReader reader(source);
+    if (!reader.read(&recording, 0, samples, 0, true, channels > 1))
+      return;
+    sourceaudio::overlay(pieces, 0, recording, 0, samples);
+
+    auto built = std::make_unique<HostRateAudio>();
+    built->audio =
+        AudioResampler::resample(recording, source->getSampleRate(), rate);
+    built->rate = rate;
+
+    std::unique_ptr<HostRateAudio> replaced;
+    {
+      const juce::SpinLock::ScopedLockType lock(processedAudioLock);
+      if (version != contentVersion ||
+          !juce::approximatelyEqual(rate, requestedHostRate))
+        return; // changed meanwhile; the builder has been notified again
+      replaced = std::move(hostRateAudio);
+      hostRateAudio = std::move(built);
+    }
+  }
+
   static void copyPieces(const ProcessedRegionData &from,
                          ProcessedRegionData &to) {
     to.pieces.clear();
@@ -347,6 +475,14 @@ private:
   mutable juce::SpinLock processedAudioLock;
   std::unique_ptr<ProcessedRegionData> processedAudio;
   mutable juce::MemoryBlock projectArchive;
+  double requestedHostRate = 0.0;
+  juce::uint64 contentVersion = 0;
+  std::unique_ptr<HostRateAudio> hostRateAudio;
+  // Held until the builder's next run so it is not freed under the lock on
+  // a thread the renderer might be waiting on.
+  std::unique_ptr<HostRateAudio> staleHostRateAudio;
+  // Last: destroyed first, so the worker stops before anything it uses.
+  std::unique_ptr<HostRateBuilder> hostRateBuilder;
 };
 
 #endif // JucePlugin_Enable_ARA

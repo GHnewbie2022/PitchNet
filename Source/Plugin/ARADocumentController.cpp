@@ -89,27 +89,8 @@ juce::AudioBuffer<float> resampleAuditionBuffer(
     return copy;
   }
 
-  const int outputSamples = std::max(
-      1, static_cast<int>(std::lround(source.getNumSamples() *
-                                       destinationRate / sourceRate)));
-  juce::AudioBuffer<float> output(source.getNumChannels(), outputSamples);
-  for (int channel = 0; channel < source.getNumChannels(); ++channel) {
-    const auto *input = source.getReadPointer(channel);
-    auto *destination = output.getWritePointer(channel);
-    for (int sample = 0; sample < outputSamples; ++sample) {
-      const double inputPosition = std::min(
-          static_cast<double>(source.getNumSamples() - 1),
-          sample * sourceRate / destinationRate);
-      const int left = static_cast<int>(inputPosition);
-      const int right = std::min(source.getNumSamples() - 1, left + 1);
-      const float fraction = static_cast<float>(inputPosition - left);
-      const float leftSample = std::isfinite(input[left]) ? input[left] : 0.0f;
-      const float rightSample = std::isfinite(input[right]) ? input[right] : 0.0f;
-      const float value = leftSample + fraction * (rightSample - leftSample);
-      destination[sample] = std::isfinite(value) ? value : 0.0f;
-    }
-  }
-  return output;
+  // Spec Q5: r8brain, as the standalone converts its audition buffer.
+  return AudioResampler::resample(source, sourceRate, destinationRate);
 }
 
 bool readPlaybackRegionIntoBlock(
@@ -212,6 +193,44 @@ bool readPlaybackRegionIntoBlock(
     state->nextSourceSample += inputSamplesUsed;
     state->lastRenderedOutputEnd = blockStartSample + outputStart + outputLength;
   }
+  return true;
+}
+
+// Spec Q5 at a host rate that differs from the source: the region's span of
+// the modification's playback audio, converted once with r8brain
+// (PitchNetAudioModification::requestHostRate). Adds into `buffer`.
+static bool mixHostRateRegionAudio(
+    juce::AudioBuffer<float> &buffer, const juce::ARAPlaybackRegion &region,
+    const PitchNetAudioModification::HostRateAudio &converted,
+    double outputSampleRate, juce::int64 blockStartSample) {
+  const juce::Range<double> blockRange(
+      static_cast<double>(blockStartSample) / outputSampleRate,
+      static_cast<double>(blockStartSample + buffer.getNumSamples()) /
+          outputSampleRate);
+  const auto intersection =
+      juce::Range<double>(region.getStartInPlaybackTime(),
+                          region.getEndInPlaybackTime())
+          .getIntersectionWith(blockRange);
+  if (intersection.isEmpty())
+    return false;
+  const int outputStart = static_cast<int>(std::llround(
+      (intersection.getStart() - blockRange.getStart()) * outputSampleRate));
+  const auto sourceStart = static_cast<juce::int64>(std::llround(
+      (intersection.getStart() - region.getStartInPlaybackTime() +
+       region.getStartInAudioModificationTime()) *
+      outputSampleRate));
+  const int length = static_cast<int>(std::min<juce::int64>(
+      {static_cast<juce::int64>(buffer.getNumSamples() - outputStart),
+       static_cast<juce::int64>(
+           std::llround(intersection.getLength() * outputSampleRate)),
+       converted.audio.getNumSamples() - sourceStart}));
+  if (outputStart < 0 || sourceStart < 0 || length <= 0 ||
+      converted.audio.getNumChannels() <= 0)
+    return false;
+  for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+    buffer.addFrom(ch, outputStart, converted.audio,
+                   std::min(ch, converted.audio.getNumChannels() - 1),
+                   static_cast<int>(sourceStart), length);
   return true;
 }
 
@@ -384,8 +403,16 @@ void PitchNetPlaybackRenderer::prepareToPlay(
   // Readers and resampler slots for the regions assigned so far. Regions the
   // host assigns later arrive via didAddPlaybackRegion(), also on the model
   // thread, so processBlock() never has to allocate.
-  for (auto *region : getPlaybackRegions<juce::ARAPlaybackRegion>())
+  for (auto *region : getPlaybackRegions<juce::ARAPlaybackRegion>()) {
     ensureRenderResourcesFor(region);
+    // Offline rendering has no realtime fallback to wait behind: convert now.
+    if (auto *modification =
+            region != nullptr
+                ? region->getAudioModification<PitchNetAudioModification>()
+                : nullptr)
+      modification->requestHostRate(
+          sampleRate, alwaysNonRealtime == AlwaysNonRealtime::yes);
+  }
 }
 
 void PitchNetPlaybackRenderer::releaseResources() {
@@ -421,8 +448,14 @@ void PitchNetPlaybackRenderer::ensureRenderResourcesFor(
 
 void PitchNetPlaybackRenderer::didAddPlaybackRegion(
     ARA::PlugIn::PlaybackRegion *playbackRegion) noexcept {
-  ensureRenderResourcesFor(
-      static_cast<juce::ARAPlaybackRegion *>(playbackRegion));
+  auto *region = static_cast<juce::ARAPlaybackRegion *>(playbackRegion);
+  ensureRenderResourcesFor(region);
+  // Only once prepared: before that sampleRate is not the host's yet.
+  if (auto *modification =
+          tempBuffer != nullptr && region != nullptr
+              ? region->getAudioModification<PitchNetAudioModification>()
+              : nullptr)
+    modification->requestHostRate(sampleRate);
 }
 
 void PitchNetPlaybackRenderer::willRemovePlaybackRegion(
@@ -469,6 +502,10 @@ bool PitchNetPlaybackRenderer::renderProcessedRegions(
             region->getAudioModification<PitchNetAudioModification>()) {
       processedLock.emplace(modification->getProcessedAudioLock());
       if (!processedLock->isLocked()) {
+      } else if (const auto *converted =
+                     modification->getHostRateAudio(sampleRate)) {
+        renderedRegion = mixHostRateRegionAudio(buffer, *region, *converted,
+                                                sampleRate, timeInSamples);
       } else if (const auto *data = modification->getProcessedData();
                  data != nullptr && data->hasPieces() &&
                  modification->getAudioSource() != nullptr &&
