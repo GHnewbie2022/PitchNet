@@ -1,4 +1,5 @@
 #include "IncrementalSynthesizer.h"
+#include "SpliceAlignment.h"
 #include "BreathSibilanceProtection.h"
 #include "FormantShifter.h"
 #include "../BreathSibilanceAnalysis.h"
@@ -1227,6 +1228,10 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
             t = std::clamp(t, 0.0f, 1.0f);
             return t * t * (3.0f - 2.0f * t);
           };
+          // What is committed: the render, shifted and phase-rotated at each
+          // splice to match the audio it fades into (SpliceAlignment.h).
+          std::vector<float> committed = targetSegment;
+          const auto renderHilbert = splicealign::hilbert(targetSegment);
           for (const auto &range : commitFrameRanges) {
             const int bodyStart =
                 (range.start - capturedStartFrame) * hopSize;
@@ -1266,6 +1271,39 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
             const int lastSample = std::min(
                 samplesToWrite, fadeRight ? rightFadeEnd : bodyEnd);
 
+            // Each splice its own shift and angle; between them they glide.
+            auto leftAlign = fadeLeft ? splicealign::find(existingSamples,
+                                                          targetSegment,
+                                                          renderHilbert,
+                                                          leftCenter, fadeHalf)
+                                      : splicealign::Alignment{};
+            auto rightAlign = fadeRight ? splicealign::find(existingSamples,
+                                                            targetSegment,
+                                                            renderHilbert,
+                                                            rightCenter, fadeHalf)
+                                        : splicealign::Alignment{};
+            if (!fadeLeft)
+              leftAlign = rightAlign;
+            if (!fadeRight)
+              rightAlign = leftAlign;
+            // Glide the short way round.
+            constexpr double kPi = 3.14159265358979323846;
+            while (rightAlign.angle - leftAlign.angle > kPi)
+              rightAlign.angle -= 2.0 * kPi;
+            while (rightAlign.angle - leftAlign.angle < -kPi)
+              rightAlign.angle += 2.0 * kPi;
+            const double glide =
+                std::max(1, rightCenter - leftCenter);
+            for (int sample = firstSample; sample < lastSample; ++sample) {
+              const double t = std::clamp(
+                  static_cast<double>(sample - leftCenter) / glide, 0.0, 1.0);
+              const splicealign::Alignment at{
+                  leftAlign.lag + t * (rightAlign.lag - leftAlign.lag),
+                  leftAlign.angle + t * (rightAlign.angle - leftAlign.angle)};
+              committed[static_cast<size_t>(sample)] = splicealign::sample(
+                  targetSegment, renderHilbert, sample, at);
+            }
+
             for (int sample = firstSample; sample < lastSample; ++sample) {
               float leftBlend = 1.0f;
               if (fadeLeft && sample < leftFadeEnd)
@@ -1294,7 +1332,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               if (blend <= 0.0f)
                 continue;
               const float current = destination[sample];
-              const float rendered = targetSegment[static_cast<size_t>(sample)];
+              const float rendered = committed[static_cast<size_t>(sample)];
               destination[sample] = current + blend * (rendered - current);
             }
           }
