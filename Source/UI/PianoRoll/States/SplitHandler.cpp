@@ -17,7 +17,7 @@ bool SplitHandler::mouseDown(const juce::MouseEvent &e, float worldX,
     return true;
   }
 
-  Note *note = owner_.noteSplitter->findNoteAt(worldX, worldY);
+  Note *note = owner_.findNoteForSplitAt(worldX, worldY);
   if (note) {
     owner_.noteSplitter->splitNoteAtX(note, worldX);
     return true;
@@ -41,10 +41,13 @@ void SplitHandler::mouseMove(const juce::MouseEvent &e, float worldX,
       owner_.noteSplitter->findMergeableNotesAt(worldX, worldY);
   Note *const nextMergeFirst = mergeNotes.first;
   Note *const nextMergeSecond = mergeNotes.second;
-  Note *const nextGuideNote = nextMergeFirst
-                                  ? nullptr
-                                  : owner_.noteSplitter->findNoteAt(worldX,
-                                                                    worldY);
+  float nextTop = 0.0f, nextBottom = 0.0f;
+  Note *const nextGuideNote =
+      nextMergeFirst ? nullptr
+                     : owner_.findNoteForSplitAt(worldX, worldY, &nextTop,
+                                                 &nextBottom);
+  splitGuideTop = nextTop;
+  splitGuideBottom = nextBottom;
   const float nextGuideX = nextGuideNote ? worldX : -1.0f;
 
   const bool hoverChanged =

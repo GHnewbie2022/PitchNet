@@ -991,11 +991,9 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
     if (guideFrame > guideNote->getStartFrame() &&
         guideFrame < guideNote->getEndFrame())
     {
-      const float noteY = coordMapper->midiToY(guideNote->getAdjustedMidiNote());
-      const float noteH = pixelsPerSemitone;
-
       g.setColour(juce::Colour(0xFF9A9A9Au));
-      g.drawLine(guideX, noteY, guideX, noteY + noteH, 1.5f);
+      g.drawLine(guideX, splitHandler->getSplitGuideTop(), guideX,
+                 splitHandler->getSplitGuideBottom(), 1.5f);
     }
   }
 }

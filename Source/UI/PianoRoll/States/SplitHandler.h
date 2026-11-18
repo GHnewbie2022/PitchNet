@@ -23,6 +23,9 @@ public:
   // Accessors for rendering
   float getSplitGuideX() const { return splitGuideX; }
   Note *getSplitGuideNote() const { return splitGuideNote; }
+  // The guide spans the note's whole coloured blob.
+  float getSplitGuideTop() const { return splitGuideTop; }
+  float getSplitGuideBottom() const { return splitGuideBottom; }
   bool isHoveringMergeBoundary() const { return mergeFirstNote != nullptr; }
   bool isMergeBoundary(const Note *first, const Note *second) const
   {
@@ -35,4 +38,6 @@ private:
   Note *splitGuideNote = nullptr;
   Note *mergeFirstNote = nullptr;
   Note *mergeSecondNote = nullptr;
+  float splitGuideTop = 0.0f;
+  float splitGuideBottom = 0.0f;
 };

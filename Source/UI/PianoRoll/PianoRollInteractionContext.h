@@ -72,6 +72,8 @@ public:
   bool isCanvasPoint(const juce::MouseEvent &e) const;
 
   Note *findNoteAt(float x, float y);
+  Note *findNoteForSplitAt(float x, float y, float *top = nullptr,
+                           float *bottom = nullptr);
   float getDoubleClickSnapTarget(const Note& note) const;
   std::vector<Note *> getSelectedNotes() const;
   int findBreathAt(float x, float y) const;

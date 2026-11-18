@@ -103,6 +103,13 @@ bool PianoRollInteractionContext::isCanvasPoint(
   return component.isCanvasPoint(e);
 }
 
+Note *PianoRollInteractionContext::findNoteForSplitAt(float x, float y,
+                                                      float *top,
+                                                      float *bottom)
+{
+  return component.findNoteForSplitAt(x, y, top, bottom);
+}
+
 Note *PianoRollInteractionContext::findNoteAt(float x, float y)
 {
   return component.findNoteAt(x, y);
