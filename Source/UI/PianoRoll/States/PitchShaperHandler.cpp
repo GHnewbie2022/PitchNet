@@ -1,6 +1,6 @@
-#include "PitchDrawingHandler.h"
+#include "PitchShaperHandler.h"
 #include "WarpHandler.h"
-#include "../../../Undo/PitchDrawingAction.h"
+#include "../../../Undo/PitchShaperAction.h"
 #include "../../../Utils/Constants.h"
 #include "../../../Utils/PitchCurveProcessor.h"
 #include "../../../Utils/TransformParams.h"
@@ -43,14 +43,14 @@ void neutralTools(Note& note)
 }
 } // namespace
 
-PitchDrawingHandler::PitchDrawingHandler(PianoRollComponent& owner)
+PitchShaperHandler::PitchShaperHandler(PianoRollComponent& owner)
     : InteractionHandler(owner)
 {
 }
 
 // ---------------------------------------------------------------- mouse
 
-bool PitchDrawingHandler::mouseDown(const juce::MouseEvent& e, float worldX,
+bool PitchShaperHandler::mouseDown(const juce::MouseEvent& e, float worldX,
                                     float worldY)
 {
   if (e.mods.isPopupMenu())
@@ -145,7 +145,7 @@ bool PitchDrawingHandler::mouseDown(const juce::MouseEvent& e, float worldX,
   return true;
 }
 
-bool PitchDrawingHandler::mouseDrag(const juce::MouseEvent&, float worldX,
+bool PitchShaperHandler::mouseDrag(const juce::MouseEvent&, float worldX,
                                     float worldY)
 {
   if (!dragging)
@@ -182,7 +182,7 @@ bool PitchDrawingHandler::mouseDrag(const juce::MouseEvent&, float worldX,
   return true;
 }
 
-bool PitchDrawingHandler::mouseUp(const juce::MouseEvent&, float, float)
+bool PitchShaperHandler::mouseUp(const juce::MouseEvent&, float, float)
 {
   if (!dragging)
     return false;
@@ -196,7 +196,7 @@ bool PitchDrawingHandler::mouseUp(const juce::MouseEvent&, float, float)
   return true;
 }
 
-void PitchDrawingHandler::mouseMove(const juce::MouseEvent& e, float worldX,
+void PitchShaperHandler::mouseMove(const juce::MouseEvent& e, float worldX,
                                     float worldY)
 {
   lastWorldX = worldX;
@@ -214,20 +214,20 @@ void PitchDrawingHandler::mouseMove(const juce::MouseEvent& e, float worldX,
     owner_.repaint();
 }
 
-void PitchDrawingHandler::mouseDoubleClick(const juce::MouseEvent&, float worldX,
+void PitchShaperHandler::mouseDoubleClick(const juce::MouseEvent&, float worldX,
                                            float worldY)
 {
   removeAnchorAt(worldX, worldY);
 }
 
-void PitchDrawingHandler::modifiersChanged(const juce::ModifierKeys& mods)
+void PitchShaperHandler::modifiersChanged(const juce::ModifierKeys& mods)
 {
   updateCursor(mods);
   if (hovered.curveId >= 0)
     owner_.repaint();
 }
 
-void PitchDrawingHandler::updateCursor(const juce::ModifierKeys& mods)
+void PitchShaperHandler::updateCursor(const juce::ModifierKeys& mods)
 {
   if (hovered.curveId >= 0)
     owner_.setMouseCursor(mods.isAltDown()
@@ -239,7 +239,7 @@ void PitchDrawingHandler::updateCursor(const juce::ModifierKeys& mods)
                               : juce::MouseCursor::NormalCursor);
 }
 
-bool PitchDrawingHandler::removeAnchorAt(float worldX, float worldY)
+bool PitchShaperHandler::removeAnchorAt(float worldX, float worldY)
 {
   auto hit = hitTest(worldX, worldY);
   if (hit.curveId < 0 || !owner_.project)
@@ -262,7 +262,7 @@ bool PitchDrawingHandler::removeAnchorAt(float worldX, float worldY)
   return true;
 }
 
-void PitchDrawingHandler::removeAnchor(int anchorId)
+void PitchShaperHandler::removeAnchor(int anchorId)
 {
   anchors.erase(std::remove_if(anchors.begin(), anchors.end(),
                                [anchorId](const Anchor& anchor)
@@ -283,7 +283,7 @@ void PitchDrawingHandler::removeAnchor(int anchorId)
   notifyStateChanged();
 }
 
-void PitchDrawingHandler::clearHover()
+void PitchShaperHandler::clearHover()
 {
   if (hovered.curveId < 0 || dragging)
     return;
@@ -293,7 +293,7 @@ void PitchDrawingHandler::clearHover()
 
 // ---------------------------------------------------------------- drawing
 
-void PitchDrawingHandler::draw(juce::Graphics& g)
+void PitchShaperHandler::draw(juce::Graphics& g)
 {
   constexpr float radius = 5.0f;
   const bool altDown = juce::ModifierKeys::currentModifiers.isAltDown();
@@ -333,19 +333,19 @@ void PitchDrawingHandler::draw(juce::Graphics& g)
                    anchor.id == activeAnchorId);
 }
 
-bool PitchDrawingHandler::isActive() const
+bool PitchShaperHandler::isActive() const
 {
   return dragging || activeCurveId >= 0;
 }
 
-void PitchDrawingHandler::cancel()
+void PitchShaperHandler::cancel()
 {
   // Nothing drawn is ever pending: every step is applied and in the undo
   // history, so cancelling a curve just ends it.
   finish();
 }
 
-void PitchDrawingHandler::finish()
+void PitchShaperHandler::finish()
 {
   if (activeCurveId < 0)
     return;
@@ -355,7 +355,7 @@ void PitchDrawingHandler::finish()
   clearState();
 }
 
-void PitchDrawingHandler::clearState()
+void PitchShaperHandler::clearState()
 {
   anchors.clear();
   activeCurveId = -1;
@@ -375,7 +375,7 @@ void PitchDrawingHandler::clearState()
 
 // ---------------------------------------------------------------- session
 
-void PitchDrawingHandler::beginSession(const DrawnCurve* curve)
+void PitchShaperHandler::beginSession(const DrawnCurve* curve)
 {
   clearState();
   if (!owner_.project)
@@ -418,7 +418,7 @@ void PitchDrawingHandler::beginSession(const DrawnCurve* curve)
   committedCurves = project.getDrawnCurves();
 }
 
-void PitchDrawingHandler::extendRange(int start, int end)
+void PitchShaperHandler::extendRange(int start, int end)
 {
   rangeStart = rangeStart < 0 ? start : std::min(rangeStart, start);
   rangeEnd = rangeEnd < 0 ? end : std::max(rangeEnd, end);
@@ -426,7 +426,7 @@ void PitchDrawingHandler::extendRange(int start, int end)
   absorbCurvesIn(rangeStart, rangeEnd);
 }
 
-void PitchDrawingHandler::absorbCurvesIn(int start, int end)
+void PitchShaperHandler::absorbCurvesIn(int start, int end)
 {
   if (!owner_.project)
     return;
@@ -464,7 +464,7 @@ void PitchDrawingHandler::absorbCurvesIn(int start, int end)
   sortAnchors();
 }
 
-std::pair<int, int> PitchDrawingHandler::affectedRange() const
+std::pair<int, int> PitchShaperHandler::affectedRange() const
 {
   int start = rangeStart, end = rangeEnd;
   if (!anchors.empty())
@@ -475,14 +475,14 @@ std::pair<int, int> PitchDrawingHandler::affectedRange() const
   return {start, end};
 }
 
-bool PitchDrawingHandler::commitStep()
+bool PitchShaperHandler::commitStep()
 {
   if (!owner_.project || activeCurveId < 0)
     return false;
   auto& project = *owner_.project;
 
-  std::vector<PitchDrawingNoteState> before;
-  std::vector<PitchDrawingNoteState> after;
+  std::vector<PitchShaperNoteState> before;
+  std::vector<PitchShaperNoteState> after;
   for (auto& committed : committedNoteStates)
   {
     if (!committed.note)
@@ -526,7 +526,7 @@ bool PitchDrawingHandler::commitStep()
     return false;
 
   if (owner_.undoManager)
-    owner_.undoManager->addAction(std::make_unique<PitchDrawingAction>(
+    owner_.undoManager->addAction(std::make_unique<PitchShaperAction>(
         &project, std::move(before), std::move(after), committedCurves, curves));
   project.getDrawnCurves() = curves;
   committedCurves = curves;
@@ -542,7 +542,7 @@ bool PitchDrawingHandler::commitStep()
 
 // ---------------------------------------------------------------- geometry
 
-int PitchDrawingHandler::frameFromWorldX(float worldX) const
+int PitchShaperHandler::frameFromWorldX(float worldX) const
 {
   if (!owner_.project || owner_.project->getAudioData().f0.empty())
     return 0;
@@ -553,7 +553,7 @@ int PitchDrawingHandler::frameFromWorldX(float worldX) const
   return juce::jlimit(0, lastFrame, frame);
 }
 
-float PitchDrawingHandler::midiFromWorldY(float worldY) const
+float PitchShaperHandler::midiFromWorldY(float worldY) const
 {
   float midi = owner_.yToMidi(worldY - owner_.pixelsPerSemitone * 0.5f);
   if (owner_.project)
@@ -562,7 +562,7 @@ float PitchDrawingHandler::midiFromWorldY(float worldY) const
                       static_cast<float>(MAX_MIDI_NOTE), midi);
 }
 
-juce::Point<float> PitchDrawingHandler::pointAt(int frame, float midi) const
+juce::Point<float> PitchShaperHandler::pointAt(int frame, float midi) const
 {
   const float globalOffset = owner_.project
                                  ? owner_.project->getGlobalPitchOffset()
@@ -571,7 +571,7 @@ juce::Point<float> PitchDrawingHandler::pointAt(int frame, float midi) const
           owner_.midiToY(midi + globalOffset) + owner_.pixelsPerSemitone * 0.5f};
 }
 
-float PitchDrawingHandler::sungPitchAt(int frame) const
+float PitchShaperHandler::sungPitchAt(int frame) const
 {
   if (!owner_.project || frame < 0)
     return 0.0f;
@@ -582,7 +582,7 @@ float PitchDrawingHandler::sungPitchAt(int frame) const
   return base + delta;
 }
 
-PitchDrawingHandler::Hit PitchDrawingHandler::hitTest(float worldX,
+PitchShaperHandler::Hit PitchShaperHandler::hitTest(float worldX,
                                                       float worldY) const
 {
   constexpr float hitRadius = 8.0f;
@@ -604,14 +604,14 @@ PitchDrawingHandler::Hit PitchDrawingHandler::hitTest(float worldX,
   return {};
 }
 
-PitchDrawingHandler::Anchor* PitchDrawingHandler::findAnchorById(int id)
+PitchShaperHandler::Anchor* PitchShaperHandler::findAnchorById(int id)
 {
   auto it = std::find_if(anchors.begin(), anchors.end(),
                          [id](const Anchor& anchor) { return anchor.id == id; });
   return it == anchors.end() ? nullptr : &*it;
 }
 
-bool PitchDrawingHandler::frameBelongsToPitchNote(int frame) const
+bool PitchShaperHandler::frameBelongsToPitchNote(int frame) const
 {
   if (!owner_.project)
     return false;
@@ -624,7 +624,7 @@ bool PitchDrawingHandler::frameBelongsToPitchNote(int frame) const
                      });
 }
 
-bool PitchDrawingHandler::isPitchRegionAtWorldX(float worldX) const
+bool PitchShaperHandler::isPitchRegionAtWorldX(float worldX) const
 {
   if (!owner_.project)
     return false;
@@ -636,7 +636,7 @@ bool PitchDrawingHandler::isPitchRegionAtWorldX(float worldX) const
          frameBelongsToPitchNote(frame);
 }
 
-void PitchDrawingHandler::sortAnchors()
+void PitchShaperHandler::sortAnchors()
 {
   std::sort(anchors.begin(), anchors.end(),
             [](const Anchor& a, const Anchor& b) { return a.frame < b.frame; });
@@ -644,7 +644,7 @@ void PitchDrawingHandler::sortAnchors()
 
 // ---------------------------------------------------------------- preview
 
-void PitchDrawingHandler::rebuildPreview()
+void PitchShaperHandler::rebuildPreview()
 {
   previewMidiCurve = originalMidiCurve;
   if (previewMidiCurve.empty())
@@ -678,7 +678,7 @@ void PitchDrawingHandler::rebuildPreview()
   updateAffectedNotePositions();
 }
 
-void PitchDrawingHandler::updateAffectedNotePositions()
+void PitchShaperHandler::updateAffectedNotePositions()
 {
   const auto [first, last] = affectedRange();
   if (!owner_.project || first < 0 || previewMidiCurve.empty())
@@ -719,7 +719,7 @@ void PitchDrawingHandler::updateAffectedNotePositions()
     owner_.onPitchEdited();
 }
 
-void PitchDrawingHandler::applyPreviewToProject()
+void PitchShaperHandler::applyPreviewToProject()
 {
   const auto [first, last] = affectedRange();
   if (!owner_.project || first < 0 || previewMidiCurve.empty())
@@ -833,7 +833,7 @@ void PitchDrawingHandler::applyPreviewToProject()
     owner_.onPitchPreviewRenderRequested();
 }
 
-void PitchDrawingHandler::restoreOriginalNoteStates()
+void PitchShaperHandler::restoreOriginalNoteStates()
 {
   if (!owner_.project)
     return;
@@ -846,7 +846,7 @@ void PitchDrawingHandler::restoreOriginalNoteStates()
   }
 }
 
-void PitchDrawingHandler::notifyStateChanged()
+void PitchShaperHandler::notifyStateChanged()
 {
   owner_.repaint();
 }

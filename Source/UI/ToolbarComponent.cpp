@@ -25,7 +25,7 @@ ToolbarComponent::ToolbarComponent()
     redoButton.setImage(loadImage(BinaryData::redo_png, BinaryData::redo_pngSize));
     selectModeButton.setImage(loadImage(BinaryData::select_png, BinaryData::select_pngSize));
     splitModeButton.setImage(loadImage(BinaryData::split_png, BinaryData::split_pngSize));
-    pitchDrawingModeButton.setImage(loadImage(BinaryData::drawing_png, BinaryData::drawing_pngSize));
+    pitchShaperModeButton.setImage(loadImage(BinaryData::drawing_png, BinaryData::drawing_pngSize));
     warpModeButton.setImage(warpToolIcon::makeToolbarSprite());
     logoImage = loadImage(BinaryData::logo_png, BinaryData::logo_pngSize);
 
@@ -42,7 +42,7 @@ ToolbarComponent::ToolbarComponent()
     addAndMakeVisible(loopButton);
     addAndMakeVisible(selectModeButton);
     addAndMakeVisible(splitModeButton);
-    addAndMakeVisible(pitchDrawingModeButton);
+    addAndMakeVisible(pitchShaperModeButton);
     addAndMakeVisible(warpModeButton);
     addAndMakeVisible(followButton);
     addAndMakeVisible(scaleSelectionButton);
@@ -60,7 +60,7 @@ ToolbarComponent::ToolbarComponent()
     loopButton.addListener(this);
     selectModeButton.addListener(this);
     splitModeButton.addListener(this);
-    pitchDrawingModeButton.addListener(this);
+    pitchShaperModeButton.addListener(this);
     warpModeButton.addListener(this);
     followButton.addListener(this);
     quantizeButton.addListener(this);
@@ -337,8 +337,8 @@ void ToolbarComponent::resized()
                               toolContainerBounds.getCentreY() - editToolSlotSize / 2,
                               editToolSlotSize, editToolSlotSize);
     editToolX += editToolSlotSize + editToolGap;
-    pitchDrawingModeButton.setVisible(true);
-    pitchDrawingModeButton.setBounds(editToolX,
+    pitchShaperModeButton.setVisible(true);
+    pitchShaperModeButton.setBounds(editToolX,
                                toolContainerBounds.getCentreY() - editToolSlotSize / 2,
                                editToolSlotSize, editToolSlotSize);
     editToolX += editToolSlotSize + editToolGap;
@@ -435,7 +435,7 @@ void ToolbarComponent::refreshLocalisedText()
     timeLabel.setTooltip(TR("tooltip.playhead_time"));
     selectModeButton.setTooltip(TR("tooltip.select_tool"));
     splitModeButton.setTooltip(TR("tooltip.split_tool"));
-    pitchDrawingModeButton.setTooltip(TR("tooltip.pitch_drawing_tool"));
+    pitchShaperModeButton.setTooltip(TR("tooltip.pitch_shaper_tool"));
     warpModeButton.setTooltip(TR("tooltip.warp_tool"));
     followButton.setTooltip(TR("tooltip.auto_scroll"));
     quantizeButton.setTooltip(TR("tooltip.quantize_macro"));
@@ -501,11 +501,11 @@ void ToolbarComponent::buttonClicked(juce::Button *button)
         if (onEditModeChanged)
             onEditModeChanged(EditMode::Split);
     }
-    else if (button == &pitchDrawingModeButton)
+    else if (button == &pitchShaperModeButton)
     {
-        setEditMode(EditMode::PitchDrawing);
+        setEditMode(EditMode::PitchShaper);
         if (onEditModeChanged)
-            onEditModeChanged(EditMode::PitchDrawing);
+            onEditModeChanged(EditMode::PitchShaper);
     }
     else if (button == &warpModeButton)
     {
@@ -600,7 +600,7 @@ void ToolbarComponent::setToolGroupEnabled(bool enabled)
 {
     selectModeButton.setEnabled(enabled);
     splitModeButton.setEnabled(enabled);
-    pitchDrawingModeButton.setEnabled(enabled);
+    pitchShaperModeButton.setEnabled(enabled);
     warpModeButton.setEnabled(enabled);
 }
 
@@ -641,7 +641,7 @@ void ToolbarComponent::setEditMode(EditMode mode)
                                     juce::dontSendNotification);
     splitModeButton.setToggleState(mode == EditMode::Split,
                                    juce::dontSendNotification);
-    pitchDrawingModeButton.setToggleState(mode == EditMode::PitchDrawing,
+    pitchShaperModeButton.setToggleState(mode == EditMode::PitchShaper,
                                     juce::dontSendNotification);
     warpModeButton.setToggleState(mode == EditMode::Warp,
                                   juce::dontSendNotification);

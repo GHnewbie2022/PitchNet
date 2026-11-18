@@ -163,7 +163,7 @@ private:
     // Edit mode buttons
     ToggleButton selectModeButton;
     ToggleButton splitModeButton;
-    ToggleButton pitchDrawingModeButton;
+    ToggleButton pitchShaperModeButton;
     ToggleButton warpModeButton;
     ToggleButton followButton;
     ScaleSelectionControl scaleSelectionButton;

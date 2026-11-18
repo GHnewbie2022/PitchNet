@@ -249,7 +249,7 @@ public:
     void deselectAllNotes();
     void clearAllDirty();
 
-    // Curves drawn with the Drawing tool (DrawnCurve.h).
+    // Curves drawn with the Pitch Shaper tool (DrawnCurve.h).
     std::vector<DrawnCurve>& getDrawnCurves() { return drawnCurves; }
     const std::vector<DrawnCurve>& getDrawnCurves() const { return drawnCurves; }
     int nextDrawnCurveId()

@@ -11,5 +11,5 @@
 #include "DragActions.h"
 #include "PitchToolAction.h"
 #include "WarpAction.h"
-#include "PitchDrawingAction.h"
+#include "PitchShaperAction.h"
 #include "PitchUndoManager.h"

@@ -9,7 +9,7 @@
 #include <vector>
 
 /**
- * The Drawing tool, RePitch Shaper style: anchors stay on the pitch line
+ * The Pitch Shaper tool, RePitch Shaper style: anchors stay on the pitch line
  * (DrawnCurve, saved with the project) and can be dragged again later.
  *
  *   click on a note        place an anchor; anchors placed one after another
@@ -22,10 +22,10 @@
  *
  * Every gesture is applied at once and is one undo step.
  */
-class PitchDrawingHandler final : public InteractionHandler
+class PitchShaperHandler final : public InteractionHandler
 {
 public:
-  explicit PitchDrawingHandler(PianoRollComponent& owner);
+  explicit PitchShaperHandler(PianoRollComponent& owner);
 
   bool mouseDown(const juce::MouseEvent& e, float worldX,
                  float worldY) override;

@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-struct PitchDrawingNoteState
+struct PitchShaperNoteState
 {
     NoteRef note;
     TransformParams params;
@@ -24,12 +24,12 @@ struct PitchDrawingNoteState
  * resets its pitch-tool transforms. The immutable analysis contour is never
  * changed; the previous baked contour and transforms are restored by undo/redo.
  */
-class PitchDrawingAction final : public UndoableAction
+class PitchShaperAction final : public UndoableAction
 {
 public:
-    PitchDrawingAction(Project* projectToEdit,
-                      std::vector<PitchDrawingNoteState> beforeStates,
-                      std::vector<PitchDrawingNoteState> afterStates,
+    PitchShaperAction(Project* projectToEdit,
+                      std::vector<PitchShaperNoteState> beforeStates,
+                      std::vector<PitchShaperNoteState> afterStates,
                       std::vector<DrawnCurve> curvesBeforeEdit = {},
                       std::vector<DrawnCurve> curvesAfterEdit = {})
         : project(projectToEdit), before(std::move(beforeStates)),
@@ -41,10 +41,10 @@ public:
 
     void undo() override { apply(before, curvesBefore); }
     void redo() override { apply(after, curvesAfter); }
-    juce::String getName() const override { return "Apply Pitch Drawing"; }
+    juce::String getName() const override { return "Apply Pitch Shaper"; }
 
 private:
-    void apply(const std::vector<PitchDrawingNoteState>& states,
+    void apply(const std::vector<PitchShaperNoteState>& states,
                const std::vector<DrawnCurve>& curves)
     {
         if (project)
@@ -75,8 +75,8 @@ private:
     }
 
     Project* project = nullptr;
-    std::vector<PitchDrawingNoteState> before;
-    std::vector<PitchDrawingNoteState> after;
+    std::vector<PitchShaperNoteState> before;
+    std::vector<PitchShaperNoteState> after;
     std::vector<DrawnCurve> curvesBefore;
     std::vector<DrawnCurve> curvesAfter;
 };

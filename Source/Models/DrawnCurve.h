@@ -4,7 +4,7 @@
 #include <vector>
 
 /**
- * A pitch curve drawn with the Drawing tool, kept on the project so its
+ * A pitch curve drawn with the Pitch Shaper tool, kept on the project so its
  * anchors stay on the pitch line and can be edited again later (like
  * RePitch's shape points).
  *

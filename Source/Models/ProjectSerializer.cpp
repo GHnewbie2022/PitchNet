@@ -299,7 +299,7 @@ juce::var ProjectSerializer::toJson(const Project& project,
     // Tilts no longer move a note's centre (Note::getTiltMean).
     obj->setProperty("tiltKeepsCentre", true);
 
-    // Curves drawn with the Drawing tool: anchor frames and the pitch each
+    // Curves drawn with the Pitch Shaper tool: anchor frames and the pitch each
     // replaced, as its difference from the drawn pitch.
     {
         juce::Array<juce::var> curves;

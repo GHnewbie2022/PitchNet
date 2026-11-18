@@ -3333,7 +3333,7 @@ void MainComponent::notifyProjectDataChanged()
 void MainComponent::undo()
 {
   // End any drawn curve first: its steps are in the history already.
-  pianoRoll.cancelPitchDrawingPreview();
+  pianoRoll.cancelPitchShaperPreview();
 
   if (undoManager && undoManager->canUndo())
   {
@@ -3345,7 +3345,7 @@ void MainComponent::undo()
 void MainComponent::redo()
 {
   // End any drawn curve first: its steps are in the history already.
-  pianoRoll.cancelPitchDrawingPreview();
+  pianoRoll.cancelPitchShaperPreview();
 
   if (undoManager && undoManager->canRedo())
   {
@@ -4213,7 +4213,7 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID> &commands)
       // Edit mode commands
       CommandIDs::activateMainTool,
       CommandIDs::activateSplitTool,
-      CommandIDs::activatePitchDrawingTool,
+      CommandIDs::activatePitchShaperTool,
       CommandIDs::activateWarpTool,
 
       // View commands
@@ -4382,12 +4382,12 @@ void MainComponent::getCommandInfo(juce::CommandID commandID,
     result.setTicked(pianoRoll.getEditMode() == EditMode::Split);
     break;
 
-  case CommandIDs::activatePitchDrawingTool:
-    result.setInfo(TR("command.pitch_drawing_tool"), TR("command.pitch_drawing_tool.desp"),
+  case CommandIDs::activatePitchShaperTool:
+    result.setInfo(TR("command.pitch_shaper_tool"), TR("command.pitch_shaper_tool.desp"),
                    TR("category.edit_mode"), 0);
     result.addDefaultKeypress('3', juce::ModifierKeys::noModifiers);
     result.setActive(project != nullptr && toolGroupEnabled);
-    result.setTicked(pianoRoll.getEditMode() == EditMode::PitchDrawing);
+    result.setTicked(pianoRoll.getEditMode() == EditMode::PitchShaper);
     break;
 
   case CommandIDs::activateWarpTool:
@@ -4572,9 +4572,9 @@ bool MainComponent::perform(const ApplicationCommandTarget::InvocationInfo &info
       setEditMode(EditMode::Split);
     return true;
 
-  case CommandIDs::activatePitchDrawingTool:
+  case CommandIDs::activatePitchShaperTool:
     if (toolGroupEnabled)
-      setEditMode(EditMode::PitchDrawing);
+      setEditMode(EditMode::PitchShaper);
     return true;
 
   case CommandIDs::activateWarpTool:

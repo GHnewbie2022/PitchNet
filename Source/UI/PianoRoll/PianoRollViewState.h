@@ -10,7 +10,7 @@ enum class EditMode
   Select = 0,
   // Value 1 belonged to the removed freehand tool.
   Split = 2,
-  PitchDrawing = 3,
+  PitchShaper = 3,
   // Value 4 belonged to the Timing tool, folded into Warp (note boundaries
   // drag there).
   // The warp layer (spec section 3): place, drag and delete warp anchors,

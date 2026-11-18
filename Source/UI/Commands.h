@@ -41,7 +41,7 @@ namespace CommandIDs
         // Edit Mode Commands (0x2040-0x204F)
         activateMainTool    = 0x2042,
         activateSplitTool   = 0x2043,
-        activatePitchDrawingTool  = 0x2044,
+        activatePitchShaperTool  = 0x2044,
         // 0x2045 was the Timing tool, folded into the Warp tool.
         activateWarpTool    = 0x2046,
         

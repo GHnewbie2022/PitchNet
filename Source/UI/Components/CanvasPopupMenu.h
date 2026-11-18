@@ -84,7 +84,7 @@ public:
         : juce::PopupMenu::CustomComponent(false), choice(std::move(result))
     {
         const juce::String names[] = { TR("canvas.select"), TR("canvas.split"),
-                                       TR("canvas.pitch_drawing"), TR("canvas.warp") };
+                                       TR("canvas.pitch_shaper"), TR("canvas.warp") };
         const void* data[] = { BinaryData::selectmenu_png, BinaryData::splitmenu_png,
                                BinaryData::drawingmenu_png };
         const int sizes[] = { BinaryData::selectmenu_pngSize, BinaryData::splitmenu_pngSize,

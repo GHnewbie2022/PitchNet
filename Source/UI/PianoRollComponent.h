@@ -36,7 +36,7 @@ class InteractionHandler;
 class LoopDragHandler;
 class SelectHandler;
 class SplitHandler;
-class PitchDrawingHandler;
+class PitchShaperHandler;
 class WarpHandler;
 
 /**
@@ -206,7 +206,7 @@ public:
   EditMode getEditMode() const { return editMode; }
 
   // Cancel any transient pitch edit before undo/redo changes project history.
-  void cancelPitchDrawingPreview();
+  void cancelPitchShaperPreview();
 
   // View settings
   void setNoiseVisibility(bool show);
@@ -384,6 +384,11 @@ private:
   void resetBreathLevel(int key);
   juce::Rectangle<float> getPreviewButtonBounds(const Note &note) const;
   juce::Rectangle<float> getNoteHoverShadowBounds(const Note &note) const;
+  // The scissors' target: the note whose coloured blob (or row) is under
+  // (x, y), within the note's own time span. `top`/`bottom` get the blob's
+  // vertical extent, for the guide line.
+  Note *findNoteForSplitAt(float x, float y, float *top = nullptr,
+                           float *bottom = nullptr);
   juce::Rectangle<float> getResetButtonBounds(const Note &note) const;
   juce::Rectangle<float> getPreviewHoverBounds(const Note &note) const;
   juce::Rectangle<int> getPreviewButtonLocalBounds(const Note &note) const;
@@ -566,7 +571,7 @@ private:
   std::unique_ptr<LoopDragHandler> loopDragHandler_;
   std::unique_ptr<SelectHandler> selectHandler_;
   std::unique_ptr<SplitHandler> splitHandler_;
-  std::unique_ptr<PitchDrawingHandler> pitchDrawingHandler_;
+  std::unique_ptr<PitchShaperHandler> pitchShaperHandler_;
   std::unique_ptr<WarpHandler> warpHandler_;
   InteractionHandler *currentHandler_ = nullptr;
 

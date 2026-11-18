@@ -63,7 +63,7 @@ public:
 
   static constexpr float kStripHeight = 18.0f;
 
-  /** The eraser cursor Alt shows over an anchor; the Drawing tool's anchors
+  /** The eraser cursor Alt shows over an anchor; the Pitch Shaper tool's anchors
    *  use it too. */
   static const juce::MouseCursor &eraserCursor();
 

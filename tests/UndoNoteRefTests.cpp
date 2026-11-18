@@ -4,7 +4,7 @@
 #include "../Source/Models/Project.h"
 #include "../Source/Undo/DragActions.h"
 #include "../Source/Undo/NoteActions.h"
-#include "../Source/Undo/PitchDrawingAction.h"
+#include "../Source/Undo/PitchShaperAction.h"
 #include "../Source/Undo/PitchToolAction.h"
 #include "TestAssert.h"
 #include <cmath>
@@ -81,14 +81,14 @@ int main()
         CHECK(at(project, 20)->getPitchDrift() == -2.4f);
     }
 
-    // Pitch drawing (the action in the crash report).
+    // Pitch shaper (the action in the crash report).
     {
         Project project;
         setUp(project);
         Note* target = at(project, 10);
         const auto params = TransformParams::fromNote(*target);
         const std::vector<float> contour(10, 1.0f);
-        PitchDrawingAction action(&project, {{target, params, {}}},
+        PitchShaperAction action(&project, {{target, params, {}}},
                                   {{target, params, contour}});
         action.redo();
         reshuffle(project);

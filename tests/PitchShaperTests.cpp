@@ -1,5 +1,5 @@
 #include "../Source/Models/ProjectSerializer.h"
-#include "../Source/Undo/PitchDrawingAction.h"
+#include "../Source/Undo/PitchShaperAction.h"
 #include "../Source/Utils/Constants.h"
 #include "TestAssert.h"
 #include <cmath>
@@ -20,7 +20,7 @@ int main() {
     auto& note = project.getNotes()[0];
     const auto params = TransformParams::fromNote(note);
     const std::vector<float> contour(20, 1.0f);
-    PitchDrawingAction action(&project, {{&note, params, {}}},
+    PitchShaperAction action(&project, {{&note, params, {}}},
                             {{&note, params, contour}});
     action.redo();
     CHECK(note.getBakedDeltaPitch() == contour);
@@ -48,5 +48,5 @@ int main() {
         CHECK(restored.getNotes()[0].getBakedDeltaPitch() == contour);
         CHECK(!restored.getNotes()[0].isNeutralForOriginalWaveform());
     }
-    std::cout << "Pitch drawing undo/redo, neutrality and persistence passed\n";
+    std::cout << "Pitch shaper undo/redo, neutrality and persistence passed\n";
 }

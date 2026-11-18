@@ -893,7 +893,7 @@ void mergeCheck(Project &project)
 }
 
 
-// The drawing tool without a confirmation: each click is applied and is one
+// The Pitch Shaper tool without a confirmation: each click is applied and is one
 // undo step; Esc ends the curve and keeps it; undo walks back one step at a
 // time to the pitch before the curve.
 void drawCheck(Project &project)
@@ -905,7 +905,7 @@ void drawCheck(Project &project)
   roll.setProject(&project);
   roll.setUndoManager(&undo);
   roll.setPixelsPerSecond(400.0f);
-  roll.setEditMode(EditMode::PitchDrawing);
+  roll.setEditMode(EditMode::PitchShaper);
 
   const Note *longest = nullptr;
   for (const auto &note : project.getNotes())
@@ -968,17 +968,17 @@ void drawCheck(Project &project)
   expect(std::abs(pitchAt(mid) - target) < 0.05f, "Esc ends the curve and keeps it");
   expect(curves().size() == 1 && curves()[0].anchorFrames.size() == 2,
          "the anchors stay on the line after Esc");
-  roll.cancelPitchDrawingPreview(); // as MainComponent::undo does
+  roll.cancelPitchShaperPreview(); // as MainComponent::undo does
   undo.undo();
   expect(std::abs(pitchAt(mid) - target) > 0.05f && curves()[0].anchorFrames.size() == 1,
          "one undo takes back the second anchor only");
-  roll.cancelPitchDrawingPreview(); // as MainComponent::undo does
+  roll.cancelPitchShaperPreview(); // as MainComponent::undo does
   undo.undo();
   expect(std::abs(pitchAt(mid) - original) < 0.002f && curves().empty(),
          "second undo restores the pitch and drops the curve");
-  roll.cancelPitchDrawingPreview();
+  roll.cancelPitchShaperPreview();
   undo.redo();
-  roll.cancelPitchDrawingPreview();
+  roll.cancelPitchShaperPreview();
   undo.redo();
   expect(std::abs(pitchAt(mid) - target) < 0.05f && curves().size() == 1,
          "redo brings the curve and its anchors back");
@@ -991,7 +991,7 @@ void drawCheck(Project &project)
   expect(std::abs(pitchAt(anchorB) - (target + 1.0f)) < 0.05f && curves().size() == 1 &&
              curves()[0].anchorFrames.size() == 2,
          "a kept anchor can be dragged again later");
-  roll.cancelPitchDrawingPreview(); // as MainComponent::undo does
+  roll.cancelPitchShaperPreview(); // as MainComponent::undo does
   undo.undo();
   expect(std::abs(pitchAt(anchorB) - target) < 0.05f, "undo takes the drag back");
 
@@ -1145,7 +1145,7 @@ void drawCheck(Project &project)
     gesture(at(b), at(b) + juce::Point<float>(60.0f, 0.0f), juce::ModifierKeys::altModifier);
     expect(std::abs(roll.getPixelsPerSecond() - 300.0f) < 0.5f, "Alt on a note does not zoom");
     juce::ignoreUnused(pps2);
-    roll.setEditMode(EditMode::PitchDrawing);
+    roll.setEditMode(EditMode::PitchShaper);
   }
 
   // Restore all edits includes the note separation: a split, tilted note
@@ -1196,7 +1196,7 @@ void drawCheck(Project &project)
       if (n.getStartFrame() == s0 && std::abs(n.getTiltLeft() - 1.0f) < 1.0e-4f)
         tiltBack = true;
     expect(countIn() == 2 && tiltBack, "one undo brings the split and tilt back");
-    roll.setEditMode(EditMode::PitchDrawing);
+    roll.setEditMode(EditMode::PitchShaper);
   }
 
   // Moving the tilt pivot of a tilted note leaves its curve as it is.
@@ -1248,7 +1248,7 @@ void drawCheck(Project &project)
       worst = std::max(worst, std::abs(pitchAt(f) - before[static_cast<size_t>(f - note->getStartFrame())]));
     std::printf("  pivot 0.30 -> %.2f, pitch moved by at most %.4f\n", note->getTiltPivot(), worst);
     expect(moved && worst < 0.002f, "moving the tilt pivot keeps the tilted curve");
-    roll.setEditMode(EditMode::PitchDrawing);
+    roll.setEditMode(EditMode::PitchShaper);
   }
   std::printf("draw check: %d failure(s)\n", failures);
 }
