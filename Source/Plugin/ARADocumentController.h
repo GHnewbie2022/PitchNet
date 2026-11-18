@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../Audio/SourceAudio.h"
+
 #include "../Audio/RealtimePitchProcessor.h"
 #include "../JuceHeader.h"
 #include "AraTempoMap.h"
@@ -269,9 +271,10 @@ public:
 private:
   void renderPreviewBuffer(juce::ARAPlaybackRegion *region,
                            double previewStartTime, double previewEndTime);
-  bool readPlaybackRangeIntoBuffer(juce::Range<double> playbackRange,
-                                   juce::ARAPlaybackRegion *region,
-                                   juce::AudioBuffer<float> &buffer);
+  bool readPlaybackRangeIntoBuffer(
+      juce::Range<double> playbackRange, juce::ARAPlaybackRegion *region,
+      juce::AudioBuffer<float> &buffer,
+      const std::vector<sourceaudio::Piece> *pieces = nullptr);
   void writePreviewOnce(juce::AudioBuffer<float> &buffer);
   void writePreviewLoop(juce::AudioBuffer<float> &buffer);
   bool readFromARARegions(juce::AudioBuffer<float> &buffer,

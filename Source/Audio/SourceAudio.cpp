@@ -122,14 +122,23 @@ std::vector<std::pair<int, int>> editedRanges(const float *composite,
   return ranges;
 }
 
-Playback build(const AudioData &audioData)
+Playback build(const AudioData &audioData) { return build(audioData, audioData); }
+
+Playback build(const AudioData &audioData, const AudioData &recording)
+{
+  return build(audioData, audioData.waveform, recording);
+}
+
+Playback build(const AudioData &audioData,
+               const juce::AudioBuffer<float> &composite,
+               const AudioData &recording)
 {
   Playback result;
-  const auto &composite = audioData.waveform;
-  const int rate = audioData.sourceSampleRate;
-  const auto &source = audioData.warpedSourceAudio.getNumSamples() > 0
-                           ? audioData.warpedSourceAudio
-                           : audioData.sourceAudio;
+  const int rate = recording.sourceSampleRate;
+  const auto &source = !audioData.warpMap.isIdentity() &&
+                               recording.warpedSourceAudio.getNumSamples() > 0
+                           ? recording.warpedSourceAudio
+                           : recording.sourceAudio;
   if (source.getNumSamples() <= 0 || rate <= 0 || composite.getNumSamples() <= 0)
   {
     result.audio.makeCopyOf(composite);
@@ -142,7 +151,7 @@ Playback build(const AudioData &audioData)
 
   const auto &reference = warp::reference(audioData);
   const bool hasReference =
-      &reference != &composite && reference.getNumSamples() > 0;
+      &reference != &audioData.waveform && reference.getNumSamples() > 0;
   const int compositeSamples = composite.getNumSamples();
   const int margin = static_cast<int>(kMarginSeconds * SAMPLE_RATE);
   const int fadeAnalysis = static_cast<int>(kFadeSeconds * SAMPLE_RATE);
@@ -199,5 +208,80 @@ Playback build(const AudioData &audioData)
     }
   }
   return result;
+}
+
+std::vector<Piece> differingPieces(const juce::AudioBuffer<float> &playback,
+                                   const juce::AudioBuffer<float> &recording,
+                                   int join)
+{
+  std::vector<Piece> pieces;
+  const int samples = playback.getNumSamples();
+  const int channels = playback.getNumChannels();
+  if (samples <= 0 || channels <= 0)
+    return pieces;
+
+  const auto differs = [&](int i)
+  {
+    for (int c = 0; c < channels; ++c)
+    {
+      const float expected =
+          recording.getNumChannels() > 0 && i < recording.getNumSamples()
+              ? recording.getSample(std::min(c, recording.getNumChannels() - 1), i)
+              : 0.0f;
+      if (playback.getSample(c, i) != expected)
+        return true;
+    }
+    return false;
+  };
+
+  std::vector<std::pair<int, int>> runs;
+  for (int i = 0; i < samples;)
+  {
+    if (!differs(i))
+    {
+      ++i;
+      continue;
+    }
+    int end = i + 1;
+    while (end < samples && differs(end))
+      ++end;
+    if (!runs.empty() && i - runs.back().second < join)
+      runs.back().second = end;
+    else
+      runs.emplace_back(i, end);
+    i = end;
+  }
+
+  for (const auto &[start, end] : runs)
+  {
+    Piece piece;
+    piece.start = start;
+    piece.audio.setSize(channels, end - start);
+    for (int c = 0; c < channels; ++c)
+      piece.audio.copyFrom(c, 0, playback, c, start, end - start);
+    pieces.push_back(std::move(piece));
+  }
+  return pieces;
+}
+
+void overlay(const std::vector<Piece> &pieces, long long recordingStart,
+             juce::AudioBuffer<float> &dest, int destStart, int length)
+{
+  if (length <= 0)
+    return;
+  const long long recordingEnd = recordingStart + length;
+  for (const auto &piece : pieces)
+  {
+    const long long pieceEnd = piece.start + piece.audio.getNumSamples();
+    const long long from = std::max(recordingStart, piece.start);
+    const long long to = std::min(recordingEnd, pieceEnd);
+    if (to <= from || piece.audio.getNumChannels() <= 0)
+      continue;
+    for (int c = 0; c < dest.getNumChannels(); ++c)
+      dest.copyFrom(c, destStart + static_cast<int>(from - recordingStart),
+                    piece.audio, std::min(c, piece.audio.getNumChannels() - 1),
+                    static_cast<int>(from - piece.start),
+                    static_cast<int>(to - from));
+  }
 }
 } // namespace sourceaudio

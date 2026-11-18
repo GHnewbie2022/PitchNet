@@ -55,6 +55,43 @@ struct Playback
 Playback build(const AudioData &audioData);
 
 /**
+ * The same, with the edit (waveform, warpMap, the reference inputs) taken
+ * from `edit` and the recording (sourceAudio, sourceSampleRate,
+ * warpedSourceAudio) from `recording`. The plugin keeps the recording apart
+ * from the project, read from the ARA source.
+ */
+Playback build(const AudioData &edit, const AudioData &recording);
+
+/** The same, with `composite` in place of edit.waveform. */
+Playback build(const AudioData &edit, const juce::AudioBuffer<float> &composite,
+               const AudioData &recording);
+
+/** A run of playback samples that differ from the recording. */
+struct Piece
+{
+  long long start = 0; // in recording samples
+  juce::AudioBuffer<float> audio;
+};
+
+/**
+ * The runs where `playback` differs from `recording` in any channel, exactly
+ * (no threshold: everything else is the recording, bit for bit). Runs closer
+ * than `join` samples become one. This is what the plugin stores and plays:
+ * the host's own audio with these pieces laid over it.
+ */
+std::vector<Piece> differingPieces(const juce::AudioBuffer<float> &playback,
+                                   const juce::AudioBuffer<float> &recording,
+                                   int join);
+
+/**
+ * Overwrites dest[destStart, destStart + length), which holds the recording
+ * from recording sample `recordingStart`, with the pieces that cover it.
+ * Channel c takes piece channel min(c, channels - 1). Allocates nothing.
+ */
+void overlay(const std::vector<Piece> &pieces, long long recordingStart,
+             juce::AudioBuffer<float> &dest, int destStart, int length);
+
+/**
  * Sample ranges [start, end) where `composite` differs from `reference`,
  * each widened by `margin` and merged when they come closer than `join`.
  * Exposed for tests.

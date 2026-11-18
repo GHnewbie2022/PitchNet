@@ -154,6 +154,51 @@ void warpRendersAtTheRecordingsOwnRate()
   for (int i = from; i < samples; ++i)
     CHECK(output[static_cast<size_t>(i)] == source[static_cast<size_t>(i)]);
 }
+// The plugin plays the host's audio with differingPieces laid over it. That
+// has to be the standalone's playback, sample for sample, at any block size.
+void piecesOverTheRecordingAreThePlayback()
+{
+  auto audio = makeRecording(2.0);
+  for (int i = static_cast<int>(0.5 * SAMPLE_RATE);
+       i < static_cast<int>(0.7 * SAMPLE_RATE); ++i)
+    audio.waveform.setSample(0, i, 0.1f);
+  for (int i = static_cast<int>(1.3 * SAMPLE_RATE);
+       i < static_cast<int>(1.4 * SAMPLE_RATE); ++i)
+    audio.waveform.setSample(0, i, -0.1f);
+
+  // The recording kept apart from the edit, as the plugin keeps it.
+  AudioData recording;
+  recording.sourceAudio.makeCopyOf(audio.sourceAudio);
+  recording.sourceSampleRate = audio.sourceSampleRate;
+  const auto expected = sourceaudio::build(audio);
+  const auto playback = sourceaudio::build(audio, audio.waveform, recording);
+  CHECK(playback.sampleRate == expected.sampleRate);
+
+  const auto pieces = sourceaudio::differingPieces(
+      playback.audio, recording.sourceAudio, kSourceRate / 20);
+  CHECK(pieces.size() == 2);
+
+  for (int block : {64, 512, 1000})
+  {
+    juce::AudioBuffer<float> out(2, playback.audio.getNumSamples());
+    for (int start = 0; start < out.getNumSamples(); start += block)
+    {
+      const int n = std::min(block, out.getNumSamples() - start);
+      for (int c = 0; c < 2; ++c)
+        out.copyFrom(c, start, recording.sourceAudio, c, start, n);
+      sourceaudio::overlay(pieces, start, out, start, n);
+    }
+    for (int c = 0; c < 2; ++c)
+      for (int i = 0; i < out.getNumSamples(); ++i)
+        CHECK(out.getSample(c, i) == expected.audio.getSample(c, i));
+  }
+
+  // Nothing edited: nothing stored.
+  auto untouched = makeRecording(1.0);
+  CHECK(sourceaudio::differingPieces(sourceaudio::build(untouched).audio,
+                                     untouched.sourceAudio, 100)
+            .empty());
+}
 } // namespace
 
 int main()
@@ -162,6 +207,7 @@ int main()
   onlyTheEditedRangeIsReplaced();
   editedRangesAreWidenedAndJoined();
   warpRendersAtTheRecordingsOwnRate();
+  piecesOverTheRecordingAreThePlayback();
   std::printf("SourceAudioTests passed\n");
   return 0;
 }

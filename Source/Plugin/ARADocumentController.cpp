@@ -58,6 +58,8 @@ juce::String pitchnetRegionSelector(const juce::ARAPlaybackRegion &region) {
          juce::String(pitchRegion->getLiveSerial());
 }
 
+#include <optional>
+
 namespace {
 constexpr juce::int64 kPitchNetAraModificationArchiveMagic =
     -0x504E41524D4F444LL; // -PNARMOD
@@ -70,7 +72,9 @@ constexpr juce::int64 kPitchNetAraModificationArchiveMagic =
 // rendered audio at the wrong offset. Affected modifications simply re-analyse.
 // v5: the warp layer. v4 projects keep per-note timing the warp map cannot
 // reproduce (spec Q3), so like v3 they are read for alignment and dropped.
-constexpr int kPitchNetAraModificationArchiveVersion = 5;
+// v6: processed audio is followed by its playback pieces (spec Q5).
+constexpr int kPitchNetAraModificationArchiveVersion = 6;
+constexpr int kPitchNetAraFirstPiecesArchiveVersion = 6;
 constexpr int kPitchNetAraFirstModificationTimeArchiveVersion = 5;
 
 juce::AudioBuffer<float> resampleAuditionBuffer(
@@ -111,7 +115,10 @@ juce::AudioBuffer<float> resampleAuditionBuffer(
 bool readPlaybackRegionIntoBlock(
     juce::ARAPlaybackRegion *region, juce::ARAAudioSourceReader &reader,
     double outputSampleRate, juce::int64 blockStartSample,
-    juce::AudioBuffer<float> &buffer, AraResamplingState *state = nullptr) {
+    juce::AudioBuffer<float> &buffer, AraResamplingState *state = nullptr,
+    const std::vector<sourceaudio::Piece> *pieces = nullptr) {
+  // `pieces` (spec Q5): the edit, at the source's rate and channel count, laid
+  // over the source before any rate conversion. Caller holds the lock.
   if (!region || !region->getAudioModification() || outputSampleRate <= 0.0)
     return false;
 
@@ -145,9 +152,15 @@ bool readPlaybackRegionIntoBlock(
     return false;
 
   const int sourceChannels = source->getChannelCount();
-  if (juce::approximatelyEqual(sourceRate, outputSampleRate))
-    return reader.read(&buffer, outputStart, outputLength, sourceStart, true,
-                       sourceChannels > 1);
+  if (juce::approximatelyEqual(sourceRate, outputSampleRate)) {
+    if (!reader.read(&buffer, outputStart, outputLength, sourceStart, true,
+                     sourceChannels > 1))
+      return false;
+    if (pieces != nullptr)
+      sourceaudio::overlay(*pieces, sourceStart, buffer, outputStart,
+                           outputLength);
+    return true;
+  }
 
   const double ratio = sourceRate / outputSampleRate;
 
@@ -179,6 +192,8 @@ bool readPlaybackRegionIntoBlock(
   if (!reader.read(&sourceBuffer, 0, sourceLength, readStart, true,
                    sourceChannels > 1))
     return false;
+  if (pieces != nullptr)
+    sourceaudio::overlay(*pieces, readStart, sourceBuffer, 0, sourceLength);
 
   int inputSamplesUsed = 0;
   for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
@@ -445,17 +460,29 @@ bool PitchNetPlaybackRenderer::renderProcessedRegions(
              .isEmpty();
 
     bool renderedRegion = false;
+    // Held for the whole region: the raw read below lays the pieces over
+    // the source while it holds them.
+    std::optional<juce::SpinLock::ScopedTryLockType> processedLock;
+    const std::vector<sourceaudio::Piece> *pieces = nullptr;
 
     if (auto *modification =
             region->getAudioModification<PitchNetAudioModification>()) {
-      const auto lock = modification->tryLockProcessedAudio();
-      if (lock.isLocked()) {
+      processedLock.emplace(modification->getProcessedAudioLock());
+      if (!processedLock->isLocked()) {
+      } else if (const auto *data = modification->getProcessedData();
+                 data != nullptr && data->hasPieces() &&
+                 modification->getAudioSource() != nullptr &&
+                 juce::approximatelyEqual(
+                     data->piecesSampleRate,
+                     modification->getAudioSource()->getSampleRate())) {
+        // Spec Q5: the host's audio with the edit laid over it, below.
+        pieces = &data->pieces;
+      } else {
         // The modification owns one processed buffer and every region
         // referencing it is a window onto that one edit layer, so they all
         // render from it. This replaces the former per-region rule, which
         // existed when regions owned their own state and a shared fallback
         // would have made an unedited region play an edited sibling's audio.
-        const auto *data = modification->getProcessedData();
         if (data != nullptr && data->hasAudio()) {
           auto *source = modification->getAudioSource();
           const double modificationRate =
@@ -495,7 +522,7 @@ bool PitchNetPlaybackRenderer::renderProcessedRegions(
         tempBuffer->clear();
         if (readPlaybackRegionIntoBlock(region, *it->second, sampleRate,
                                         timeInSamples, *tempBuffer,
-                                        rawStatePtr)) {
+                                        rawStatePtr, pieces)) {
           for (int ch = 0; ch < std::min(buffer.getNumChannels(),
                                          tempBuffer->getNumChannels());
                ++ch)
@@ -752,7 +779,9 @@ void PitchNetEditorRenderer::releaseResources() {
 
 bool PitchNetEditorRenderer::readPlaybackRangeIntoBuffer(
     juce::Range<double> playbackRange, juce::ARAPlaybackRegion *region,
-    juce::AudioBuffer<float> &buffer) {
+    juce::AudioBuffer<float> &buffer,
+    const std::vector<sourceaudio::Piece> *pieces) {
+  // `pieces`: as in readPlaybackRegionIntoBlock. Caller holds the lock.
   if (!region || !region->getAudioModification())
     return false;
 
@@ -798,9 +827,15 @@ bool PitchNetEditorRenderer::readPlaybackRangeIntoBuffer(
     return false;
 
   if (juce::approximatelyEqual(sourceSampleRate, sampleRate)) {
-    return it->second->read(&buffer, static_cast<int>(outputOffset),
-                            static_cast<int>(readLength), inputOffset, true,
-                            sourceChannels > 1);
+    if (!it->second->read(&buffer, static_cast<int>(outputOffset),
+                          static_cast<int>(readLength), inputOffset, true,
+                          sourceChannels > 1))
+      return false;
+    if (pieces != nullptr)
+      sourceaudio::overlay(*pieces, inputOffset, buffer,
+                           static_cast<int>(outputOffset),
+                           static_cast<int>(readLength));
+    return true;
   }
 
   const double ratio = sourceSampleRate / sampleRate;
@@ -812,6 +847,9 @@ bool PitchNetEditorRenderer::readPlaybackRangeIntoBuffer(
   if (!it->second->read(&sourceBuffer, 0, sourceSamplesToRead, inputOffset,
                         true, sourceChannels > 1))
     return false;
+  if (pieces != nullptr)
+    sourceaudio::overlay(*pieces, inputOffset, sourceBuffer, 0,
+                         sourceSamplesToRead);
 
   for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
     juce::LagrangeInterpolator interpolator;
@@ -864,13 +902,20 @@ void PitchNetEditorRenderer::renderPreviewBuffer(
   input.clear();
 
   bool renderedPreview = false;
+  std::optional<juce::SpinLock::ScopedTryLockType> processedLock;
+  const std::vector<sourceaudio::Piece> *pieces = nullptr;
   if (auto *modification =
           region->getAudioModification<PitchNetAudioModification>()) {
-    const auto lock = modification->tryLockProcessedAudio();
-    if (lock.isLocked()) {
+    processedLock.emplace(modification->getProcessedAudioLock());
+    if (processedLock->isLocked()) {
       // One modification, one processed buffer - see the playback renderer.
       const auto *data = modification->getProcessedData();
-      if (data != nullptr && data->hasAudio()) {
+      auto *source = modification->getAudioSource();
+      if (data != nullptr && data->hasPieces() && source != nullptr &&
+          juce::approximatelyEqual(data->piecesSampleRate,
+                                   source->getSampleRate())) {
+        pieces = &data->pieces; // Spec Q5, as in the playback renderer.
+      } else if (data != nullptr && data->hasAudio()) {
         auto *source = modification->getAudioSource();
         const double modificationRate =
             source != nullptr ? source->getSampleRate() : 0.0;
@@ -885,7 +930,7 @@ void PitchNetEditorRenderer::renderPreviewBuffer(
   }
 
   if (!renderedPreview &&
-      !readPlaybackRangeIntoBuffer(previewRange, region, input)) {
+      !readPlaybackRangeIntoBuffer(previewRange, region, input, pieces)) {
     previewLoopRange = {};
     return;
   }
@@ -2548,10 +2593,12 @@ bool PitchNetDocumentController::doRestoreObjectsFromStream(
 
         if (hasAudio != 0) {
           if (payloadIsUsable && pitchModification != nullptr) {
-            if (!pitchModification->readProcessedAudioFromStream(input))
+            if (!pitchModification->readProcessedAudioFromStream(
+                    input, version >= kPitchNetAraFirstPiecesArchiveVersion))
               return false;
           } else if (!PitchNetAudioModification::skipProcessedAudioFromStream(
-                         input)) {
+                         input,
+                         version >= kPitchNetAraFirstPiecesArchiveVersion)) {
             return false;
           }
         }

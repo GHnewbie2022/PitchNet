@@ -1,4 +1,5 @@
 #include "PluginProcessor.h"
+#include "../Audio/SourceAudio.h"
 #include "../Utils/AudioResampler.h"
 #include "../Audio/BreathSibilanceAnalysis.h"
 #include "../Audio/EditorController.h"
@@ -1779,9 +1780,19 @@ void PitchNetAudioProcessor::requestPluginProjectRender(
                        " fp=" + juce::String(araDiagFingerprint(processedSlice), 6) +
                        " changedRanges=" +
                        juce::String(static_cast<int>(renderChangedSampleRanges.size())));
-              renderModification->setProcessedAudio(
-                  processedSlice, processedRate,
-                  /*startSampleInModification*/ 0);
+              std::vector<sourceaudio::Piece> pieces;
+              double piecesRate = 0.0;
+              if (buildPlaybackPieces(renderRegionKey, *renderModification,
+                                      audioData, processedSlice, pieces,
+                                      piecesRate))
+                renderModification->setProcessedAudio(
+                    processedSlice, processedRate,
+                    /*startSampleInModification*/ 0, std::move(pieces),
+                    piecesRate);
+              else
+                renderModification->setProcessedAudio(
+                    processedSlice, processedRate,
+                    /*startSampleInModification*/ 0);
               renderModification->notifyContentChanged(
                   juce::ARAContentUpdateScopes::samplesAreAffected(), true);
               for (auto *region : renderModification->getPlaybackRegions())
@@ -1914,8 +1925,17 @@ void PitchNetAudioProcessor::updateProjectStateFromEditor(
                  juce::String(processed.getNumSamples()) + " rate=" +
                  juce::String(processedRate, 1) + " offset=0" +
                  " fp=" + juce::String(araDiagFingerprint(processed), 6));
-        activeModification->setProcessedAudio(processed, processedRate,
-                                              /*startSampleInModification*/ 0);
+        std::vector<sourceaudio::Piece> pieces;
+        double piecesRate = 0.0;
+        if (buildPlaybackPieces(activeRegionKey, *activeModification,
+                                stateProject.getAudioData(), processed, pieces,
+                                piecesRate))
+          activeModification->setProcessedAudio(
+              processed, processedRate, /*startSampleInModification*/ 0,
+              std::move(pieces), piecesRate);
+        else
+          activeModification->setProcessedAudio(
+              processed, processedRate, /*startSampleInModification*/ 0);
 
         // Tell the host the rendered samples changed (ARAPluginDemo pattern).
         // ARA hosts prefetch/pre-render playback-renderer output ahead of the
@@ -1946,6 +1966,50 @@ void PitchNetAudioProcessor::updateProjectStateFromEditor(
 }
 
 #if JucePlugin_Enable_ARA
+bool PitchNetAudioProcessor::buildPlaybackPieces(
+    const juce::String &key, PitchNetAudioModification &modification,
+    const AudioData &edit, const juce::AudioBuffer<float> &composite,
+    std::vector<sourceaudio::Piece> &pieces, double &piecesRate) {
+  auto *source = modification.getAudioSource();
+  if (source == nullptr || source->getSampleRate() <= 0.0 ||
+      source->getChannelCount() <= 0 || source->getSampleCount() <= 0 ||
+      source->getSampleCount() > std::numeric_limits<int>::max() ||
+      edit.sampleRate != SAMPLE_RATE)
+    return false;
+
+  const int rate = juce::roundToInt(source->getSampleRate());
+  const int channels = source->getChannelCount();
+  const int samples = static_cast<int>(source->getSampleCount());
+  auto &recording = araRecordings[key];
+  if (recording == nullptr || recording->sourceSampleRate != rate ||
+      recording->sourceAudio.getNumChannels() != channels ||
+      recording->sourceAudio.getNumSamples() != samples) {
+    auto fresh = std::make_unique<AudioData>();
+    fresh->sourceAudio.setSize(channels, samples);
+    juce::ARAAudioSourceReader reader(source);
+    if (!reader.read(&fresh->sourceAudio, 0, samples, 0, true, channels > 1))
+      return false;
+    fresh->sourceSampleRate = rate;
+    recording = std::move(fresh);
+  }
+  // Spec Q5 C: the recording laid out by this edit's warp map, at its rate.
+  if (!(recording->warpMap == edit.warpMap)) {
+    recording->warpMap = edit.warpMap;
+    sourceaudio::rebuildWarped(*recording);
+  }
+
+  const auto playback = sourceaudio::build(edit, composite, *recording);
+  if (playback.sampleRate != rate)
+    return false;
+  pieces = sourceaudio::differingPieces(playback.audio, recording->sourceAudio,
+                                        rate / 20);
+  piecesRate = rate;
+  ARA_DIAG("pieces key=" + key + " rate=" + juce::String(rate) +
+           " channels=" + juce::String(channels) +
+           " count=" + juce::String(static_cast<int>(pieces.size())));
+  return true;
+}
+
 bool PitchNetAudioProcessor::projectHasRegionEdits(const Project &project) {
   if (project.getGlobalPitchOffset() != 0.0f ||
       project.getFormantShift() != 0.0f)

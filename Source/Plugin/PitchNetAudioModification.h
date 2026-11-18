@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../JuceHeader.h"
+#include "../Audio/SourceAudio.h"
 #include <limits>
 
 #if JucePlugin_Enable_ARA
@@ -59,6 +60,16 @@ public:
     bool hasAudio() const {
       return audio.getNumSamples() > 0 && sampleRate > 0.0;
     }
+
+    // Spec Q5: what playback actually lays over the host's own audio. `audio`
+    // above stays the 44.1 kHz analysis composite (the editor restores from
+    // it); these pieces are the same edit at the recording's rate and channel
+    // count, only where it differs from the recording. Empty for archives
+    // written before them: playback then falls back to `audio`.
+    std::vector<sourceaudio::Piece> pieces;
+    double piecesSampleRate = 0.0;
+
+    bool hasPieces() const { return piecesSampleRate > 0.0; }
   };
 
   PitchNetAudioModification(
@@ -85,6 +96,7 @@ public:
             sourceModification->processedAudio->audio,
             sourceModification->processedAudio->sampleRate,
             sourceModification->processedAudio->startSampleInModification);
+        copyPieces(*sourceModification->processedAudio, *processedAudio);
       }
       projectArchive = sourceModification->projectArchive;
     }
@@ -110,6 +122,23 @@ public:
     if (processedAudio == nullptr)
       processedAudio = std::make_unique<ProcessedRegionData>();
     processedAudio->setAudio(buffer, sampleRateIn, startSampleInModificationIn);
+    processedAudio->pieces.clear();
+    processedAudio->piecesSampleRate = 0.0;
+  }
+
+  // Sets the composite and its playback pieces together, so the renderer
+  // never sees one without the other.
+  void setProcessedAudio(const juce::AudioBuffer<float> &buffer,
+                         double sampleRateIn,
+                         juce::int64 startSampleInModificationIn,
+                         std::vector<sourceaudio::Piece> pieces,
+                         double piecesSampleRate) {
+    const juce::SpinLock::ScopedLockType lock(processedAudioLock);
+    if (processedAudio == nullptr)
+      processedAudio = std::make_unique<ProcessedRegionData>();
+    processedAudio->setAudio(buffer, sampleRateIn, startSampleInModificationIn);
+    processedAudio->pieces = std::move(pieces);
+    processedAudio->piecesSampleRate = piecesSampleRate;
   }
 
   void clearProcessedAudio() {
@@ -166,6 +195,10 @@ public:
     return juce::SpinLock::ScopedTryLockType(processedAudioLock);
   }
 
+  juce::SpinLock &getProcessedAudioLock() const noexcept {
+    return processedAudioLock;
+  }
+
   const ProcessedRegionData *getProcessedData() const noexcept {
     return processedAudio.get();
   }
@@ -196,10 +229,12 @@ public:
                         static_cast<size_t>(data.audio.getNumSamples()) *
                             sizeof(float)))
         return false;
-    return true;
+    return writePieces(output, data);
   }
 
-  bool readProcessedAudioFromStream(juce::InputStream &input) {
+  // `withPieces`: archive version 6 on. Older archives end after the audio.
+  bool readProcessedAudioFromStream(juce::InputStream &input,
+                                    bool withPieces) {
     const auto sampleRateIn = input.readDouble();
     const auto startSampleIn = input.readInt64();
     const auto numChannels = input.readInt();
@@ -216,11 +251,17 @@ public:
       if (input.read(restored.getWritePointer(ch), channelBytes) != channelBytes)
         return false;
 
-    setProcessedAudio(restored, sampleRateIn, startSampleIn);
+    std::vector<sourceaudio::Piece> pieces;
+    double piecesRate = 0.0;
+    if (withPieces && !readPieces(input, pieces, piecesRate))
+      return false;
+    setProcessedAudio(restored, sampleRateIn, startSampleIn, std::move(pieces),
+                      piecesRate);
     return true;
   }
 
-  static bool skipProcessedAudioFromStream(juce::InputStream &input) {
+  static bool skipProcessedAudioFromStream(juce::InputStream &input,
+                                           bool withPieces) {
     input.readDouble();
     input.readInt64();
     const auto numChannels = input.readInt();
@@ -234,10 +275,69 @@ public:
     for (int ch = 0; ch < numChannels; ++ch)
       if (input.read(skip.get(), channelBytes) != channelBytes)
         return false;
-    return true;
+    std::vector<sourceaudio::Piece> pieces;
+    double piecesRate = 0.0;
+    return !withPieces || readPieces(input, pieces, piecesRate);
   }
 
 private:
+  static void copyPieces(const ProcessedRegionData &from,
+                         ProcessedRegionData &to) {
+    to.pieces.clear();
+    for (const auto &piece : from.pieces) {
+      sourceaudio::Piece copy;
+      copy.start = piece.start;
+      copy.audio.makeCopyOf(piece.audio);
+      to.pieces.push_back(std::move(copy));
+    }
+    to.piecesSampleRate = from.piecesSampleRate;
+  }
+
+  static bool writePieces(juce::OutputStream &output,
+                          const ProcessedRegionData &data) {
+    if (!output.writeDouble(data.piecesSampleRate) ||
+        !output.writeInt(static_cast<int>(data.pieces.size())))
+      return false;
+    for (const auto &piece : data.pieces) {
+      if (!output.writeInt64(piece.start) ||
+          !output.writeInt(piece.audio.getNumChannels()) ||
+          !output.writeInt(piece.audio.getNumSamples()))
+        return false;
+      for (int ch = 0; ch < piece.audio.getNumChannels(); ++ch)
+        if (!output.write(piece.audio.getReadPointer(ch),
+                          static_cast<size_t>(piece.audio.getNumSamples()) *
+                              sizeof(float)))
+          return false;
+    }
+    return true;
+  }
+
+  static bool readPieces(juce::InputStream &input,
+                         std::vector<sourceaudio::Piece> &pieces,
+                         double &piecesRate) {
+    piecesRate = input.readDouble();
+    const int count = input.readInt();
+    if (!std::isfinite(piecesRate) || piecesRate < 0.0 || count < 0)
+      return false;
+    for (int i = 0; i < count; ++i) {
+      sourceaudio::Piece piece;
+      piece.start = input.readInt64();
+      const int channels = input.readInt();
+      const int samples = input.readInt();
+      if (piece.start < 0 || channels <= 0 || channels > 64 || samples <= 0 ||
+          samples > std::numeric_limits<int>::max() /
+                        static_cast<int>(sizeof(float)))
+        return false;
+      piece.audio.setSize(channels, samples);
+      const int bytes = samples * static_cast<int>(sizeof(float));
+      for (int ch = 0; ch < channels; ++ch)
+        if (input.read(piece.audio.getWritePointer(ch), bytes) != bytes)
+          return false;
+      pieces.push_back(std::move(piece));
+    }
+    return true;
+  }
+
   static std::atomic<juce::uint64> &nextLiveKeySerial() {
     static std::atomic<juce::uint64> serial{1};
     return serial;

@@ -2,6 +2,7 @@
 
 #include "../Audio/Engine/PluginTransportController.h"
 #include "../Audio/RealtimePitchProcessor.h"
+#include "../Audio/SourceAudio.h"
 #include "../JuceHeader.h"
 #include "../UI/IMainView.h"
 #include "../Undo/PitchUndoManager.h"
@@ -13,6 +14,7 @@
 #include <map>
 #include <set>
 #include <limits>
+#include <vector>
 #include <memory>
 
 class EditorController;
@@ -35,6 +37,8 @@ class PitchNetAudioModification;
  * - Pitch Offset: global pitch shift in semitones (-24 to +24 st)
  * - Formant Shift: formant preservation shift (-12 to +12 st)
  */
+class PitchNetAudioModification;
+
 class PitchNetAudioProcessor : public juce::AudioProcessor, private juce::AsyncUpdater
 #if JucePlugin_Enable_ARA
     ,
@@ -492,6 +496,20 @@ private:
   // Projects remain here. Moving ownership preserves the object identity and
   // raw pointers retained by that region's undo actions.
   std::map<juce::String, AraRegionState> araRegions;
+  // Spec Q5: each modification's recording at its own rate and channel
+  // count, laid out by the warp map it was last rendered for. Read from the
+  // ARA source when an edit is first published; kept apart from the
+  // projects, which stay 44.1 kHz mono.
+  std::map<juce::String, std::unique_ptr<AudioData>> araRecordings;
+  // The edit's playback pieces (sourceaudio::differingPieces) for `mod`, from
+  // `composite`, the edit's 44.1 kHz composite. False if the recording could
+  // not be read; the modification then plays the composite as before.
+  bool buildPlaybackPieces(const juce::String &key,
+                           PitchNetAudioModification &modification,
+                           const AudioData &edit,
+                           const juce::AudioBuffer<float> &composite,
+                           std::vector<sourceaudio::Piece> &pieces,
+                           double &piecesRate);
   juce::String activeRegionKey;
   // Bumped whenever the canvas Project changes, so Track-mode previews of the
   // active modification's other regions can tell when to rebuild.
