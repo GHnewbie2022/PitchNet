@@ -4,6 +4,7 @@
 #include "WarpLayer.h"
 #include "../Utils/AudioResampler.h"
 #include "../Utils/Constants.h"
+#include "../Utils/SHA256Utils.h"
 
 #include <algorithm>
 #include <cmath>
@@ -59,6 +60,58 @@ bool load(AudioData &audioData, const juce::File &file)
   audioData.sourceSampleRate = static_cast<int>(std::lround(reader->sampleRate));
   rebuildWarped(audioData);
   return true;
+}
+
+bool attachRecording(Project &project, const juce::File &projectFile,
+                     const juce::File &chosen)
+{
+  auto &audioData = project.getAudioData();
+  const double expectedSeconds =
+      audioData.originalWaveform.getNumSamples() /
+      static_cast<double>(std::max(1, audioData.sampleRate));
+
+  auto matches = [&](const juce::File &candidate)
+  {
+    if (!candidate.existsAsFile())
+      return false;
+    if (project.getAudioSha256().isNotEmpty() &&
+        !SHA256Utils::fileSHA256(candidate).equalsIgnoreCase(
+            project.getAudioSha256()))
+      return false;
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader(
+        formats.createReaderFor(candidate));
+    if (reader == nullptr || reader->sampleRate <= 0.0)
+      return false;
+    const double seconds = reader->lengthInSamples / reader->sampleRate;
+    return std::abs(seconds - expectedSeconds) < 0.05;
+  };
+
+  juce::Array<juce::File> candidates;
+  if (chosen != juce::File{})
+    candidates.add(chosen);
+  else
+  {
+    candidates.add(project.getFilePath());
+    for (const auto *extension : {".wav", ".aif", ".aiff", ".flac"})
+      candidates.add(projectFile.withFileExtension(extension));
+  }
+  for (const auto &candidate : candidates)
+  {
+    if (!matches(candidate) || !load(audioData, candidate))
+      continue;
+    project.setFilePath(candidate);
+    if (project.getAudioSha256().isEmpty())
+      project.setAudioSha256(SHA256Utils::fileSHA256(candidate));
+    // Saved projects keep no warped reference; without it every warped
+    // range would read as an edit.
+    if (!audioData.warpMap.isIdentity() &&
+        audioData.warpedOriginal.getNumSamples() == 0)
+      warp::rebuildReference(audioData);
+    return true;
+  }
+  return false;
 }
 
 void rebuildWarped(AudioData &audioData)

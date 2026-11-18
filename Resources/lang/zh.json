@@ -60,6 +60,7 @@
   "dialog.audio_exported": "音频已成功导出至:",
   "dialog.audio_hash_mismatch": "保存的音频哈希与当前文件不符：",
   "dialog.audio_missing": "缺少音频文件",
+  "dialog.recording_missing_playback": "找不到这个项目的原始录音，播放与导出会改用 PitchNet 内部的 44.1 kHz 副本。指定原始录音后，就会用它原本的采样率与声道数播放。",
   "dialog.cancel": "取消",
   "dialog.close": "关闭",
   "dialog.export_audio": "导出音频...",

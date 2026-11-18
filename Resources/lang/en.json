@@ -62,6 +62,7 @@
   "dialog.audio_exported": "Audio exported successfully to:",
   "dialog.audio_hash_mismatch": "The saved audio hash does not match current file:",
   "dialog.audio_missing": "Audio file missing",
+  "dialog.recording_missing_playback": "The original recording for this project was not found, so playback and export use PitchNet's 44.1 kHz copy. Locate the recording to play it at its own sample rate and channel count.",
   "dialog.cancel": "Cancel",
   "dialog.close": "Close",
   "dialog.export_audio": "Export audio...",

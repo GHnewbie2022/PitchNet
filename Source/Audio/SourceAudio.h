@@ -38,6 +38,18 @@ constexpr double kFadeSeconds = 0.010;
 /** Reads `file` at its own rate and channel count into audioData. */
 bool load(AudioData &audioData, const juce::File &file);
 
+/**
+ * For a project opened from a .pitchnet that embeds its audio: find the
+ * recording and load it (load()). Tried in order: `chosen` alone if given,
+ * else the saved path, then a recording beside `projectFile` with its name.
+ * A candidate must be as long as the analysed copy (and match the saved
+ * fingerprint, if any). On success the project remembers the file and its
+ * fingerprint, and a warped project's reference is rebuilt so build() can
+ * tell edits from the warp.
+ */
+bool attachRecording(Project &project, const juce::File &projectFile,
+                     const juce::File &chosen = {});
+
 /** Rebuilds warpedSourceAudio from sourceAudio and warpMap. */
 void rebuildWarped(AudioData &audioData);
 

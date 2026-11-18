@@ -440,6 +440,11 @@ private:
   // Experimental polyphonic test bench (standalone only), Source/UI/Polyphonic.
   std::unique_ptr<PolyLabWindow> polyLabWindow;
 
+  // Spec Q5 for a project with embedded audio: find its recording (saved
+  // path, or `chosen`, or one beside the project with its name) and load it.
+  bool attachProjectRecording(Project &project, const juce::File &projectFile,
+                              const juce::File &chosen = {});
+  void askForProjectRecording();
   std::unique_ptr<juce::FileChooser> fileChooser;
   juce::StringArray recentFiles;
 

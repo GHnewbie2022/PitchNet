@@ -53,6 +53,11 @@ void MainComponent::openProjectFile(const juce::File &file) {
     toolbar.setLoopEnabled(project->getLoopRange().enabled);
     toolbar.setTransportEnabled(true);
 
+    // Playback plays the recording itself (spec Q5), so find it: the saved
+    // path, else a recording beside the project with the project's name.
+    const bool recordingAttached =
+        !isPluginMode() && attachProjectRecording(*project, file);
+
     if (!isPluginMode()) {
       if (auto *engine = editorController ? editorController->getAudioEngine()
                                            : nullptr) {
@@ -75,6 +80,8 @@ void MainComponent::openProjectFile(const juce::File &file) {
     repaint();
     if (isPluginMode())
       notifyProjectDataChanged();
+    if (!isPluginMode() && !recordingAttached)
+      askForProjectRecording();
     return;
   }
 
@@ -349,6 +356,52 @@ void MainComponent::openProjectFile(const juce::File &file) {
   }
 
   continueOpenWithAudio(audioFile);
+}
+
+bool MainComponent::attachProjectRecording(Project &project,
+                                           const juce::File &projectFile,
+                                           const juce::File &chosen) {
+  return sourceaudio::attachRecording(project, projectFile, chosen);
+}
+
+void MainComponent::askForProjectRecording() {
+  juce::AlertWindow::showOkCancelBox(
+      juce::AlertWindow::WarningIcon, TR("dialog.audio_missing"),
+      TR("dialog.recording_missing_playback"), TR("dialog.locate_audio"),
+      TR("dialog.cancel"), this,
+      juce::ModalCallbackFunction::create([this](int result) {
+        if (result == 0 || fileChooser != nullptr)
+          return;
+        fileChooser = std::make_unique<juce::FileChooser>(
+            TR("dialog.select_audio"), juce::File{},
+            "*.wav;*.aif;*.aiff;*.flac");
+        juce::Component::SafePointer<MainComponent> safeThis(this);
+        fileChooser->launchAsync(
+            juce::FileBrowserComponent::openMode |
+                juce::FileBrowserComponent::canSelectFiles,
+            [safeThis](const juce::FileChooser &fc) {
+              if (safeThis == nullptr)
+                return;
+              const auto selected = fc.getResult();
+              safeThis->fileChooser.reset();
+              auto *project = safeThis->getProject();
+              if (project == nullptr || !selected.existsAsFile())
+                return;
+              if (!safeThis->attachProjectRecording(
+                      *project, project->getProjectFilePath(), selected)) {
+                StyledMessageBox::show(safeThis.getComponent(),
+                                       TR("dialog.open_failed"),
+                                       TR("dialog.project_audio_missing") +
+                                           "\n" + selected.getFullPathName(),
+                                       StyledMessageBox::WarningIcon);
+                return;
+              }
+              if (auto *engine = safeThis->editorController
+                                     ? safeThis->editorController->getAudioEngine()
+                                     : nullptr)
+                engine->loadProjectAudio(project->getAudioData());
+            });
+      }));
 }
 
 void MainComponent::loadAudioFile(const juce::File &file,

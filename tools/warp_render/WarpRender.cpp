@@ -17,6 +17,7 @@
 #include "../../Source/Audio/EditorController.h"
 #include "../../Source/Audio/WarpLayer.h"
 #include "../../Source/Utils/Constants.h"
+#include "../../Source/Utils/MelSpectrogram.h"
 #include "../../Source/Utils/OnnxRuntime.h"
 #include "../../Source/Utils/PitchCurveProcessor.h"
 #include "../../Source/Models/ProjectSerializer.h"
@@ -1380,6 +1381,89 @@ int main(int argc, char **argv)
       juce::String::fromUTF8(argv[1]));
   const juce::File output = juce::File::getCurrentWorkingDirectory().getChildFile(
       juce::String::fromUTF8(argv[2]));
+  // WarpRender <project.pitchnet> <out.wav> --project: the saved project's
+  // playback as the App builds it (embedded composite + the recording).
+  if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--project")
+  {
+    Project project;
+    if (!ProjectSerializer::loadFromFile(project, input))
+    {
+      std::fprintf(stderr, "could not load %s\n", input.getFullPathName().toRawUTF8());
+      return 1;
+    }
+    auto &audioData = project.getAudioData();
+    // The same lookup the App does on open.
+    if (sourceaudio::attachRecording(project, input))
+      std::printf("recording %s\n",
+                  project.getFilePath().getFullPathName().toRawUTF8());
+    else
+      std::fprintf(stderr, "recording not found\n");
+
+    // --resynth from:to (seconds): render every edited note in the range
+    // again from the original, as a fresh edit would.
+    std::unique_ptr<EditorController> resynthController;
+    AudioData *rendered = &audioData;
+    if (argc >= 6 && juce::String::fromUTF8(argv[4]) == "--resynth")
+    {
+      const juce::String range = juce::String::fromUTF8(argv[5]);
+      const double from = range.upToFirstOccurrenceOf(":", false, false).getDoubleValue();
+      const double to = range.fromFirstOccurrenceOf(":", false, false).getDoubleValue();
+      juce::String ortError;
+      if (!OnnxRuntime::initialise(&ortError))
+      {
+        std::fprintf(stderr, "ONNX Runtime: %s\n", ortError.toRawUTF8());
+        return 1;
+      }
+      resynthController = std::make_unique<EditorController>(false);
+      resynthController->setProject(std::make_unique<Project>(project));
+      auto &p = *resynthController->getProject();
+      auto &data = p.getAudioData();
+      data.waveform.makeCopyOf(data.originalWaveform);
+      if (data.melSpectrogram.empty())
+      {
+        MelSpectrogram mel(data.sampleRate, N_FFT, HOP_SIZE, NUM_MELS, FMIN, FMAX);
+        data.melSpectrogram = mel.compute(data.originalWaveform.getReadPointer(0),
+                                          data.originalWaveform.getNumSamples());
+      }
+      std::printf("mel %d frames, f0 %d\n", (int)data.melSpectrogram.size(),
+                  (int)data.f0.size());
+      const double hop = static_cast<double>(HOP_SIZE) / SAMPLE_RATE;
+      int marked = 0;
+      for (auto &note : p.getNotes())
+        if (!note.isRest() && !note.isNeutralForOriginalWaveform() &&
+            note.getEndFrame() * hop > from && note.getStartFrame() * hop < to)
+        {
+          note.markDirty();
+          note.markSynthDirty();
+          ++marked;
+        }
+      std::printf("marked %d notes dirty, hasDirty %d\n", marked,
+                  p.hasDirtyNotes() ? 1 : 0);
+      std::atomic<bool> pending{false}, done{false}, ok{false};
+      resynthController->resynthesizeIncrementalAsync(
+          p, nullptr, [&](bool success) { ok = success; done = true; }, pending,
+          false);
+      if (!waitFor(done, 600000) || !ok.load())
+      {
+        std::fprintf(stderr, "resynth failed\n");
+        return 1;
+      }
+      std::printf("resynthesized %d notes\n", marked);
+      rendered = &data;
+    }
+    auto &audioDataOut = *rendered;
+    const auto heard = sourceaudio::build(audioDataOut);
+    writeWav(output, heard.audio, heard.sampleRate, 32);
+    writeWav(output.withFileExtension("composite.wav"), audioDataOut.waveform,
+             audioDataOut.sampleRate, 32);
+    writeWav(output.withFileExtension("reference.wav"),
+             warp::reference(audioDataOut), audioDataOut.sampleRate, 32);
+    if (resynthController)
+      resynthController->requestShutdown();
+    std::printf("wrote %s (%d ch, %d Hz)\n", output.getFullPathName().toRawUTF8(),
+                heard.audio.getNumChannels(), heard.sampleRate);
+    return 0;
+  }
   juce::String anchorsArg, engine = "vocoder", detector = "fcpe", snapshotPrefix;
   double shift = 0.0, shiftFrom = 0.0, shiftTo = 1.0e9;
   bool playback = false; // write what playback and export use (spec Q5)
