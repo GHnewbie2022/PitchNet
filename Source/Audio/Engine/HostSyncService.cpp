@@ -7,6 +7,7 @@ HostSyncService::HostSyncService()
 
 HostSyncService::~HostSyncService()
 {
+    atomicState->alive.store(false, std::memory_order_release);
     clearCallbacks();
 }
 
@@ -271,7 +272,7 @@ void HostSyncService::notifyTransportChange(const TransportState& state)
             juce::MessageManager::callAsync([cb, stateCopy, state_ptr]()
             {
                 state_ptr->transportPending.store(false, std::memory_order_release);
-                if (*cb)
+                if (*cb && state_ptr->alive.load(std::memory_order_acquire))
                     (*cb)(stateCopy);
             });
         }
@@ -297,7 +298,7 @@ void HostSyncService::notifyPositionUpdate(double seconds)
                 state_ptr->positionPending.store(false, std::memory_order_release);
                 // Use latest position from atomic state
                 double latestSeconds = state_ptr->positionSeconds.load(std::memory_order_relaxed);
-                if (*cb)
+                if (*cb && state_ptr->alive.load(std::memory_order_acquire))
                     (*cb)(latestSeconds);
             });
         }
@@ -328,7 +329,7 @@ void HostSyncService::notifyTempoChange(const TempoInfo& tempo)
                 latest.timeSigDenominator = state_ptr->timeSigDenominator.load(std::memory_order_relaxed);
                 latest.hasBpm = state_ptr->hasBpm.load(std::memory_order_relaxed);
                 latest.hasTimeSignature = state_ptr->hasTimeSignature.load(std::memory_order_relaxed);
-                if (*cb)
+                if (*cb && state_ptr->alive.load(std::memory_order_acquire))
                     (*cb)(latest);
             });
         }
@@ -345,9 +346,10 @@ void HostSyncService::notifyLoopChange(const LoopInfo& loop)
     if (cb && *cb)
     {
         LoopInfo loopCopy = loop;
-        juce::MessageManager::callAsync([cb, loopCopy]()
+        auto state_ptr = atomicState;
+        juce::MessageManager::callAsync([cb, loopCopy, state_ptr]()
         {
-            if (*cb)
+            if (*cb && state_ptr->alive.load(std::memory_order_acquire))
                 (*cb)(loopCopy);
         });
     }

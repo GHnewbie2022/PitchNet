@@ -290,6 +290,10 @@ private:
         std::atomic<bool> positionPending{false};
         std::atomic<bool> transportPending{false};
         std::atomic<bool> tempoPending{false};
+        // Cleared by the destructor. Queued messages hold `state` and their
+        // callback after the owner is gone; the callbacks capture the owner
+        // (PluginTransportController's `this`), so they must not run then.
+        std::atomic<bool> alive{true};
     };
     std::shared_ptr<AtomicSyncState> atomicState;
 
