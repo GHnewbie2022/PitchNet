@@ -31,6 +31,7 @@ set(PITCHNET_TEST_SOURCES
     TiltPivotTests.cpp
     TimelineCoordinateTests.cpp
     UndoNoteRefTests.cpp
+    SourceAudioTests.cpp
     VisualWaveformEnvelopeTests.cpp
     WarpLayerTests.cpp)
 

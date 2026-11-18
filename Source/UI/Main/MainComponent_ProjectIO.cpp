@@ -3,6 +3,7 @@
 // Split from MainComponent.cpp to reduce file size.
 // =============================================================================
 
+#include "../../Audio/SourceAudio.h"
 #include "../MainComponent.h"
 #include "../../Audio/BreathSibilanceAnalysis.h"
 #include "../../Models/ProjectSerializer.h"
@@ -56,8 +57,7 @@ void MainComponent::openProjectFile(const juce::File &file) {
       if (auto *engine = editorController ? editorController->getAudioEngine()
                                            : nullptr) {
         try {
-          engine->loadWaveform(project->getAudioData().waveform,
-                               project->getAudioData().sampleRate);
+          engine->loadProjectAudio(project->getAudioData());
           const auto &loopRange = project->getLoopRange();
           if (loopRange.enabled)
             engine->setLoopRange(loopRange.startSeconds, loopRange.endSeconds);
@@ -134,6 +134,8 @@ void MainComponent::openProjectFile(const juce::File &file) {
                 audioData.waveform = std::move(buffer);
                 audioData.sampleRate = sampleRate;
                 audioData.originalWaveform.makeCopyOf(audioData.waveform);
+                // Playback and export use the recording itself (spec Q5).
+                sourceaudio::load(audioData, loadedFile);
 
                 // Recompute mel only; keep pitch/note edits from project file.
                 if (audioData.waveform.getNumSamples() > 0) {
@@ -208,8 +210,7 @@ void MainComponent::openProjectFile(const juce::File &file) {
                                                ? safeThis->editorController->getAudioEngine()
                                                : nullptr) {
                   try {
-                    engine->loadWaveform(activeAudioData.waveform,
-                                         activeAudioData.sampleRate);
+                    engine->loadProjectAudio(activeAudioData);
                     const auto &loopRange = project->getLoopRange();
                     if (loopRange.enabled)
                       engine->setLoopRange(loopRange.startSeconds,
@@ -415,7 +416,7 @@ void MainComponent::loadAudioFile(const juce::File &file,
                                        ? safeThis->editorController->getAudioEngine()
                                        : nullptr) {
           try {
-            engine->loadWaveform(audioData.waveform, audioData.sampleRate);
+            engine->loadProjectAudio(audioData);
             const auto &loopRange = project->getLoopRange();
             if (loopRange.enabled)
               engine->setLoopRange(loopRange.startSeconds,

@@ -144,7 +144,7 @@ std::vector<StretchedRun> renderWarpedSource(const float *source,
   if (source == nullptr || sourceSamples <= 0)
     return runs;
 
-  const double hop = static_cast<double>(settings.hopSize);
+  const double hop = settings.hopSize;
   const auto inputAt = [&](double timelineSample)
   { return map.sourceAt(timelineSample / hop) * hop; };
   const auto toSample = [&](double frame)

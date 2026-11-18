@@ -29,7 +29,9 @@ namespace warp
 struct WarpedSourceSettings
 {
   double sampleRate = 44100.0;
-  int hopSize = 512;
+  // Samples per map frame. Fractional when the recording is rendered at its
+  // own rate (spec Q5 C): 48 kHz is 512 * 48000 / 44100 = 557.3 samples.
+  double hopSize = 512.0;
   // Unstretched audio a run always renders on each side; runs closer than
   // twice this are joined into one.
   double padSeconds = 0.06;

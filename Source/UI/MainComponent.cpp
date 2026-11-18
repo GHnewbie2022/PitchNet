@@ -1,3 +1,4 @@
+#include "../Audio/SourceAudio.h"
 #include "MainComponent.h"
 #include "GpuDeviceList.h"
 #include "Main/ExportHelper.h"
@@ -1039,8 +1040,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
     {
       if (!isPluginMode() && editorController)
         if (auto* engine = editorController->getAudioEngine())
-          engine->loadWaveform(project->getAudioData().waveform,
-                               project->getAudioData().sampleRate, true);
+          engine->loadProjectAudio(project->getAudioData(), true);
       onPitchEdited();
       notifyProjectDataChanged();
     }
@@ -2295,7 +2295,10 @@ void MainComponent::exportFile()
   if (fileChooser != nullptr)
     return;
 
-  const int inputSampleRate = project->getAudioData().sampleRate;
+  const auto &exportAudio = project->getAudioData();
+  const int inputSampleRate = exportAudio.sourceSampleRate > 0
+                                  ? exportAudio.sourceSampleRate
+                                  : exportAudio.sampleRate;
   juce::Component::SafePointer<MainComponent> safeThis(this);
   ExportHelper::showExportSettingsDialogAsync(
       this, inputSampleRate, settingsManager->getExportSettings(),
@@ -2321,10 +2324,11 @@ void MainComponent::exportFile()
           if (file.getFileExtension().isEmpty())
             file = file.withFileExtension(extension);
 
-          auto &audioData = activeProject->getAudioData();
-          juce::AudioBuffer<float> sourceBuffer;
-          sourceBuffer.makeCopyOf(audioData.waveform);
-          const int sourceRate = audioData.sampleRate;
+          // The recording at its own rate with the edits in (spec Q5), so
+          // exporting at the recording's rate converts nothing unedited.
+          auto playback = sourceaudio::build(activeProject->getAudioData());
+          juce::AudioBuffer<float> sourceBuffer = std::move(playback.audio);
+          const int sourceRate = playback.sampleRate;
 
           safeThis->toolbar.showProgress(TR("progress.exporting_audio"));
           safeThis->toolbar.setProgress(-1.0f);

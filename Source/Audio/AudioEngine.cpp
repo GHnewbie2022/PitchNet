@@ -1,5 +1,7 @@
 #include "AudioEngine.h"
 #include "../Utils/AppLogger.h"
+#include "../Utils/AudioResampler.h"
+#include "SourceAudio.h"
 #include <algorithm>
 
 AudioEngine::AudioEngine() {}
@@ -92,6 +94,9 @@ void AudioEngine::prepareToPlay(int samplesPerBlockExpected,
   playbackRatio = static_cast<double>(waveformSampleRate) / sampleRate;
   interpolator.reset();
   fractionalPosition = 0.0;
+  if (deviceSourceSampleRate > 0 &&
+      std::abs(static_cast<double>(waveformSampleRate) - sampleRate) > 0.5)
+    triggerAsyncUpdate();
 
 }
 
@@ -235,7 +240,11 @@ void AudioEngine::getNextAudioBlock(
     interpolator.reset();
   }
 
-  // Use interpolator for sample rate conversion
+  // Audio is converted to the device rate when it is loaded (toDeviceRate),
+  // so it normally plays sample for sample. The interpolator only covers the
+  // moment between a device rate change and that conversion.
+  const bool unity = std::abs(activePlaybackRatio - 1.0) < 1.0e-9;
+  const int sourceChannels = activeWaveform.getNumChannels();
   const float *inputData = activeWaveform.getReadPointer(0);
   float *outputData = outputBuffer->getWritePointer(0, startSample);
 
@@ -268,11 +277,22 @@ void AudioEngine::getNextAudioBlock(
     }
 
     int outCount = std::min(samplesRemaining, maxOutput);
-    int samplesUsed = interpolator.process(activePlaybackRatio, inputData + pos,
-                                           outputData + writeOffset, outCount,
-                                           static_cast<int>(inputAvailable),
-                                           0 // No wrap
-    );
+    int samplesUsed = outCount;
+    if (unity) {
+      for (int ch = 0; ch < outputBuffer->getNumChannels(); ++ch)
+        outputBuffer->copyFrom(ch, startSample + writeOffset, activeWaveform,
+                               std::min(ch, sourceChannels - 1),
+                               static_cast<int>(pos), outCount);
+    } else {
+      samplesUsed = interpolator.process(activePlaybackRatio, inputData + pos,
+                                         outputData + writeOffset, outCount,
+                                         static_cast<int>(inputAvailable),
+                                         0 // No wrap
+      );
+      for (int ch = 1; ch < outputBuffer->getNumChannels(); ++ch)
+        outputBuffer->copyFrom(ch, startSample + writeOffset,
+                               outputData + writeOffset, outCount);
+    }
 
     pos += samplesUsed;
     samplesRemaining -= outCount;
@@ -287,21 +307,13 @@ void AudioEngine::getNextAudioBlock(
   // Apply volume gain (lock-free read)
   float gain = volumeGain.load();
   if (std::abs(gain - 1.0f) > 0.0001f) // Only apply if not unity gain
-  {
-    juce::FloatVectorOperations::multiply(outputData, gain, numOutputSamples);
-  }
+    outputBuffer->applyGain(startSample, numOutputSamples, gain);
 
   if (auditioning)
     auditionPosition.store(pos);
   else
     currentPosition.store(pos);
 
-  // Copy to other channels (if stereo output)
-  for (int ch = 1; ch < outputBuffer->getNumChannels(); ++ch) {
-    outputBuffer->copyFrom(ch, startSample,
-                           outputBuffer->getReadPointer(0, startSample),
-                           numOutputSamples);
-  }
 
   if (!loopActive && samplesRemaining > 0) {
     playing = false;
@@ -404,15 +416,57 @@ void AudioEngine::applyPendingWaveformSwap() {
   waveformSwapPending.store(false, std::memory_order_release);
 }
 
-void AudioEngine::loadWaveform(const juce::AudioBuffer<float> &buffer,
-                               int sampleRate, bool preservePosition) {
+juce::AudioBuffer<float>
+AudioEngine::toDeviceRate(const juce::AudioBuffer<float> &buffer,
+                          int &sampleRate) const {
+  const int deviceRate = static_cast<int>(std::lround(currentSampleRate));
+  if (deviceRate <= 0 || sampleRate <= 0 || deviceRate == sampleRate ||
+      buffer.getNumSamples() <= 0)
+    return buffer;
+  auto converted = AudioResampler::resample(buffer, sampleRate, deviceRate);
+  sampleRate = deviceRate;
+  return converted;
+}
+
+void AudioEngine::loadProjectAudio(const AudioData &audioData,
+                                   bool preservePosition) {
+  const auto playback = sourceaudio::build(audioData);
+  loadWaveform(playback.audio, playback.sampleRate, preservePosition);
+}
+
+void AudioEngine::handleAsyncUpdate() {
+  if (deviceSourceWaveform.getNumSamples() <= 0)
+    return;
+  const auto source = deviceSourceWaveform; // loadWaveform replaces it
+  loadWaveform(source, deviceSourceSampleRate, true);
+}
+
+void AudioEngine::loadWaveform(const juce::AudioBuffer<float> &sourceBuffer,
+                               int sourceSampleRate, bool preservePosition) {
+  // Positions are kept in seconds across a rate change.
+  const double positionSeconds = getPosition();
+  const int previousRate = waveformSampleRate;
+  deviceSourceWaveform.makeCopyOf(sourceBuffer);
+  deviceSourceSampleRate = sourceSampleRate;
+  int sampleRate = sourceSampleRate;
+  const auto buffer = toDeviceRate(sourceBuffer, sampleRate);
   const int64_t newLength = buffer.getNumSamples();
+  // A handoff crossfades sample for sample, so it needs both buffers at the
+  // same rate; a rate change swaps under the lock and keeps the time instead.
+  const bool rateChanged = previousRate != sampleRate;
+  if (rateChanged && previousRate > 0) {
+    const double scale = static_cast<double>(sampleRate) / previousRate;
+    loopStartSample.store(
+        static_cast<int64_t>(std::llround(loopStartSample.load() * scale)));
+    loopEndSample.store(
+        static_cast<int64_t>(std::llround(loopEndSample.load() * scale)));
+  }
 
   // An incremental resynthesis commit that lands during playback goes through
   // the deferred handoff: stopping the transport and deep-copying under
   // waveformLock would emit hard silence on both edges of the swap, which is
   // audible as a click for every render the user triggers while playing.
-  if (preservePosition && playing.load()) {
+  if (preservePosition && playing.load() && !rateChanged) {
     publishWaveform(buffer, sampleRate);
   } else {
     const juce::SpinLock::ScopedLockType lock(waveformLock);
@@ -432,6 +486,10 @@ void AudioEngine::loadWaveform(const juce::AudioBuffer<float> &buffer,
     if (!preservePosition) {
       currentPosition.store(0);
       fractionalPosition = 0.0;
+    } else if (rateChanged) {
+      currentPosition.store(juce::jlimit<int64_t>(
+          0, newLength,
+          static_cast<int64_t>(positionSeconds * waveformSampleRate)));
     }
 
     // Update playback ratio for sample rate conversion
@@ -515,11 +573,13 @@ void AudioEngine::clearLoopRange() {
   loopEndSample.store(0);
 }
 
-void AudioEngine::beginAuditionLoop(const juce::AudioBuffer<float> &buffer,
-                                    int sampleRate, bool keepPosition,
+void AudioEngine::beginAuditionLoop(const juce::AudioBuffer<float> &sourceBuffer,
+                                    int sourceSampleRate, bool keepPosition,
                                     int loopOverlapSamples) {
-  if (buffer.getNumSamples() <= 0)
+  if (sourceBuffer.getNumSamples() <= 0)
     return;
+  int sampleRate = sourceSampleRate;
+  const auto buffer = toDeviceRate(sourceBuffer, sampleRate);
 
   const juce::SpinLock::ScopedLockType lock(waveformLock);
   constexpr int kTransitionSamples = 4096;

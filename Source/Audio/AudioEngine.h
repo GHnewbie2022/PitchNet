@@ -9,7 +9,9 @@
 /**
  * Audio engine for playback and synthesis.
  */
-class AudioEngine : public juce::AudioSource, public juce::ChangeListener {
+class AudioEngine : public juce::AudioSource,
+                    public juce::ChangeListener,
+                    private juce::AsyncUpdater {
 public:
   AudioEngine();
   ~AudioEngine() override;
@@ -27,6 +29,10 @@ public:
   void setProject(Project *proj) { project = proj; }
   void loadWaveform(const juce::AudioBuffer<float> &buffer, int sampleRate,
                     bool preservePosition = false);
+  // The project's audio as it should be heard: the recording at its own rate
+  // with edited ranges replaced (SourceAudio.h, spec Q5).
+  void loadProjectAudio(const AudioData &audioData,
+                        bool preservePosition = false);
 
   void play();
   void pause();
@@ -100,6 +106,14 @@ private:
   /// Called on the message thread; the swap itself happens in
   /// getNextAudioBlock() so playback is never gated on the copy.
   void publishWaveform(const juce::AudioBuffer<float> &buffer, int sampleRate);
+  // Audio at another rate than the device is converted once with r8brain
+  // (spec Q5 B) instead of interpolated while it plays. Message thread.
+  juce::AudioBuffer<float> toDeviceRate(const juce::AudioBuffer<float> &buffer,
+                                        int &sampleRate) const;
+  // The device changed rate: convert the last waveform again.
+  void handleAsyncUpdate() override;
+  juce::AudioBuffer<float> deviceSourceWaveform; // last loadWaveform, as given
+  int deviceSourceSampleRate = 0;
 
   /// Audio-thread side of the handoff: installs pendingWaveform and blends the
   /// outgoing samples into it across kWaveformSwapFadeSamples at the playhead.

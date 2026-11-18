@@ -73,6 +73,16 @@ struct AudioData
     // every edit is blended onto. Derived; empty while warpMap is the identity,
     // in which case originalWaveform itself is the reference.
     juce::AudioBuffer<float> warpedOriginal;
+    // The recording at its own rate and channel count (spec Q5). Everything
+    // above is the 44.1 kHz mono analysis copy the vocoder and models need;
+    // playback and export are built from these instead, so audio nobody
+    // edited is never resampled (SourceAudio.h). Read from the audio file,
+    // not saved. Empty in plugin mode, where the host owns the audio.
+    juce::AudioBuffer<float> sourceAudio;
+    int sourceSampleRate = 0;
+    // sourceAudio laid out by warpMap at its own rate; empty while the map is
+    // the identity. Rebuilt together with warpedOriginal.
+    juce::AudioBuffer<float> warpedSourceAudio;
     // The warp map changed and the composite has not been laid out again yet.
     bool warpLayoutPending = false;
     // The map the composite (waveform) is laid out for. It trails warpMap

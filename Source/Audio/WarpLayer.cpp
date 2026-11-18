@@ -3,6 +3,7 @@
 #include "BreathSibilanceDetector.h"
 #include "ProjectGain.h"
 #include "Synthesis/WarpedSource.h"
+#include "SourceAudio.h"
 #include "../Utils/Constants.h"
 #include "../Utils/NoteGainCurve.h"
 #include "../Utils/PitchCurveProcessor.h"
@@ -86,6 +87,8 @@ const juce::AudioBuffer<float> &reference(const AudioData &audioData)
 void rebuildReference(AudioData &audioData)
 {
   fitToProject(audioData);
+  // The same layout at the recording's own rate, for playback (spec Q5 C).
+  sourceaudio::rebuildWarped(audioData);
   const auto &original = audioData.originalWaveform;
   if (audioData.warpMap.isIdentity() || original.getNumSamples() <= 0 ||
       original.getNumChannels() <= 0)

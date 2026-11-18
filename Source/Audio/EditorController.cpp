@@ -4,6 +4,7 @@
 #include "PitchEnsemble.h"
 #include "../Utils/NoteAmplitude.h"
 #include "../Utils/AudioResampler.h"
+#include "SourceAudio.h"
 #include "../Utils/SHA256Utils.h"
 #include "../Utils/ScaleUtils.h"
 #include "../Utils/Constants.h"
@@ -550,26 +551,7 @@ void EditorController::loadAudioFileAsync(
 
     if (srcSampleRate != SAMPLE_RATE) {
       updateProgress(0.14, TR("progress.resampling"));
-      const double ratio = static_cast<double>(srcSampleRate) / SAMPLE_RATE;
-      const int newNumSamples = static_cast<int>(numSamples / ratio);
-
-      juce::AudioBuffer<float> resampledBuffer(1, newNumSamples);
-      const float *src = buffer.getReadPointer(0);
-      float *dst = resampledBuffer.getWritePointer(0);
-
-      for (int i = 0; i < newNumSamples; ++i) {
-        const double srcPos = i * ratio;
-        const int srcIndex = static_cast<int>(srcPos);
-        const double frac = srcPos - srcIndex;
-
-        if (srcIndex + 1 < numSamples)
-          dst[i] = static_cast<float>(src[srcIndex] * (1.0 - frac) +
-                                      src[srcIndex + 1] * frac);
-        else
-          dst[i] = src[srcIndex];
-      }
-
-      buffer = std::move(resampledBuffer);
+      buffer = AudioResampler::resample(buffer, srcSampleRate, SAMPLE_RATE);
     }
 
     updateProgress(0.15, TR("progress.preparing_project"));
@@ -579,6 +561,8 @@ void EditorController::loadAudioFileAsync(
     auto &audioData = newProject->getAudioData();
     audioData.waveform = std::move(buffer);
     audioData.sampleRate = SAMPLE_RATE;
+    // Playback and export use the recording itself (spec Q5).
+    sourceaudio::load(audioData, file);
 
     if (cancelLoadingFlag.load()) {
       isLoadingAudio = false;
@@ -844,8 +828,7 @@ void EditorController::resynthesizeIncrementalAsync(
           auto &audioData = projectPtr->getAudioData();
           try
           {
-            audioEnginePtr->loadWaveform(audioData.waveform,
-                                         audioData.sampleRate, true);
+            audioEnginePtr->loadProjectAudio(audioData, true);
           }
           catch (...)
           {

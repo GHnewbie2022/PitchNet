@@ -3,7 +3,7 @@
 // result to a WAV file. Never plays audio.
 //
 //   WarpRender <in.wav> <out.wav> [--anchors s:d,s:d,...] [--shift semitones]
-//              [--shift-range from:to] [--engine vocoder|psola]
+//              [--shift-range from:to] [--engine vocoder|psola] [--playback]
 //              [--detector fcpe|swift|rmvpe|ensemble] [--dump-notes]
 //              [--snapshot prefix]
 //
@@ -12,6 +12,7 @@
 // the whole file). Run from the repository root so Resources/models is found.
 // --snapshot draws the piano roll in the Warp and Timing tools to
 // <prefix>_*.png, with a drag of the first anchor pushed past its limit.
+#include "../../Source/Audio/SourceAudio.h"
 #include "../../Source/Audio/PitchEnsemble.h"
 #include "../../Source/Audio/EditorController.h"
 #include "../../Source/Audio/WarpLayer.h"
@@ -636,7 +637,7 @@ void snapshots(Project &project, const juce::String &prefix)
 }
 
 bool writeWav(const juce::File &file, const juce::AudioBuffer<float> &buffer,
-              double rate)
+              double rate, int bits = 24)
 {
   file.deleteFile();
   juce::WavAudioFormat format;
@@ -644,7 +645,7 @@ bool writeWav(const juce::File &file, const juce::AudioBuffer<float> &buffer,
   if (!stream)
     return false;
   std::unique_ptr<juce::AudioFormatWriter> writer(format.createWriterFor(
-      stream.get(), rate, static_cast<unsigned int>(buffer.getNumChannels()), 24,
+      stream.get(), rate, static_cast<unsigned int>(buffer.getNumChannels()), bits,
       {}, 0));
   if (!writer)
     return false;
@@ -1381,12 +1382,14 @@ int main(int argc, char **argv)
       juce::String::fromUTF8(argv[2]));
   juce::String anchorsArg, engine = "vocoder", detector = "fcpe", snapshotPrefix;
   double shift = 0.0, shiftFrom = 0.0, shiftTo = 1.0e9;
+  bool playback = false; // write what playback and export use (spec Q5)
   bool ensembleLag = false, dumpNotes = false, separationTest = false, benchPaint = false, testMerge = false, testDraw = false;
   for (int i = 3; i < argc; ++i)
   {
     const juce::String arg = juce::String::fromUTF8(argv[i]);
     const juce::String next = i + 1 < argc ? juce::String::fromUTF8(argv[i + 1]) : "";
     if (arg == "--anchors") { anchorsArg = next; ++i; }
+    else if (arg == "--playback") playback = true;
     else if (arg == "--shift") { shift = next.getDoubleValue(); ++i; }
     else if (arg == "--shift-range")
     {
@@ -1553,6 +1556,23 @@ int main(int argc, char **argv)
     std::printf("render %s\n", ok.load() ? "ok" : "FAILED");
   }
 
+  if (playback)
+  {
+    const auto heard = sourceaudio::build(audioData);
+    if (!writeWav(output, heard.audio, heard.sampleRate, 32))
+    {
+      std::fprintf(stderr, "could not write %s\n", output.getFullPathName().toRawUTF8());
+      return 1;
+    }
+    // The 44.1 kHz composite of the same run, for comparison.
+    writeWav(output.withFileExtension("composite.wav"), audioData.waveform,
+             audioData.sampleRate, 32);
+    std::printf("wrote playback %s (%d ch, %.2f s at %d Hz)\n",
+                output.getFullPathName().toRawUTF8(), heard.audio.getNumChannels(),
+                heard.audio.getNumSamples() / double(heard.sampleRate), heard.sampleRate);
+    controller.requestShutdown();
+    return ok.load() || !anyEdit ? 0 : 1;
+  }
   if (!writeWav(output, audioData.waveform, audioData.sampleRate))
   {
     std::fprintf(stderr, "could not write %s\n", output.getFullPathName().toRawUTF8());

@@ -445,7 +445,7 @@ html { scroll-behavior: smooth; }
       <ul class="plain">
         <li>Q7 氣泡音偵測（程式碼裡還沒有相關實作）。</li>
         <li>音高自動修正：自動折回與 Viterbi 解碼。</li>
-        <li>Q5 取樣率（獨立版）：載入時把整條音訊轉成 <code>SAMPLE_RATE</code>（<code>EditorController.cpp</code> 的載入流程），之後全部在這個取樣率上處理；還沒做到保留原始取樣率、只替換編輯過的範圍、signalsmith 直接處理原始錄音。</li>
+        <li>Q5 取樣率（獨立版）：已實作，使用者已在 App 確認，尚未 commit（<code>SourceAudio.cpp</code>）。專案另存一份原始取樣率、原聲道數的錄音；播放與匯出時，合成結果跟參考聲音不同的範圍（前後各加 20 ms、在其中交叉淡化 10 ms）才換成處理結果，用 r8brain 轉回原始取樣率；伸縮層也在原始取樣率上跑 signalsmith；音效卡取樣率不同時再用 r8brain 轉一次。載入時的直線內插改成 r8brain。離線驗證（191223 matome.wav，48 kHz）：沒編輯 100% 樣本相同；移高 7 個音符後，只有這 7 段不同；伸縮段的音量包絡跟 44.1 kHz 版本時間差 0 ms。限制：立體聲錄音的編輯範圍內，兩聲道放同一份單聲道處理結果；立體聲的伸縮是逐聲道各自處理。App 實測（2026-11-18，使用者）：匯入 48 kHz、移調、伸縮、立體聲（Jingle Bell，44.1 kHz 立體聲）、拖音高試聽、重開 .pitchnet、匯出 48 kHz 共 7 項正常；匯出檔在 iZotope RX 跟原錄音反相相加，沒編輯的部分完全抵消，編輯範圍外的殘差峰值 -138.47 dB、總 RMS -157.63 dB。播放中切換音效卡取樣率未測（UAD 切換時會停頓，實際使用不會發生）。</li>
         <li>Q5 取樣率（外掛）：播放仍用 <code>LagrangeInterpolator</code>（<code>ARADocumentController.cpp</code>）。</li>
         <li>外掛與獨立版全面比對：所有規則與行為都要一致（獨立版只是開發測試用）。<code>isPluginMode()</code> 分支約 85 處，外掛另有自己的 undo、渲染、存檔路徑，尚未逐一檢查。</li>
         <li>非 ARA 的 insert 外掛：試聽播放器有同樣的選項，但渲染器規則與實際播放沒有在宿主裡測過（目前只用 ARA）。</li>
