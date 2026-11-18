@@ -1403,9 +1403,15 @@ int main(int argc, char **argv)
     // again from the original, as a fresh edit would.
     std::unique_ptr<EditorController> resynthController;
     AudioData *rendered = &audioData;
-    if (argc >= 6 && juce::String::fromUTF8(argv[4]) == "--resynth")
+    // --touch N: the user edits note N (+1 semitone) in the UI after opening;
+    // only what that edit marks is rendered again (other notes keep their
+    // loaded flags).
+    const bool touch =
+        argc >= 6 && juce::String::fromUTF8(argv[4]) == "--touch";
+    if (argc >= 6 && (juce::String::fromUTF8(argv[4]) == "--resynth" || touch))
     {
-      const juce::String range = juce::String::fromUTF8(argv[5]);
+      const juce::String range = touch ? juce::String("0:0")
+                                       : juce::String::fromUTF8(argv[5]);
       const double from = range.upToFirstOccurrenceOf(":", false, false).getDoubleValue();
       const double to = range.fromFirstOccurrenceOf(":", false, false).getDoubleValue();
       juce::String ortError;
@@ -1418,7 +1424,22 @@ int main(int argc, char **argv)
       resynthController->setProject(std::make_unique<Project>(project));
       auto &p = *resynthController->getProject();
       auto &data = p.getAudioData();
-      data.waveform.makeCopyOf(data.originalWaveform);
+      if (!touch)
+        data.waveform.makeCopyOf(data.originalWaveform);
+      if (touch)
+      {
+        auto &n = p.getNotes()[static_cast<size_t>(
+            juce::String::fromUTF8(argv[5]).getIntValue())];
+        n.setPitchOffset(n.getPitchOffset() + 1.0f);
+        n.markDirty();
+        n.markSynthDirty();
+      }
+      for (const auto &n : p.getNotes())
+        if (!n.isRest() && (n.isDirty() || n.getPitchOffset() != 0.0f))
+          std::printf("note @%d dirty %d synthDirty %d rendered %d offset %.2f\n",
+                      n.getStartFrame(), n.isDirty() ? 1 : 0,
+                      n.isSynthDirty() ? 1 : 0, n.hasRenderedEdit() ? 1 : 0,
+                      n.getPitchOffset());
       if (data.melSpectrogram.empty())
       {
         MelSpectrogram mel(data.sampleRate, N_FFT, HOP_SIZE, NUM_MELS, FMIN, FMAX);
