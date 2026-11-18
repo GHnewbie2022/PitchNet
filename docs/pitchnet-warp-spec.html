@@ -407,7 +407,8 @@ html { scroll-behavior: smooth; }
       <ul class="plain">
         <li>Q7 氣泡音偵測（程式碼裡還沒有相關實作）。</li>
         <li>音高自動修正：自動折回與 Viterbi 解碼。</li>
-        <li>Q5 取樣率：外掛播放仍用 <code>LagrangeInterpolator</code>（<code>ARADocumentController.cpp</code>）。</li>
+        <li>Q5 取樣率（獨立版）：載入時把整條音訊轉成 <code>SAMPLE_RATE</code>（<code>EditorController.cpp</code> 的載入流程），之後全部在這個取樣率上處理；還沒做到保留原始取樣率、只替換編輯過的範圍、signalsmith 直接處理原始錄音。</li>
+        <li>Q5 取樣率（外掛）：播放仍用 <code>LagrangeInterpolator</code>（<code>ARADocumentController.cpp</code>）。</li>
         <li>外掛與獨立版全面比對：所有規則與行為都要一致（獨立版只是開發測試用）。<code>isPluginMode()</code> 分支約 85 處，外掛另有自己的 undo、渲染、存檔路徑，尚未逐一檢查。</li>
         <li>非 ARA 的 insert 外掛：試聽播放器有同樣的選項，但渲染器規則與實際播放沒有在宿主裡測過（目前只用 ARA）。</li>
       </ul>
@@ -415,6 +416,7 @@ html { scroll-behavior: smooth; }
       <h3>已知風險</h3>
       <ul class="plain">
         <li>目前沒有尚未處理的音高曲線風險。</li>
+        <li>分析結果不固定：同一個檔案分析 3 次，得到 47／49／50 個音符，根因還沒查。</li>
       </ul>
       <h3>已解決的風險</h3>
       <ul class="plain">
