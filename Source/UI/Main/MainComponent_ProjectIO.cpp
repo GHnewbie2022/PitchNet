@@ -72,6 +72,12 @@ void MainComponent::openLoadedProject(const juce::File &file,
   // self-contained state so projects reopen exactly as saved, even if the
   // original audio file has moved or changed.
   if (loadedProject->getAudioData().waveform.getNumSamples() > 0) {
+    // The history belongs to the project being replaced: its actions point
+    // into that project's curves (NotePitchDragAction keeps &audioData.f0),
+    // so an undo past the open would write into freed memory. The branch
+    // that resynthesizes below clears it for the same reason.
+    if (undoManager)
+      undoManager->clear();
     if (editorController)
       editorController->setProject(std::make_unique<Project>(*loadedProject));
 
