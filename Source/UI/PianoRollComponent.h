@@ -124,7 +124,7 @@ public:
   void setPixelsPerSecond(float pps, bool centerOnCursor = false);
   void setPixelsPerSemitone(float pps, float anchorContentY = -1.0f);
 
-  // Keyboard zoom (G / H, Shift+G / Shift+H, Shift+S, Shift+F).
+  // Keyboard zoom (G out / H in, Shift+G / Shift+H, Shift+S, Shift+F).
   // Horizontal zoom keeps the playhead in place while it is on screen,
   // otherwise the middle of the view.
   void zoomHorizontallyBy(float factor);

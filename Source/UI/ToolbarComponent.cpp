@@ -112,6 +112,13 @@ ToolbarComponent::ToolbarComponent()
     leftPanelButton.setToggleState(false, juce::dontSendNotification);
 
     // Time label with app font (larger and bold for readability)
+    addChildComponent(documentLabel);
+    documentLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_PRIMARY.withAlpha(0.6f));
+    documentLabel.setJustificationType(juce::Justification::centredLeft);
+    documentLabel.setFont(juce::FontOptions(13.0f));
+    documentLabel.setMinimumHorizontalScale(1.0f); // elide rather than squash
+    documentLabel.setInterceptsMouseClicks(true, false);
+
     addAndMakeVisible(timeLabel);
     timeLabel.setText("00:00:000", juce::dontSendNotification);
     timeLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_PRIMARY);
@@ -427,6 +434,15 @@ void ToolbarComponent::resized()
         timeLabel.setVisible(width >= 90);
         timeLabel.setBounds(left, transportCapsuleY, std::max(0, width),
                             transportCapsuleH);
+    }
+
+    // The open project's file name, between the edit tools and the scale.
+    {
+        const int left = toolContainerBounds.getRight() + 14;
+        const int right = scaleSelectionButton.getX() - 12;
+        documentLabel.setBounds(left, transportCapsuleY, std::max(0, right - left),
+                                transportCapsuleH);
+        documentLabel.setVisible(documentFile != juce::File{} && right - left >= 60);
     }
 }
 
@@ -843,4 +859,14 @@ void ToolbarComponent::setRecordControlVisible(bool visible)
 void ToolbarComponent::setRecordArmed(bool armed)
 {
     recordButton.setToggleState(armed, juce::dontSendNotification);
+}
+
+void ToolbarComponent::setDocumentName(const juce::File& file)
+{
+    if (file == documentFile)
+        return;
+    documentFile = file;
+    documentLabel.setText(file.getFileNameWithoutExtension(), juce::dontSendNotification);
+    documentLabel.setTooltip(file.getFullPathName());
+    resized();
 }

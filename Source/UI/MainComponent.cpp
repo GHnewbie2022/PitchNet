@@ -1688,6 +1688,15 @@ void MainComponent::timerCallback()
 {
   dispatchPendingDragAudition();
 
+  // The open project's file, or its recording until it is saved.
+  {
+    juce::File document;
+    if (const auto *open = getProject())
+      document = open->getProjectFilePath() != juce::File{} ? open->getProjectFilePath()
+                                                           : open->getFilePath();
+    toolbar.setDocumentName(document);
+  }
+
   // Handle throttled cursor updates (30Hz max)
   if (hasPendingCursorUpdate.load())
   {
@@ -4418,28 +4427,28 @@ void MainComponent::getCommandInfo(juce::CommandID commandID,
   case CommandIDs::zoomInHorizontal:
     result.setInfo(TR("command.zoom_in_horizontal"), TR("command.zoom_in_horizontal.desp"),
                    TR("category.view"), 0);
-    result.addDefaultKeypress('g', juce::ModifierKeys::noModifiers);
+    result.addDefaultKeypress('h', juce::ModifierKeys::noModifiers);
     result.setActive(project != nullptr);
     break;
 
   case CommandIDs::zoomOutHorizontal:
     result.setInfo(TR("command.zoom_out_horizontal"), TR("command.zoom_out_horizontal.desp"),
                    TR("category.view"), 0);
-    result.addDefaultKeypress('h', juce::ModifierKeys::noModifiers);
+    result.addDefaultKeypress('g', juce::ModifierKeys::noModifiers);
     result.setActive(project != nullptr);
     break;
 
   case CommandIDs::zoomInVertical:
     result.setInfo(TR("command.zoom_in_vertical"), TR("command.zoom_in_vertical.desp"),
                    TR("category.view"), 0);
-    result.addDefaultKeypress('g', juce::ModifierKeys::shiftModifier);
+    result.addDefaultKeypress('h', juce::ModifierKeys::shiftModifier);
     result.setActive(project != nullptr);
     break;
 
   case CommandIDs::zoomOutVertical:
     result.setInfo(TR("command.zoom_out_vertical"), TR("command.zoom_out_vertical.desp"),
                    TR("category.view"), 0);
-    result.addDefaultKeypress('h', juce::ModifierKeys::shiftModifier);
+    result.addDefaultKeypress('g', juce::ModifierKeys::shiftModifier);
     result.setActive(project != nullptr);
     break;
 

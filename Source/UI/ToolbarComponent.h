@@ -86,6 +86,8 @@ public:
     bool isHostTransportAvailable() const { return hostTransportAvailable; }
     void setToolGroupEnabled(bool enabled);
     void setCurrentTime(double time);
+    // The open project's file name (tooltip: its full path); empty hides it.
+    void setDocumentName(const juce::File& file);
     // Where playback starts (standalone); shown beside the transport.
     void setPlayheadTime(double time);
     void setTotalTime(double time);
@@ -183,6 +185,8 @@ private:
     juce::Rectangle<int> timeCapsuleBounds;      // For drawing centered time capsule
 
     juce::Label timeLabel;
+    juce::Label documentLabel;
+    juce::File documentFile;
 
     juce::Slider zoomSlider;
     juce::Label zoomLabel;
