@@ -1,4 +1,5 @@
 #include "Vocoder.h"
+#include <limits>
 #include "../Utils/AppLogger.h"
 #include "../Utils/Constants.h"
 #include "../Utils/OnnxRuntime.h"
@@ -27,6 +28,51 @@ namespace
   constexpr size_t kCoreMLFallbackChunkFrames = 512;
   // Overlap between adjacent chunks for crossfade (in frames).
   constexpr size_t kOverlapFrames = 16;
+
+  // Chunk ranges [first, end) for a long render. Every chunk restarts the
+  // model's phase, so the crossfade at a seam mixes two renders of the same
+  // audio at unrelated phases; where the voice is loud they cancel and the
+  // level dips (a notch of 4-6 dB in the middle of a note after a whole-song
+  // render). Each seam goes where the mel is quietest over the overlap within
+  // the chunk's second half, so it falls in a breath or a consonant where the
+  // phrase has one.
+  std::vector<std::pair<size_t, size_t>>
+  planChunks(const std::vector<std::vector<float>> &mel, size_t numFrames,
+             size_t maxChunkFrames, size_t overlapFrames)
+  {
+    std::vector<std::pair<size_t, size_t>> chunks;
+    auto level = [&](size_t frame) {
+      const auto &bins = mel[frame];
+      double sum = 0.0;
+      for (float value : bins)
+        sum += value;
+      return bins.empty() ? 0.0 : sum / static_cast<double>(bins.size());
+    };
+    size_t first = 0;
+    while (first + maxChunkFrames < numFrames)
+    {
+      const size_t latest = first + maxChunkFrames;
+      const size_t earliest =
+          std::max(first + maxChunkFrames / 2, first + overlapFrames + 1);
+      size_t bestEnd = latest;
+      double best = std::numeric_limits<double>::max();
+      for (size_t end = earliest; end <= latest; ++end)
+      {
+        double sum = 0.0;
+        for (size_t frame = end - overlapFrames; frame < end; ++frame)
+          sum += level(frame);
+        if (sum < best)
+        {
+          best = sum;
+          bestEnd = end;
+        }
+      }
+      chunks.push_back({first, bestEnd});
+      first = bestEnd - overlapFrames;
+    }
+    chunks.push_back({first, numFrames});
+    return chunks;
+  }
 
   bool isVerboseInferLogEnabled()
   {
@@ -681,14 +727,12 @@ Vocoder::inferOnnxLocked(const std::vector<std::vector<float>> &mel,
     // -----------------------------------------------------------
     // Long input: chunked inference with crossfade
     // -----------------------------------------------------------
-    const size_t step = kMaxChunkFrames - kOverlapFrames;
     const size_t overlapSamples =
         kOverlapFrames * static_cast<size_t>(hopSize);
     const size_t totalSamples = numFrames * static_cast<size_t>(hopSize);
 
-    size_t numChunks = 0;
-    for (size_t off = 0; off < numFrames; off += step)
-      ++numChunks;
+    const auto chunks = planChunks(mel, numFrames, kMaxChunkFrames, kOverlapFrames);
+    const size_t numChunks = chunks.size();
 
     log("Chunked inference: " + std::to_string(numFrames) + " frames -> " +
         std::to_string(numChunks) + " chunks (max " +
@@ -698,13 +742,12 @@ Vocoder::inferOnnxLocked(const std::vector<std::vector<float>> &mel,
     std::vector<float> waveform(totalSamples, 0.0f);
     size_t waveformWriteEnd = 0;
 
-    for (size_t chunkIdx = 0, frameOff = 0; frameOff < numFrames;
-         ++chunkIdx, frameOff += step)
+    for (size_t chunkIdx = 0; chunkIdx < chunks.size(); ++chunkIdx)
     {
       if (renderCancelled())
         return {};
-      const size_t chunkEnd =
-          std::min(frameOff + kMaxChunkFrames, numFrames);
+      const size_t frameOff = chunks[chunkIdx].first;
+      const size_t chunkEnd = chunks[chunkIdx].second;
       const size_t chunkFrames = chunkEnd - frameOff;
 
       // Build sub-ranges for this chunk
@@ -1069,13 +1112,11 @@ Vocoder::inferCoreMLAllChunksLocked(const std::vector<std::vector<float>> &mel,
     return result;
   }
 
-  const size_t step = maxChunkFrames - kOverlapFrames;
   const size_t overlapSamples =
       kOverlapFrames * static_cast<size_t>(hopSize);
   const size_t totalSamples = numFrames * static_cast<size_t>(hopSize);
-  size_t numChunks = 0;
-  for (size_t off = 0; off < numFrames; off += step)
-    ++numChunks;
+  const auto chunks = planChunks(mel, numFrames, maxChunkFrames, kOverlapFrames);
+  const size_t numChunks = chunks.size();
 
   log("Core ML chunked inference: " + std::to_string(numFrames) +
       " frames -> " + std::to_string(numChunks) + " chunks (max " +
@@ -1083,12 +1124,11 @@ Vocoder::inferCoreMLAllChunksLocked(const std::vector<std::vector<float>> &mel,
 
   std::vector<float> waveform(totalSamples, 0.0f);
   size_t waveformWriteEnd = 0;
-  for (size_t chunkIdx = 0, frameOff = 0; frameOff < numFrames;
-       ++chunkIdx, frameOff += step) {
+  for (size_t chunkIdx = 0; chunkIdx < chunks.size(); ++chunkIdx) {
     if (renderCancelled())
       return std::vector<float>{};
-    const size_t chunkEnd =
-        std::min(frameOff + maxChunkFrames, numFrames);
+    const size_t frameOff = chunks[chunkIdx].first;
+    const size_t chunkEnd = chunks[chunkIdx].second;
     const size_t chunkFrames = chunkEnd - frameOff;
     std::vector<std::vector<float>> chunkMel(
         mel.begin() + static_cast<ptrdiff_t>(frameOff),
