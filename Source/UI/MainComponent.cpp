@@ -2038,9 +2038,10 @@ void MainComponent::openFile()
   if (fileChooser != nullptr)
     return;
 
+  // The plugin takes its audio from the host, so it opens projects only.
   fileChooser = std::make_unique<juce::FileChooser>(
       TR("dialog.select_audio"), juce::File{},
-      "*.pitchnet;*.wav;*.mp3;*.flac;*.aiff");
+      isPluginMode() ? "*.pitchnet" : "*.pitchnet;*.wav;*.mp3;*.flac;*.aiff");
 
   auto chooserFlags = juce::FileBrowserComponent::openMode |
                       juce::FileBrowserComponent::canSelectFiles;
@@ -2055,8 +2056,11 @@ void MainComponent::openFile()
         auto file = fc.getResult();
         safeThis->fileChooser.reset(); // Allow next dialog to open
         if (file.existsAsFile()) {
+          const bool isProject = file.hasFileExtension("pitchnet");
+          if (safeThis->isPluginMode() && !isProject)
+            return;
           safeThis->addRecentFile(file);
-          if (file.hasFileExtension("pitchnet") || file.hasFileExtension(".pitchnet"))
+          if (isProject)
             safeThis->openProjectFile(file);
           else
             safeThis->loadAudioFile(file);
@@ -3591,8 +3595,15 @@ void MainComponent::showSettings()
 
 bool MainComponent::isInterestedInFileDrag(const juce::StringArray &files)
 {
+  // The plugin takes its audio from the host: only .pitchnet projects can be
+  // dropped on it, opened the same way as Cmd+O.
   if (isPluginMode())
+  {
+    for (const auto &file : files)
+      if (file.endsWithIgnoreCase(".pitchnet"))
+        return true;
     return false;
+  }
 
   for (const auto &file : files)
   {
@@ -3616,7 +3627,7 @@ void MainComponent::filesDropped(const juce::StringArray &files, int /*x*/,
 
 void MainComponent::openFileFromPath(const juce::File &file)
 {
-  if (isPluginMode())
+  if (isPluginMode() && !file.hasFileExtension("pitchnet"))
     return;
 
   if (!file.existsAsFile())
