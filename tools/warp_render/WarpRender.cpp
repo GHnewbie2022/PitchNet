@@ -1369,6 +1369,58 @@ void ensembleCheck(EditorController &controller, const AudioData &audioData)
   }
 }
 
+// Frame ranges [from, to) where the final pitch (composed from the rebuilt
+// curves) or the note gain/formant of two projects differ. Callers rebuild the
+// curves first (PitchCurveProcessor::rebuildBaseFromNotes).
+static std::vector<std::pair<int, int>> differingFrames(const Project &a, const Project &b,
+                                                        float *maxCents)
+{
+  auto perFrame = [](const Project &p, int frames) {
+    std::vector<std::pair<float, float>> v(static_cast<size_t>(frames), {0.0f, 0.0f});
+    for (const auto &n : p.getNotes())
+      if (!n.isRest())
+        for (int f = std::max(0, n.getStartFrame()); f < std::min(frames, n.getEndFrame()); ++f)
+          v[static_cast<size_t>(f)] = {n.getVolumeDb(), n.getFormantShift()};
+    return v;
+  };
+  const auto fa = a.getAdjustedF0(), fb = b.getAdjustedF0();
+  const int frames = static_cast<int>(std::max(fa.size(), fb.size()));
+  const auto ga = perFrame(a, frames), gb = perFrame(b, frames);
+  std::vector<std::pair<int, int>> ranges;
+  int runStart = -1;
+  for (int f = 0; f <= frames; ++f)
+  {
+    bool differs = false;
+    if (f < frames)
+    {
+      const auto i = static_cast<size_t>(f);
+      const float x = i < fa.size() ? fa[i] : 0.0f, y = i < fb.size() ? fb[i] : 0.0f;
+      if (i >= fa.size() || i >= fb.size() || (x > 0.0f) != (y > 0.0f))
+        differs = true;
+      else if (x > 0.0f)
+      {
+        const float c = std::abs(1200.0f * std::log2(y / x));
+        if (c > 0.1f) // below this is float noise from rebuilding the curves
+        {
+          differs = true;
+          if (maxCents != nullptr)
+            *maxCents = std::max(*maxCents, c);
+        }
+      }
+      if (ga[i] != gb[i])
+        differs = true;
+    }
+    if (differs && runStart < 0)
+      runStart = f;
+    if (!differs && runStart >= 0)
+    {
+      ranges.emplace_back(runStart, f);
+      runStart = -1;
+    }
+  }
+  return ranges;
+}
+
 int main(int argc, char **argv)
 {
   juce::ScopedJuceInitialiser_GUI juce;
@@ -1381,6 +1433,137 @@ int main(int argc, char **argv)
       juce::String::fromUTF8(argv[1]));
   const juce::File output = juce::File::getCurrentWorkingDirectory().getChildFile(
       juce::String::fromUTF8(argv[2]));
+  // WarpRender <before.pitchnet> <after.pitchnet> --diff: frames whose final
+  // pitch or note gain/formant differ between two projects, independent of
+  // how the notes were cut.
+  if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--diff")
+  {
+    Project a, b;
+    if (!ProjectSerializer::loadFromFile(a, input) ||
+        !ProjectSerializer::loadFromFile(b, output))
+    {
+      std::fprintf(stderr, "could not load\n");
+      return 1;
+    }
+    PitchCurveProcessor::rebuildBaseFromNotes(a);
+    PitchCurveProcessor::rebuildBaseFromNotes(b);
+    float maxCents = 0.0f;
+    const auto differs = differingFrames(a, b, &maxCents);
+    int total = 0;
+    const auto fa = a.getAdjustedF0(), fb = b.getAdjustedF0();
+    for (const auto &[from, to] : differs)
+    {
+      float worst = 0.0f;
+      for (int f = from; f < to && f < (int)std::min(fa.size(), fb.size()); ++f)
+        if (fa[(size_t)f] > 0.0f && fb[(size_t)f] > 0.0f)
+          worst = std::max(worst, std::abs(1200.0f * std::log2(fb[(size_t)f] / fa[(size_t)f])));
+      std::printf("differs frames [%d,%d) max %.3f cents\n", from, to, worst);
+      total += to - from;
+    }
+    std::printf("notes %d -> %d, total %d frames, max %.2f cents\n",
+                (int)a.getNotes().size(), (int)b.getNotes().size(), total, maxCents);
+    return 0;
+  }
+  // WarpRender <in.pitchnet> <out.pitchnet> --apply --before <original.pitchnet>:
+  // an agent edited the note data directly. Every note on frames whose final
+  // pitch, gain or formant differ from the original is synthesized now (the
+  // same incremental path as an edit in the App), and the project is saved
+  // with the new composite so Cubase plays the edit.
+  if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--apply")
+  {
+    if (argc < 6 || juce::String::fromUTF8(argv[4]) != "--before")
+    {
+      std::fprintf(stderr, "usage: WarpRender in.pitchnet out.pitchnet --apply "
+                           "--before original.pitchnet\n");
+      return 2;
+    }
+    Project loaded;
+    if (!ProjectSerializer::loadFromFile(loaded, input))
+    {
+      std::fprintf(stderr, "could not load %s\n", input.getFullPathName().toRawUTF8());
+      return 1;
+    }
+    sourceaudio::attachRecording(loaded, input);
+    juce::String ortError;
+    if (!OnnxRuntime::initialise(&ortError))
+    {
+      std::fprintf(stderr, "ONNX Runtime: %s\n", ortError.toRawUTF8());
+      return 1;
+    }
+    EditorController controller(false);
+    controller.setProject(std::make_unique<Project>(loaded));
+    auto &p = *controller.getProject();
+    auto &data = p.getAudioData();
+    if (data.melSpectrogram.empty())
+    {
+      MelSpectrogram mel(data.sampleRate, N_FFT, HOP_SIZE, NUM_MELS, FMIN, FMAX);
+      data.melSpectrogram = mel.compute(data.originalWaveform.getReadPointer(0),
+                                        data.originalWaveform.getNumSamples());
+    }
+    // The stored pitch curves do not follow note values edited outside the
+    // App; rebuild them from the notes as an edit in the App does.
+    PitchCurveProcessor::rebuildBaseFromNotes(p);
+    // Compare with the original frame by frame, so how the notes were cut
+    // does not matter and notes rendered before and edited again are caught.
+    std::vector<std::pair<int, int>> changed;
+    {
+      Project before;
+      const juce::File beforeFile = juce::File::getCurrentWorkingDirectory().getChildFile(
+          juce::String::fromUTF8(argv[5]));
+      if (!ProjectSerializer::loadFromFile(before, beforeFile))
+      {
+        std::fprintf(stderr, "could not load %s\n",
+                     beforeFile.getFullPathName().toRawUTF8());
+        return 1;
+      }
+      PitchCurveProcessor::rebuildBaseFromNotes(before);
+      changed = differingFrames(before, p, nullptr);
+      for (const auto &[from, to] : changed)
+        std::printf("changed frames [%d,%d)\n", from, to);
+    }
+    auto overlapsChange = [&](const Note &note) {
+      for (const auto &[from, to] : changed)
+        if (note.getStartFrame() < to && note.getEndFrame() > from)
+          return true;
+      return false;
+    };
+    int marked = 0;
+    for (auto &note : p.getNotes())
+      // A rendered note set back to neutral is rendered again too, so the
+      // composite returns to the recording there.
+      if (!note.isRest() && overlapsChange(note) &&
+          (!note.isNeutralForOriginalWaveform() || note.hasRenderedEdit()))
+      {
+        note.markDirty();
+        note.markSynthDirty();
+        ++marked;
+        std::printf("note @%d offset %.2f\n", note.getStartFrame(),
+                    note.getPitchOffset());
+      }
+    if (marked > 0)
+    {
+      std::atomic<bool> pending{false}, done{false}, ok{false};
+      controller.resynthesizeIncrementalAsync(
+          p, nullptr, [&](bool success) { ok = success; done = true; }, pending,
+          false);
+      if (!waitFor(done, 600000) || !ok.load())
+      {
+        std::fprintf(stderr, "resynth failed\n");
+        controller.requestShutdown();
+        return 1;
+      }
+    }
+    const bool saved = ProjectSerializer::saveToFile(p, output);
+    controller.requestShutdown();
+    if (!saved)
+    {
+      std::fprintf(stderr, "could not save %s\n", output.getFullPathName().toRawUTF8());
+      return 1;
+    }
+    std::printf("synthesized %d notes, wrote %s\n", marked,
+                output.getFullPathName().toRawUTF8());
+    return 0;
+  }
   // WarpRender <project.pitchnet> <out.wav> --project: the saved project's
   // playback as the App builds it (embedded composite + the recording).
   if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--project")
