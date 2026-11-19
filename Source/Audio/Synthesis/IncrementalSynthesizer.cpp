@@ -487,10 +487,17 @@ IncrementalSynthesizer::generateBlendMask(int startFrame, int endFrame,
   for (int i = 0; i < numFrames - 1; ++i) {
     if (frameMask[i] == frameMask[i + 1])
       continue;
-    // Transition at frame boundary
-    int center = (i + 1) * hopSize;
-    int rampStart = std::max(0, center - kRampSamples / 2);
-    int rampEnd = std::min(numSamples, center + kRampSamples / 2);
+    // Transition at frame boundary. The ramp lies inside the unvoiced run
+    // (a kept run is always the unvoiced side): centred on the boundary, its
+    // second half crossfaded the recording with the render over the voice's
+    // onset (or its last moment), where the two meet at unrelated phases and
+    // cancel - a 5-10 dB notch as a note starts after a rest. Here it hands
+    // over before the voice starts, between breath and breath.
+    const int boundary = (i + 1) * hopSize;
+    const bool voiceStarts = frameMask[i] < frameMask[i + 1];
+    int rampStart = voiceStarts ? std::max(0, boundary - kRampSamples) : boundary;
+    int rampEnd =
+        voiceStarts ? boundary : std::min(numSamples, boundary + kRampSamples);
     float fromVal = frameMask[i];
     float toVal = frameMask[i + 1];
     for (int s = rampStart; s < rampEnd; ++s) {
@@ -1050,15 +1057,20 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
             return;
           }
 
-          // Build blended target from model/original.
+          // Build blended target from model/original. `keptOriginal` is the
+          // part of it that is the recording (unvoiced runs, breaths and
+          // sibilants, restored spans): the splice alignment below moves and
+          // rotates only the render, so this part is written as it is.
           std::vector<float> targetSegment(samplesToWrite, 0.0f);
+          std::vector<float> keptOriginal(samplesToWrite, 0.0f);
           for (int i = 0; i < samplesToWrite; ++i) {
             const float b =
                 (i < static_cast<int>(blendMask.size())) ? blendMask[i] : 0.0f;
             const float synth = synthesizedAudio[static_cast<size_t>(i)];
             const float orig = originalSegment[static_cast<size_t>(i)];
+            keptOriginal[static_cast<size_t>(i)] = (1.0f - b) * orig;
             targetSegment[static_cast<size_t>(i)] =
-                b * synth + (1.0f - b) * orig;
+                b * synth + keptOriginal[static_cast<size_t>(i)];
           }
 
           // Use the same gain envelope as direct gain edits (GainEditAction):
@@ -1081,6 +1093,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
 
           for (int i = 0; i < samplesToWrite; ++i) {
             targetSegment[static_cast<size_t>(i)] *=
+                sampleGain[static_cast<size_t>(i)];
+            keptOriginal[static_cast<size_t>(i)] *=
                 sampleGain[static_cast<size_t>(i)];
           }
 
@@ -1211,6 +1225,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                   breathGain.empty() ? originalSegment[index]
                                      : originalSegment[index] * breathGain[index];
               targetSegment[index] += blend * (restored - targetSegment[index]);
+              keptOriginal[index] += blend * (restored - keptOriginal[index]);
             }
           }
 
@@ -1232,6 +1247,13 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
           // splice to match the audio it fades into (SpliceAlignment.h).
           std::vector<float> committed = targetSegment;
           const auto renderHilbert = splicealign::hilbert(targetSegment);
+          // The render alone, which is what gets moved and rotated: shifting
+          // the kept recording too smeared sibilants with a gliding
+          // fractional delay (a consonant wobbled after a whole-song render).
+          std::vector<float> renderOnly(targetSegment.size());
+          for (size_t i = 0; i < renderOnly.size(); ++i)
+            renderOnly[i] = targetSegment[i] - keptOriginal[i];
+          const auto renderOnlyHilbert = splicealign::hilbert(renderOnly);
           for (const auto &range : commitFrameRanges) {
             const int bodyStart =
                 (range.start - capturedStartFrame) * hopSize;
@@ -1300,8 +1322,9 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               const splicealign::Alignment at{
                   leftAlign.lag + t * (rightAlign.lag - leftAlign.lag),
                   leftAlign.angle + t * (rightAlign.angle - leftAlign.angle)};
-              committed[static_cast<size_t>(sample)] = splicealign::sample(
-                  targetSegment, renderHilbert, sample, at);
+              committed[static_cast<size_t>(sample)] =
+                  splicealign::sample(renderOnly, renderOnlyHilbert, sample, at) +
+                  keptOriginal[static_cast<size_t>(sample)];
             }
 
             for (int sample = firstSample; sample < lastSample; ++sample) {
