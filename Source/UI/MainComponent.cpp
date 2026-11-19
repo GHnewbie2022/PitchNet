@@ -1766,7 +1766,12 @@ void MainComponent::timerCallback()
 
   if (isLoadingAudio.load())
   {
-    const auto progress = static_cast<float>(loadingProgress.load());
+    const double target = loadingProgress.load();
+    if (target < shownLoadingProgress)
+      shownLoadingProgress = target;
+    else
+      shownLoadingProgress += (target - shownLoadingProgress) * 0.2;
+    const auto progress = static_cast<float>(shownLoadingProgress);
 
     juce::String msg;
     {

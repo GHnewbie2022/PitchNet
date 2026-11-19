@@ -44,6 +44,10 @@ public:
      * Load project from JSON file.
      */
     static bool loadFromFile(Project& project, const juce::File& file);
+    // Same, reporting progress (0..1) between the read, parse and build stages.
+    // Safe to call off the message thread; the callback runs on that thread.
+    static bool loadFromFile(Project& project, const juce::File& file,
+                             const std::function<void(double)>& onProgress);
 
     /**
      * Convert project to JSON object.

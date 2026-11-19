@@ -225,6 +225,7 @@
   "progress.analyzing": "Анализ...",
   "progress.analyzing_audio": "Анализ аудио...",
   "progress.analyzing_title": "Анализ аудио...",
+  "progress.loading_project_title": "Загрузка проекта...",
   "progress.audio_loaded": "Аудио загружено",
   "progress.detecting_notes": "Определение нот...",
   "progress.export_complete": "Экспорт завершён",

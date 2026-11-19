@@ -228,6 +228,7 @@
   "progress.analyzing": "Analyzing...",
   "progress.analyzing_audio": "Analyzing audio...",
   "progress.analyzing_title": "Analyzing Audio...",
+  "progress.loading_project_title": "Loading Project...",
   "progress.audio_loaded": "Audio loaded",
   "progress.detecting_notes": "Detecting notes...",
   "progress.export_complete": "Export complete",

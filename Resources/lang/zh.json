@@ -188,6 +188,7 @@
   "progress.analyzing": "分析中...",
   "progress.analyzing_audio": "分析音频...",
   "progress.analyzing_title": "正在分析音频...",
+  "progress.loading_project_title": "正在读取项目...",
   "progress.audio_loaded": "音频已加载",
   "progress.detecting_notes": "正在检测音符...",
   "progress.export_complete": "导出完成",

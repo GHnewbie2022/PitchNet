@@ -185,6 +185,7 @@
   "progress.analyzing": "분석 중...",
   "progress.analyzing_audio": "오디오 분석 중...",
   "progress.analyzing_title": "오디오 분석 중...",
+  "progress.loading_project_title": "프로젝트를 불러오는 중...",
   "progress.audio_loaded": "오디오 불러옴",
   "progress.detecting_notes": "노트 감지 중...",
   "progress.export_complete": "내보내기 완료",

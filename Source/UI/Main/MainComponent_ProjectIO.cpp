@@ -20,16 +20,52 @@ void MainComponent::openProjectFile(const juce::File &file) {
     return;
   addRecentFile(file);
 
-  auto loadedProject = std::make_shared<Project>();
-  if (!ProjectSerializer::loadFromFile(*loadedProject, file)) {
-    StyledMessageBox::show(this, TR("dialog.open_failed"),
-                           (ProjectSerializer::lastLoadWasLegacy()
-                                ? TR("dialog.project_legacy")
-                                : TR("dialog.project_load_failed")) +
-                               "\n" + file.getFullPathName(),
-                           StyledMessageBox::WarningIcon);
-    return;
+  // A .pitchnet embeds the whole rendered waveform (hundreds of MB of JSON for
+  // a full song), so read it off the message thread and show progress; the
+  // window froze with no sign of life before.
+  isLoadingAudio = true;
+  loadingProgress = 0.0;
+  shownLoadingProgress = 0.0;
+  {
+    const juce::ScopedLock sl(loadingMessageLock);
+    loadingMessage = TR("progress.loading_project_title");
   }
+  analysisProgressPopup.setTitle(TR("progress.loading_project_title"));
+  showAnalysisProgress(0.0);
+
+  juce::Component::SafePointer<MainComponent> safeThis(this);
+  juce::Thread::launch([safeThis, file]() {
+    auto loadedProject = std::make_shared<Project>();
+    const bool ok = ProjectSerializer::loadFromFile(
+        *loadedProject, file, [safeThis](double p) {
+          juce::MessageManager::callAsync([safeThis, p]() {
+            if (safeThis != nullptr)
+              safeThis->loadingProgress = p;
+          });
+        });
+    // thread_local in the serializer: read it on this thread.
+    const bool legacy = !ok && ProjectSerializer::lastLoadWasLegacy();
+    juce::MessageManager::callAsync([safeThis, file, loadedProject, ok, legacy]() {
+      if (safeThis == nullptr)
+        return;
+      safeThis->isLoadingAudio = false;
+      safeThis->analysisProgressPopup.setTitle({});
+      safeThis->hideAnalysisProgress();
+      if (!ok) {
+        StyledMessageBox::show(safeThis.getComponent(), TR("dialog.open_failed"),
+                               (legacy ? TR("dialog.project_legacy")
+                                       : TR("dialog.project_load_failed")) +
+                                   "\n" + file.getFullPathName(),
+                               StyledMessageBox::WarningIcon);
+        return;
+      }
+      safeThis->openLoadedProject(file, loadedProject);
+    });
+  });
+}
+
+void MainComponent::openLoadedProject(const juce::File &file,
+                                      std::shared_ptr<Project> loadedProject) {
   loadedProject->setProjectFilePath(file);
 
   // .pitchnet files embed the rendered waveform and analysis data. Prefer this

@@ -17,6 +17,17 @@ constexpr std::uint32_t kProjectArchiveMagic = 0x504E4152u; // PNAR
 constexpr int kProjectArchiveVersion = 11;
 constexpr int kFirstWarpProjectArchiveVersion = 11;
 thread_local bool lastLoadLegacy = false;
+// Progress of the loadFromFile running on this thread: the callback and the
+// share of the whole load the current step covers. Unset outside a load.
+struct LoadProgress {
+    const std::function<void(double)>* callback = nullptr;
+    double from = 0.0, to = 0.0;
+    void step(double newFrom, double newTo) { from = newFrom; to = newTo; report(0.0); }
+    void report(double fraction) const {
+        if (callback && *callback) (*callback)(from + (to - from) * fraction);
+    }
+};
+thread_local LoadProgress loadProgress;
 constexpr int kProjectArchiveHasOriginalWaveform = 1 << 0;
 constexpr int kProjectArchiveHasMelSpectrogram = 1 << 1;
 constexpr int kProjectArchiveHasRenderedWaveform = 1 << 2;
@@ -229,16 +240,33 @@ bool ProjectSerializer::saveToFile(const Project& project, const juce::File& fil
 }
 
 bool ProjectSerializer::loadFromFile(Project& project, const juce::File& file) {
+    return loadFromFile(project, file, {});
+}
+
+bool ProjectSerializer::loadFromFile(Project& project, const juce::File& file,
+                                     const std::function<void(double)>& onProgress) {
+    // Shares follow the measured time of each step on a 4-minute song
+    // (2026-11-19, 238 MB): read 4%, JSON parse 21%, the rest in fromJson.
+    struct Scope {
+        Scope(const std::function<void(double)>& cb) { loadProgress = {}; loadProgress.callback = &cb; }
+        ~Scope() { loadProgress = {}; }
+    } scope(onProgress);
+    auto report = [&](double p) { if (onProgress) onProgress(p); };
+    report(0.0);
     auto jsonString = file.loadFileAsString();
     if (jsonString.isEmpty())
         return false;
+    report(0.04);
 
     auto json = juce::JSON::parse(jsonString);
+    jsonString = {};
     if (!json.isObject())
         return false;
+    report(0.25);
 
     if (!fromJson(project, json))
         return false;
+    report(0.99);
     // Untouched notes show the recorded pitch over the base as it is now.
     PitchCurveProcessor::refitUntouchedCurves(project, 0,
                                               project.getAudioData().getNumFrames());
@@ -674,17 +702,22 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
 
     // Pitch data
     auto pitchDataVar = json.getProperty("pitchData", juce::var());
+    loadProgress.step(0.25, 0.46);
     if (pitchDataVar.isObject()) {
         pitchDataFromJson(audioData, pitchDataVar);
         // Breath/sibilance labels follow the voicing just replaced.
         audioData.breathSibilance.clear();
     }
+    loadProgress.step(0.46, 0.69);
     audioBufferFromJson(audioData.waveform,
                         json.getProperty("waveform", juce::var()));
+    loadProgress.step(0.69, 0.90);
     audioBufferFromJson(audioData.originalWaveform,
                         json.getProperty("originalWaveform", juce::var()));
+    loadProgress.step(0.90, 0.95);
     melSpectrogramFromJson(audioData.melSpectrogram,
                            json.getProperty("melSpectrogram", juce::var()));
+    loadProgress.step(0.95, 0.99);
     audioData.segmentChunkRanges.clear();
     if (auto *ranges = json.getProperty("segmentChunkRanges", juce::var())
                            .getArray()) {
@@ -1291,19 +1324,28 @@ bool ProjectSerializer::pitchDataFromJson(AudioData& audioData, const juce::var&
         return false;
 
     audioData.f0 = stringToFloatArray(json.getProperty("f0", "").toString());
+    loadProgress.report(1 / 9.0);
     audioData.rawF0 =
         stringToFloatArray(json.getProperty("rawF0", "").toString());
+    loadProgress.report(2 / 9.0);
     audioData.cleanedF0 =
         stringToFloatArray(json.getProperty("cleanedF0", "").toString());
+    loadProgress.report(3 / 9.0);
     audioData.denseF0 =
         stringToFloatArray(json.getProperty("denseF0", "").toString());
+    loadProgress.report(4 / 9.0);
     audioData.baseF0 = stringToFloatArray(json.getProperty("baseF0", "").toString());
+    loadProgress.report(5 / 9.0);
     if (audioData.baseF0.empty())
         audioData.baseF0 = audioData.f0; // Backward compatibility
     audioData.basePitch = stringToFloatArray(json.getProperty("basePitch", "").toString());
+    loadProgress.report(6 / 9.0);
     audioData.deltaPitch = stringToFloatArray(json.getProperty("deltaPitch", "").toString());
+    loadProgress.report(7 / 9.0);
     audioData.voicedMask = stringToBoolArray(json.getProperty("voicedMask", "").toString());
+    loadProgress.report(8 / 9.0);
     audioData.vadMask = stringToBoolArray(json.getProperty("vadMask", "").toString());
+    loadProgress.report(9 / 9.0);
 
     if (audioData.rawF0.empty()) {
         audioData.rawF0 = audioData.f0;
@@ -1427,9 +1469,14 @@ std::vector<float> ProjectSerializer::stringToFloatArray(const juce::String& str
     std::vector<float> result;
     result.reserve(static_cast<size_t>(parts.size()));
 
-    for (const auto& p : parts) {
-        if (p.isNotEmpty())
-            result.push_back(p.getFloatValue());
+    // Long arrays (the audio) report progress while a project file loads.
+    const int n = parts.size();
+    const int every = n > 100000 ? n / 50 : 0;
+    for (int i = 0; i < n; ++i) {
+        if (parts[i].isNotEmpty())
+            result.push_back(parts[i].getFloatValue());
+        if (every > 0 && i % every == 0)
+            loadProgress.report(static_cast<double>(i) / n);
     }
 
     return result;

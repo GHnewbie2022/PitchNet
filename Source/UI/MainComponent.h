@@ -41,6 +41,11 @@ public:
 
 class AnalysisProgressPopup : public juce::Component {
 public:
+  // Empty title shows the default analysis title.
+  void setTitle(const juce::String &newTitle) {
+    title = newTitle;
+    repaint();
+  }
   void setProgress(double newProgress) {
     progress = juce::jlimit(0.0, 1.0, newProgress);
     repaint();
@@ -53,7 +58,7 @@ public:
 
     g.setColour(juce::Colour(0xFFEFEFEFu));
     g.setFont(AppFont::getFont(16.0f));
-    g.drawText(TR("progress.analyzing_title"),
+    g.drawText(title.isNotEmpty() ? title : TR("progress.analyzing_title"),
                getLocalBounds().withHeight(44).translated(0, 4),
                juce::Justification::centred, false);
 
@@ -77,6 +82,7 @@ public:
 
 private:
   double progress = 0.0;
+  juce::String title;
 };
 
 class MainComponent : public juce::Component,
@@ -354,6 +360,7 @@ private:
                      std::optional<MidiReference::State> reference = std::nullopt);
   void clearProjectForNewLoad(std::optional<MidiReference::State> reference = std::nullopt);
   void openProjectFile(const juce::File &file);
+  void openLoadedProject(const juce::File &file, std::shared_ptr<Project> loadedProject);
   void analyzeAudio();
   void analyzeAudio(
       Project &targetProject,
@@ -477,6 +484,8 @@ private:
   // Async load state
   std::atomic<bool> isLoadingAudio{false};
   std::atomic<double> loadingProgress{0.0};
+  // What the progress bar shows: eases toward loadingProgress, never past it.
+  double shownLoadingProgress = 0.0;
   juce::CriticalSection loadingMessageLock;
   juce::String loadingMessage;
   juce::String lastLoadingMessage;

@@ -185,6 +185,7 @@
   "progress.analyzing": "Analizando...",
   "progress.analyzing_audio": "Analizando audio...",
   "progress.analyzing_title": "Analizando audio...",
+  "progress.loading_project_title": "Cargando proyecto...",
   "progress.audio_loaded": "Audio cargado",
   "progress.detecting_notes": "Detectando notas...",
   "progress.export_complete": "Exportación completada",
