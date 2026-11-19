@@ -448,7 +448,7 @@ nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); marg
         <li>pitchOffset 保持 0。最終音高 = midiNote + pitchOffset，<br>兩個欄位都加 3 會變成移 6 個半音。</li>
         <li>單位是半音（MIDI 音高，60 = C4，可以有小數）。<br>移調 n 個半音：midiNote = 目前的 midiNote + n。</li>
         <li>改回原音高：midiNote 設成 originalMidiNote。</li>
-        <li>除了 midiNote 和 lastNonMacroMidiNote，其他欄位都不要改。</li>
+        <li>除了 midiNote 和 lastNonMacroMidiNote，其他欄位都不要改。<br>不要自己改 JSON 來切開、合併、刪除音符，也不要改 startFrame、endFrame、rest：<br>這些修改 --apply 不會合成，或結果跟 App 不同（見「四項驗證結果」）。<br>切開、合併、刪除之後會改由 App 的程式執行，正式指令完成前先不做。<br>要取消某個音符的修改，把 midiNote 設回 originalMidiNote，不要刪掉音符。</li>
         <li>用 JSON 函式庫讀進整份檔案，改完整份寫回。</li>
       </ol>
       <h3 id="agent-rule-4">規則 4：找音符與檢查結果</h3>
@@ -466,12 +466,67 @@ nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); marg
       <h3 id="agent-todo">待測</h3>
       <p>以下項目還沒驗證，驗證前 agent 不要做。</p>
       <ol class="steps">
-                <li>修改 volumeDb（音量）、formantShift（共振峰）後，--apply 的聲音是否正確。</li>
-        <li>修改 tiltLeft、tiltRight、tiltPivot、vibrato、pitchDrift、<br>smoothLeftFrames、smoothRightFrames 後，--apply 的聲音是否正確。</li>
-        <li>agent 自己切開音符的做法<br>（analysisSpans、originalDeltaPitch、f0Values 的切法）。</li>
-        <li>合併、新增、刪除音符。</li>
-        <li>lastNonMacroMidiNote 沒跟著改時，之後在 App 用音高中心工具會不會回到舊音高。</li>
-        <li>改了規則 3 第 6 條以外的欄位會發生什麼事。</li>
+        <li>切開、合併、刪除音符改由 App 的程式執行（使用者決定：只要跟 App 有差異就不讓 agent 硬改，一致性是最高原則）。<br>WarpRender <code>--app-op</code> 目前是測試用，要整理成 agent 可用的正式指令，並驗證結果跟 App 操作逐個取樣相同。</li>
+        <li>沒有音符的有聲段落：從相鄰的波形找邊界，補上音符（使用者提出）。App 目前沒有這個功能，做法還沒規劃。</li>
+        <li>刪除已合成過的音符：被刪除的範圍要立即回到原錄音（使用者決定）。--apply 目前做不到，根因還沒找；App 本身刪除時是否做到也還沒實測。</li>
+        <li>修改音高曲線工具的欄位：tiltLeft、tiltRight、tiltPivot、pitchDrift、vibrato、<br>smoothLeftFrames、smoothRightFrames、bakedDeltaPitch（Shaper 工具，熱鍵 3）。<br>已知 --apply 會抓到並合成（第 4 項），還沒比對結果是否跟 App 操作相同。</li>
+      </ol>
+      <p>暫不驗證：volumeDb（音量）、formantShift（共振峰）。<br>理由（使用者）：只給導引旋律 MIDI 時，agent 沒有可量化、能跟伴奏對照的依據，這兩項幫不上忙；MIDI 主要對音準有用。</p>
+      <h3 id="agent-white-rule">白線判斷規則（Q10，2026-11-20，待試聽）</h3>
+      <p>WarpRender <code>--guide-fix &lt;guide.mid&gt;</code>，只讀寫音符欄位，存檔不合成，再用 <code>--apply</code> 合成。白線 = 合成用的最終音高（pitchData f0，有聲格子）。</p>
+      <ol class="steps">
+        <li>穩定段：取有聲格子中間一半的中位數，頭尾修到第一個／最後一個落在 ±40 cents 內的格子。平均 = 擺動中心，直線擬合 = 趨勢。</li>
+        <li>目標音：穩定段前後 0.25 秒內的 MIDI 音裡最接近中心的那個（含節奏差異）。MIDI 蓋到穩定段不到 30%、最近的差超過 100 cents、兩個候選差不到 10 cents：不改，回報。</li>
+        <li>拉平：趨勢 16～40 cents。穩定段 0.5 秒以上用 pitchDrift 0.5（App 的慢速趨勢縮放，顫音保留，滑入會一起收小）；較短的用 tilt，支點在穩定段開頭、只動右側，滑入形狀不變。</li>
+        <li>平移：midiNote 讓中心落在目標；滑音型音符（趨勢超過 40 cents）的尾端極值沒有斷開、直接接到下一顆反方向的滑音時，改讓極值越過目標 10 cents（使用者：避免上滑音的起音挖太深）。用 App 重建的白線量測、修正 3 次。</li>
+        <li>中心在目標 10 cents 內、又不需要拉平：不改。</li>
+        <li>依據：使用者手修的第一句（15.67～18.82 秒，7 顆音，含 tilt）。規則跟使用者的白線平均差 3.2 cents（RMS），不修時 23.7。門檻都只用這 7 顆音定出，pitchDrift 和極值對齊各只有 1 個例子。</li>
+        <li>整首（620 顆）：只平移 258、tilt 182、滑音對齊極值 18、pitchDrift 13；本來就準 77、沒有 MIDI 30、旋律不同 36、模稜兩可 4、沒有聲音 2。合成 471 顆，白線跟規則輸出 0 格不同。</li>
+        <li>v3 修訂（2026-11-20，使用者試聽 v2 後）：
+          <br>武（46.66 秒）被拉到 G#4：中段中位數落在勾音中途的停頓（65），穩定段包進滑入段 → 參考音高改用後半段（扣最後 1/8）的中位數；趨勢超過 100 cents 又沒接反向滑音時，改用「停住的平台」（連續 5 格以上、高低差 30 cents 內，取最長、同長取後者）。
+          <br>器的「一」（47.31 秒）偏高又往下斜卻沒修：衰減段的低音拉低了平均 → 比最大聲小 10 dB 以上的格子不列入判斷；拉平條件改為穩定段 0.15 秒以上、趨勢 16～100 cents。
+          <br>結果：武平移 -17c 停在 67.0；器 tilt 拉平、中心 62.0。第一句跟使用者白線平均差 4.5 cents（v2 3.2），17.427 從修 -11c 變成不修（中心偏 9c，剛好在 10c 門檻內）。整首修正 456 顆：只平移 269、tilt 151、對齊極值 17、pitchDrift 14、平台 5。</li>
+        <li>v4 修訂（2026-11-20，使用者試聽 v3 後）：就（48.67 秒）被往 C# 修、為（52.20 秒）本來唱對卻被修成 B。
+          <br>根因：就是 ±80 cents 的大顫音，±40 cents 的範圍只留下波谷；為的開頭下勾被包進穩定段，又被當成滑音套用對齊極值。之前每一版從白線估中心，都有一種音估錯（顫音被切、勾音停頓、衰減尾巴）。
+          <br>改為：唱出的音高用 App 分析的音符中心（midiNote，音符方塊）；它在第一句和 4 顆回報音都跟使用者的耳朵一致。白線只用來決定拉平、短滑音對齊極值、校正平移量。穩定段改成從「連續 5 格都在範圍內」開始、到「連續 5 格都在範圍內」結束。對齊極值限穩定段 0.2 秒以內。拿掉平台規則。新增：唱得很準的另一個半音（離它 25 cents 內）視為旋律不同，不改。
+          <br>結果：就 -36c、為不動、武不動、器拉平到中心 61.94。第一句跟使用者白線平均差 5.7 cents。整首修正 383 顆：只平移 254、tilt 106、pitchDrift 12、對齊極值 11；本來就準 148、另一個半音 14。</li>
+        <li>v5 修訂（2026-11-20）：55.43 秒本來唱對 C，被推到 E（+391c）。根因：結尾潛到 56.02（低 4 個半音）再接下一顆往上的音，符合「對齊極值」，谷底被對到 C。改為：極值離音符中心 1 個半音以內才對齊極值；並加安全檢查（影片規則 6）：平移量超過「偏差 + 50 cents」就撤銷並回報 over-shift。v4 另外 3 顆大錯一併消失（60.29 秒 +350c、62.35 秒 +160c、218.2 秒 +565c），155.43 秒被安全檢查撤銷；整首最大平移 102 cents。</li>
+        <li>不採用：整音符吸附（17.26 秒之類的滑音起頭被拉平，大幅移動的 122 顆裡有 71 顆是這種情況）；第一版「最長連續 50 cents 帶」（顫音的音會挑到滑入段）。</li>
+      </ol>
+      <h3 id="agent-consistency">一致性標準（2026-11-20 修訂）</h3>
+      <ol class="steps">
+        <li>合成聲音跟修改歷程有關，App 自己換順序修也不會逐個取樣相同：<br>聲碼器的相位從合成範圍起點一路累積（起點由要重算的範圍決定）；<br>寫回時接縫對齊（<code>SpliceAlignment.h</code>，commit <code>9837cff</code>）會依照現有聲音轉動整顆音的相位。</li>
+        <li>驗證：使用者在 App 修第一句 7 顆音（含 tilt），agent 寫入相同的 6 個欄位：<br>白線 0 格不同；聲音波形相位不同，頻譜差 -20 dB；使用者 A/B 試聽「聽起來沒差」。</li>
+        <li>使用者決定：一致性標準改為「白線（最終音高，WarpRender <code>--diff</code>）逐格相同，且走同一套合成程式」，不要求聲音逐個取樣相同。</li>
+        <li>已驗證 agent 可直接寫的欄位：midiNote、lastNonMacroMidiNote、tiltLeft、tiltRight、tiltPivot、frozenTilt。</li>
+      </ol>
+      <h3 id="agent-verify4">四項驗證結果（2026-11-19）</h3>
+      <p>煙幕專案原檔，第 130 個音符（格 5800～5962，「始」）。比對方法：<code>--diff</code> 比最終音高；<code>--apply</code> 後比整首播放聲音。App 的做法用 WarpRender 新增的 <code>--app-op split|merge|delete</code> 產生（呼叫 App 本身的 NoteSplitter），當作基準。</p>
+      <p class="subhead"><b>1. agent 自己切開音符</b></p>
+      <ol class="steps">
+        <li>agent 的切法：按格數切 originalDeltaPitch、f0Values，其他欄位照抄（兩半的 midiNote 相同）。</li>
+        <li>App 的切法：兩半各自重算中心音高，偏移曲線反向補回，最終音高不變；另外在切點附近做平滑，多存 deltaPitch 欄位。</li>
+        <li>只切不改音高：agent 版最終音高跟原檔 0 格不同，--apply 合成 0 個，聲音逐個取樣相同。<br>App 版在音符後面的空隙（格 5962～5982，沒有音符）曲線差 17.7 cents，不會合成，聲音也相同。</li>
+        <li>切開後右半 +2 半音：兩版都合成 1 個音符，--diff 在音符內相同，<br>但聲音差最多 -49 dBFS（格 5880～5960），差在 App 的平滑過渡。重跑 --apply 結果逐個取樣相同，差異不是隨機。</li>
+      </ol>
+      <p class="subhead"><b>2. 合併、新增、刪除音符</b></p>
+      <ol class="steps">
+        <li>新增：App 沒有新增音符的功能，音符只來自分析。</li>
+        <li>合併（第 128、129 個音符，格 5756～5800）：agent 版（陣列接起來、中心音高取加權平均 62.13）跟 App 版（中心音高 61.45）最終音高 0 格不同，--apply 都合成 0 個，聲音跟原檔相同。App 合併會回到分析時的音高，兩半的修改都丟掉。</li>
+        <li>刪除沒修改過的音符：agent 版和 App 版最終音高相同；那一段曲線改變最多 746 cents，但沒有音符覆蓋，--apply 合成 0 個，聲音跟原檔相同。</li>
+        <li>刪除已合成過的音符（Q9 測試檔，「始」+3 半音）：--apply 合成 0 個，播放的仍是 +3 半音的舊聲音。<br>試過把沒有音符覆蓋的格子標成需要重算（App 刪除時的做法）：刪除案例沒有回到原錄音，只切開的案例反而被重新合成（-10 dBFS），已撤回。</li>
+      </ol>
+      <p class="subhead"><b>3. lastNonMacroMidiNote 沒跟著改</b></p>
+      <ol class="steps">
+        <li>只改這個欄位：--apply 合成 0 個，聲音不變。</li>
+        <li>音高中心工具從 lastNonMacroMidiNote 重算 midiNote（<code>PianoRollWorkspaceView.cpp</code> 約 482 行）：沒跟著改的話，之後在 App 用這個工具，音符會從 agent 修改前的音高開始算，agent 的修改被蓋掉。<br>這是讀程式碼的結論，沒有在 App 實際操作。</li>
+        <li>App 手動改音高時（<code>Note::setMidiNote</code>）同時把 macroPitchCenter 設為 0。煙幕專案 624 個音符的 macroPitchCenter 全是 0。</li>
+      </ol>
+      <p class="subhead"><b>4. 改其他欄位（每次只改一個欄位）</b></p>
+      <ol class="steps">
+        <li>會被 --apply 抓到並重新合成（聲音改變，最大差 -7.7～-12.0 dBFS，都在音符範圍內）：<br>volumeDb、formantShift、tiltLeft、tiltRight、vibrato、pitchDrift、smoothLeftFrames、smoothRightFrames。<br>tiltPivot 單獨改時沒有效果（tilt 為 0）。</li>
+        <li>沒有效果（--diff 0 格、合成 0 個、聲音相同）：<br>lastNonMacroMidiNote、macroPitchCenter、sourceAmplitude、srcStartFrame、srcEndFrame、<br>originalDeltaPitch（全部歸 0 也一樣）、f0Values、analysisSpans。<br>注意：App 切開音符時會讀 originalDeltaPitch、f0Values、analysisSpans，改壞了會在之後的 App 操作出問題。</li>
+        <li>音高曲線改變、但沒有合成，聲音不變（App 畫面跟聲音會不一致）：<br>startFrame +20（格 5800～5820，221 cents）、endFrame -20、rest 改成 true（746 cents）、<br>originalMidiNote +2（音符前 3 格，54 cents）。</li>
       </ol>
       <h3 id="agent-evidence">驗證紀錄</h3>
       <ol class="steps">
@@ -524,8 +579,8 @@ nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); marg
       <details class="fold">
         <summary>展開實驗紀錄（2026-11-19）</summary>
         <div class="foldbody">
-          <p><b>合成工具（e1dcba1）：</b><code>WarpRender 輸入.pitchnet 輸出.pitchnet --apply</code>。讀檔後，把音高或增益跟原錄音不同、又沒有 renderedEdit 的音符標成需要重新合成，用 PitchNet 本體的增量合成（<code>resynthesizeIncrementalAsync</code>）只重算這些音符，寫回檔案裡的 waveform 並存檔；合成器會自動打上 renderedEdit。離線驗證（Jingle bells，3 個音符 pitchOffset +2 半音、沒有 renderedEdit）：重算 3 個音符，音高升 +1.91～+2.11 半音；跟原檔不同的取樣只在這 3 個音符的範圍內（PitchNet 格 714～807、3394～3489、6713～6805）；跟之前驗證過的 --resynth 結果最大差 -111.7 dBFS；輸出檔有 3 個 renderedEdit；對輸出檔再執行一次時重算 0 個音符。限制：「PitchNet 修過、又被 agent 改」的音符還帶著 renderedEdit，不會被重算（圖解 3）。獨立版實測（2026-11-19，煙幕專案，第 130 個音符 pitchOffset 0 → +3，格 5800～5962）：--apply 只重算這 1 個音符，播放用的 waveform 只有取樣 2,969,089～3,052,521（格 5799～5961）跟原檔不同；在獨立版 App（PitchNet Dev）打開輸出檔，該音符從 D4 顯示為 F4，其他音符位置不變；離線量 waveform 的音高（自相關，67.8／68.2／68.7 秒）比原檔高 304／297／306 cents。播放時的聲音沒有實際聽，App 載入後直接播檔案裡的 waveform。agent 規則：只改 midiNote，pitchOffset 保持 0。最終音高 = midiNote + pitchOffset（<code>Note::getAdjustedMidiNote</code>）；pitchOffset 只在 App 拖曳中暫用，放開時加進 midiNote 並歸 0（<code>PitchEditor::endNoteDrag</code>），煙幕專案 624 個音符的 pitchOffset 全是 0、改過音高的 22 個音符都改在 midiNote。改 midiNote +3 與改 pitchOffset +3 的 --apply 輸出逐個取樣相同。第一次做測試檔時兩個欄位都 +3，--diff 量到 600 cents（移了 6 個半音），是測試檔的錯誤，--apply 本身沒有問題。Cubase 打開輸出檔尚未實機測試。切音符的對應（2026-11-19 離線實驗，<code>WarpRender 原檔 新檔 --diff</code>）：不逐一對應音符，改成兩個檔案各自用 <code>rebuildBaseFromNotes</code> 重建音高曲線後逐格比較最終音高（<code>getAdjustedF0</code>）與音符增益、共振峰。注意：檔案裡存的音高曲線不會跟著 agent 改的 pitchOffset 更新，不重建就比不出差異（第一次比對 4 個案例全部 0 格）。重建後：已合成的音符再 +1 半音 → 只有格 3394～3490 不同（音符 3397～3486）；切開沒改過的音符 → 0 格；切開後把後半 +1 半音 → 格 538～604 不同（後半 541～584，前後多出的是音高曲線的過渡）；切開已合成的音符、音高不變 → 0 格。結論：音符切成幾段不影響比對，只抓真正聽得到的音高差異。切音符時把音符自己的音高曲線陣列切錯 10 格：沒改音高的音符 0 格不同（打開時會從錄音重新貼合）；有改音高的音符最多差 203 cents，--apply 後聲音也不同（最大差 -13.0 dBFS），代表錯誤會照實反映在聲音上，屬於 agent 的資料錯誤，比對本身沒有誤判。修正（根因）：開檔時沿用檔案裡存的音高曲線，不會照音符重建；App 是在編輯時呼叫 <code>rebuildBaseFromNotes</code>。原本的 --apply 少了這一步，已合成的音符再改一次時仍合成成舊音高（2→3 半音，結果還是 +2）。--apply 合成前已加上 <code>rebuildBaseFromNotes</code>，重測：該音符升 +1.04 半音；原本的 3 音符案例，輸出跟修正前逐個取樣相同。逐格比對已接進 --apply（<code>WarpRender 新檔 輸出檔 --apply --before 原檔</code>）：跟原檔比對最終音高、增益、共振峰，有差的格子上的音符重新合成（包括被改回原音高、但聲音裡還是舊修改的音符）。--before 改為必填（使用者決定），拿掉「沒有 renderedEdit 就重算」的規則：有原檔時逐格比對已涵蓋所有 agent 改過的音符，6 個案例改版前後輸出逐個取樣相同；沒給 --before 時印出用法並結束（結束碼 2）。差距 0.1 cents 以下視為相同（重建曲線的浮點誤差，實測最大 0.015 cents）。離線驗證：已合成音符 2→3 半音，抓到格 3394～3490，重算 1 個，跟拿掉 renderedEdit 後的結果逐個取樣相同；切開後把後半 +1 半音，跟不加 --before 的結果相同；只切開（沒改的音符、已合成的音符各 1 次）重算 0 個，輸出跟原檔相同；已合成的音符被改回 0 → 該處回到原錄音的音高；原本的 3 音符案例，加 --before 跟不加的輸出逐個取樣相同。最後一個音符之後沒有音符的格子也會被標成不同（音高曲線延續到結尾），不影響結果。注意：--before 要給這一輪 agent 修改之前的檔案；對已處理過的檔案再拿最初的原檔執行一次，3 個音符會再合成一次，音高相同，波形最大差 -37.8 dBFS。</p>
-          <p><b>agent 規則（f2e3aa9）：</b>原本放在 docs/agent-pitchnet-rules.md，已併入本節「給 agent 的規則」。內容：每輪先複製原檔、改完執行 <code>--apply --before</code>、用 <code>--diff</code> 檢查；音高只改 midiNote（lastNonMacroMidiNote 同值）、pitchOffset 保持 0；除了這兩個欄位都不改；規則只寫實測過的結論，每條附驗證紀錄，未驗證的（Cubase、音量、共振峰、tilt 等欄位、切開／合併／新增／刪除音符、lastNonMacroMidiNote 對音高中心工具的影響）集中在「待測」，驗證前 agent 不做。照規則實測一輪（煙幕專案，以上一輪輸出當原檔）：第 130 個音符改回 originalMidiNote、第 221 個音符 +2 半音，--apply 重算 2 個，--diff 為 300.03 與 200.00 cents；跟最初的原檔比，只剩第 221 個音符的範圍不同，第 130 個音符的聲音回到跟原錄音逐個取樣相同。</p>
+          <p><b>合成工具（e1dcba1）：</b><code>WarpRender 輸入.pitchnet 輸出.pitchnet --apply</code>。讀檔後，把音高或增益跟原錄音不同、又沒有 renderedEdit 的音符標成需要重新合成，用 PitchNet 本體的增量合成（<code>resynthesizeIncrementalAsync</code>）只重算這些音符，寫回檔案裡的 waveform 並存檔；合成器會自動打上 renderedEdit。離線驗證（Jingle bells，3 個音符 pitchOffset +2 半音、沒有 renderedEdit）：重算 3 個音符，音高升 +1.91～+2.11 半音；跟原檔不同的取樣只在這 3 個音符的範圍內（PitchNet 格 714～807、3394～3489、6713～6805）；跟之前驗證過的 --resynth 結果最大差 -111.7 dBFS；輸出檔有 3 個 renderedEdit；對輸出檔再執行一次時重算 0 個音符。限制：「PitchNet 修過、又被 agent 改」的音符還帶著 renderedEdit，不會被重算（圖解 3）。獨立版實測（2026-11-19，煙幕專案，第 130 個音符 pitchOffset 0 → +3，格 5800～5962）：--apply 只重算這 1 個音符，播放用的 waveform 只有取樣 2,969,089～3,052,521（格 5799～5961）跟原檔不同；在獨立版 App（PitchNet Dev）打開輸出檔，該音符從 D4 顯示為 F4，其他音符位置不變；離線量 waveform 的音高（自相關，67.8／68.2／68.7 秒）比原檔高 304／297／306 cents。播放時的聲音沒有實際聽，App 載入後直接播檔案裡的 waveform。agent 規則：只改 midiNote，pitchOffset 保持 0。最終音高 = midiNote + pitchOffset（<code>Note::getAdjustedMidiNote</code>）；pitchOffset 只在 App 拖曳中暫用，放開時加進 midiNote 並歸 0（<code>PitchEditor::endNoteDrag</code>），煙幕專案 624 個音符的 pitchOffset 全是 0、改過音高的 22 個音符都改在 midiNote。改 midiNote +3 與改 pitchOffset +3 的 --apply 輸出逐個取樣相同。第一次做測試檔時兩個欄位都 +3，--diff 量到 600 cents（移了 6 個半音），是測試檔的錯誤，--apply 本身沒有問題。Cubase 打開輸出檔當時尚未實機測試（2026-11-19 已在 Cubase 14 用 Insert、ARA 驗證通過，見本節「驗證紀錄」）。切音符的對應（2026-11-19 離線實驗，<code>WarpRender 原檔 新檔 --diff</code>）：不逐一對應音符，改成兩個檔案各自用 <code>rebuildBaseFromNotes</code> 重建音高曲線後逐格比較最終音高（<code>getAdjustedF0</code>）與音符增益、共振峰。注意：檔案裡存的音高曲線不會跟著 agent 改的 pitchOffset 更新，不重建就比不出差異（第一次比對 4 個案例全部 0 格）。重建後：已合成的音符再 +1 半音 → 只有格 3394～3490 不同（音符 3397～3486）；切開沒改過的音符 → 0 格；切開後把後半 +1 半音 → 格 538～604 不同（後半 541～584，前後多出的是音高曲線的過渡）；切開已合成的音符、音高不變 → 0 格。結論：音符切成幾段不影響比對，只抓真正聽得到的音高差異。切音符時把音符自己的音高曲線陣列切錯 10 格：沒改音高的音符 0 格不同（打開時會從錄音重新貼合）；有改音高的音符最多差 203 cents，--apply 後聲音也不同（最大差 -13.0 dBFS），代表錯誤會照實反映在聲音上，屬於 agent 的資料錯誤，比對本身沒有誤判。修正（根因）：開檔時沿用檔案裡存的音高曲線，不會照音符重建；App 是在編輯時呼叫 <code>rebuildBaseFromNotes</code>。原本的 --apply 少了這一步，已合成的音符再改一次時仍合成成舊音高（2→3 半音，結果還是 +2）。--apply 合成前已加上 <code>rebuildBaseFromNotes</code>，重測：該音符升 +1.04 半音；原本的 3 音符案例，輸出跟修正前逐個取樣相同。逐格比對已接進 --apply（<code>WarpRender 新檔 輸出檔 --apply --before 原檔</code>）：跟原檔比對最終音高、增益、共振峰，有差的格子上的音符重新合成（包括被改回原音高、但聲音裡還是舊修改的音符）。--before 改為必填（使用者決定），拿掉「沒有 renderedEdit 就重算」的規則：有原檔時逐格比對已涵蓋所有 agent 改過的音符，6 個案例改版前後輸出逐個取樣相同；沒給 --before 時印出用法並結束（結束碼 2）。差距 0.1 cents 以下視為相同（重建曲線的浮點誤差，實測最大 0.015 cents）。離線驗證：已合成音符 2→3 半音，抓到格 3394～3490，重算 1 個，跟拿掉 renderedEdit 後的結果逐個取樣相同；切開後把後半 +1 半音，跟不加 --before 的結果相同；只切開（沒改的音符、已合成的音符各 1 次）重算 0 個，輸出跟原檔相同；已合成的音符被改回 0 → 該處回到原錄音的音高；原本的 3 音符案例，加 --before 跟不加的輸出逐個取樣相同。最後一個音符之後沒有音符的格子也會被標成不同（音高曲線延續到結尾），不影響結果。注意：--before 要給這一輪 agent 修改之前的檔案；對已處理過的檔案再拿最初的原檔執行一次，3 個音符會再合成一次，音高相同，波形最大差 -37.8 dBFS。</p>
+          <p><b>agent 規則（f2e3aa9）：</b>原本放在 docs/agent-pitchnet-rules.md，已併入本節「給 agent 的規則」。內容：每輪先複製原檔、改完執行 <code>--apply --before</code>、用 <code>--diff</code> 檢查；音高只改 midiNote（lastNonMacroMidiNote 同值）、pitchOffset 保持 0；除了這兩個欄位都不改；規則只寫實測過的結論，每條附驗證紀錄，當時未驗證的（Cubase（後來已驗證）、音量、共振峰、tilt 等欄位、切開／合併／新增／刪除音符、lastNonMacroMidiNote 對音高中心工具的影響）集中在「待測」，驗證前 agent 不做。照規則實測一輪（煙幕專案，以上一輪輸出當原檔）：第 130 個音符改回 originalMidiNote、第 221 個音符 +2 半音，--apply 重算 2 個，--diff 為 300.03 與 200.00 cents；跟最初的原檔比，只剩第 221 個音符的範圍不同，第 130 個音符的聲音回到跟原錄音逐個取樣相同。</p>
         </div>
       </details>
     </section>
@@ -533,6 +588,7 @@ nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); marg
     <section id="open">
       <h2><span class="num">7</span>尚未決定</h2>
       <div class="open">
+        <div class="item"><span class="q">Q10</span><p>agent 修音的判斷規則：給導引旋律 MIDI，agent 怎麼決定每個音符要改成多少<small>使用者認為這是 agent 修音成敗的關鍵。進度（2026-11-20）：整音符吸附（App 的 MIDI 雙擊）試聽後作廢，會把滑音起頭拉平；改用白線規則（第 6 節「白線判斷規則」），整首已合成待試聽。第 6 節的規則只寫了怎麼改、怎麼合成、怎麼檢查，還沒寫要改成多少。判斷規則只讀寫音符資料，跟用官方版還是 fork 無關；SLEEP FREAKS 的影片用的是官方版。官方版裡，檔案沒有 waveform 時開檔會讀原錄音、照音符重新合成整首（<code>MainComponent_ProjectIO.cpp</code>，master），這是不改程式也能讓修改出聲的路徑，代價是整首變成聲碼器聲音（第 6 節「不採用」）。影片實際用哪條路徑未知。</small></p></div>
         <div class="item"><span class="q">Q4</span><p>音符層的其他問題，等伸縮層做完再規劃<small>無音高的即興段落（例如「嗚呼」）被切成很多段：GAME 的 4 個切割參數寫死在程式裡，介面上調不到；後處理也只有齒音合併這一條規則。</small></p></div>
       </div>
     </section>
@@ -552,7 +608,13 @@ nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); marg
       <ul class="plain">
         <li>伸縮工具（快速鍵 4，工具列第 4 顆，取代原本的計時工具）：單擊放錨點並可直接拖動、Alt＋單擊刪除、上方比例條（小數 2 位，超出 0.5～2 倍顯示警告色）、錨點時間標籤、碰到硬限制時停住並說明原因、雙擊比例輸入比例或長度、「錨點吸附」開關（沿用時間軸格線）（<code>808467c</code>）。</li>
         <li>第 4 節的音符層捷徑併入伸縮工具：滑鼠在音符那一列的邊緣上時邊界加亮，拖動就照第 2 節「音符層捷徑」「補錨點規則」補固定點；拖錨點時背景波形即時照新的對應表重排。</li>
-        <li>G／H 水平縮放、Shift＋G／Shift＋H 垂直縮放、Shift＋S 縮放到選取音符、Shift＋F 顯示完整長度（<code>796648a</code>）。</li>
+        <li>G／H 水平縮放、Shift＋G／Shift＋H 垂直縮放、Shift＋S 縮放到選取音符、Shift＋F 顯示完整長度（<code>796648a</code>）。<br>2026-11-20 使用者發現 G、H 放反，改成 G 縮小、H 放大（Shift＋G／Shift＋H 同樣對調）。</li>
+        <li>工具列顯示目前專案的檔名（編輯工具和調性按鈕之間，滑鼠移上去顯示完整路徑）；還沒存成專案時顯示錄音檔名。獨立版和外掛共用同一個工具列（2026-11-20，使用者要求）。</li>
+        <li>修正閃退（2026-11-20）：同一個視窗打開另一個含波形的 .pitchnet 後，撤銷會跨進前一個檔案的紀錄；「Drag Note Pitch」的撤銷寫入前一個專案已釋放的 f0 陣列（<code>NotePitchDragAction</code> 存的是 <code>&amp;audioData.f0</code>）而閃退。根因：<code>openLoadedProject</code> 含波形的分支沒有清空撤銷紀錄（重新合成的分支有，官方 master 同樣漏掉）。修正：換專案前清空。</li>
+        <li>修正齒音抖動（2026-11-20）：整首合成後，29.97 秒「次」的 ㄘ 有扭動的修音痕跡。根因：寫回時的接縫對齊（<code>9837cff</code>）把整段「合成聲 + 保留的原錄音」一起做小數位移和相位旋轉；被保護的齒音、氣音、重設段落是原錄音，卻跟著被移動，位移量在段內漸變（ㄘ：-18.75→-14.75 取樣），線性內插對高頻噪音的濾波隨之變化。量測：舊版 ㄘ 跟原錄音的相關係數 0.03～0.14，位移旋轉後 0.98。修正：只位移、旋轉合成聲，保留的原錄音照原樣寫回（<code>IncrementalSynthesizer.cpp</code> 的 keptOriginal）。修正後整首重算：ㄘ 跟原錄音差 -86～-99 dB；標成齒音或氣音的格子只剩標記邊緣的淡入淡出（1 格）不同；有聲格子的變化在 -92 dB 以下。</li>
+        <li>修正聲碼器分塊接縫的音量凹陷（2026-11-20）：整首合成後 53.65～53.78 秒（音符中間）比原錄音低 3～6 dB。根因：長範圍（超過 1024 格）分塊推論，每塊的相位從頭開始，接縫 16 格的交叉淡化把兩段相位不同的聲音疊在一起而抵消；把接縫移到 53.50 秒，凹陷就跟著移過去。官方 <code>Vocoder.cpp</code> 的分塊固定每 1008 格切一刀，App 平常只重算幾顆音碰不到，整首合成或大範圍重算才會出現。修正：<code>planChunks</code> 在每塊後半段找交疊區 mel 能量最低（最安靜）的位置當接縫，Core ML 和 ONNX 路徑共用。整首重算：53.7 秒的凹陷消失（-6.2 → +0.3 dB）；比原錄音低 4.5 dB 以上的地方從 23 處降到 18 處，剩下的都在 10～30 ms、大多在修過的音符邊緣。</li>
+        <li>修正休止後起音的音量凹陷（2026-11-20）：上一條剩下的凹陷中，5 處是寫回造成的（聲碼器輸出正常，寫回後低 5～10 dB）。凹陷那一刻寫回的聲音 ≈ 合成聲 0.5 + 原錄音 0.5：blend mask 在長無聲段（24 格以上）保留原錄音，交叉淡化（1024 取樣）以無聲轉有聲那格為中心，一半落在起音上，兩個相位不同的聲音在起音抵消。修正：淡化整段放在無聲段裡（轉有聲時在起音前結束、轉無聲時在聲音結束後開始），跟齒音保護的淡化原則相同。整首重算：82.3 秒 -6.7 → -2.7 dB、130.5 秒 -9.6 → -3.5、154.4 秒 -6.4 → -0.8、160.4 秒 -4.9 → -1.8。其餘 14 處用原本的音高讓聲碼器重算也一樣凹（例如 46.6 秒 -9.3 dB、85.7 秒 -13.1 dB），是聲碼器重現那一瞬間（5～10 ms 的瞬變）的特性，跟修音無關，官方版同樣會有。</li>
+        <li>擴大齒音保護（2026-11-20，使用者選擇）：59.79 秒摩擦音的開頭抖動。摩擦音從 5151 格就開始（高頻佔 0.47），但母音尾巴和子音重疊，音高偵測判成有聲、週期性也高，齒音標記從 5153 格才開始；這幾格落在修過的音符裡，被聲碼器用音符的音高重算。使用者把音符右邊界縮短避開子音後就正常（拖曳邊界是時間修改，觸發伸縮層重排，整首 381 顆重算 52 秒）。修正：偵測器最後一步，齒音標記段往兩側延伸到相鄰、高頻佔 35% 以上的格子（不論有聲與否，跟判斷無聲格是齒音的門檻相同），每側最多 35 ms（<code>sibilanceEdgeHighShare</code>、<code>sibilanceEdgeSeconds</code>）。整首新增 146 格齒音標記（1.7 秒）；這些格子重算後跟原錄音差 -130 dB（原本 -39 dB）；59.80 秒起的摩擦音變回原錄音。標記也用在畫面的斜線，獨立版和外掛一致。</li>
         <li>所有工具取消 Alt 拖曳平移，伸縮工具裡 Alt 只在錨點上變成橡皮擦（<code>752abf7</code>）。</li>
         <li>獨立版分開 playhead（播放起點）和 playback（播放位置），暫停或停止後跳回 playhead（<code>c2011d6</code>）。</li>
       </ul>
