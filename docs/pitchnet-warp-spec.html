@@ -142,6 +142,7 @@ html { scroll-behavior: smooth; }
 nav.toc { max-height: calc(100vh - 48px); overflow-y: auto; }
 nav.toc ol.sub { gap: 0; margin: 2px 0 8px; }
 nav.toc ol.sub a { font-size: 12px; padding: 2px 10px 2px 24px; border-left-color: transparent; }
+nav.toc a.active { background: color-mix(in srgb, var(--warp) 38%, transparent); color: var(--fg); border-left: 3px solid var(--warp); font-weight: 700; }
 nav.toc ol.sub a.l3 { padding-left: 38px; }
 nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); margin-right: 4px; }
 </style>
@@ -582,6 +583,40 @@ nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); marg
     });
     link.parentNode.appendChild(ol);
   });
+})();
+</script>
+<script>
+// Highlight the TOC entries for what is on screen: the section and the
+// deepest sub-entry whose heading has scrolled past the top.
+(function () {
+  var links = [].slice.call(document.querySelectorAll("nav.toc a[href^='#']"));
+  var targets = links.map(function (a) { return document.getElementById(a.getAttribute("href").slice(1)); });
+  var toc = document.querySelector("nav.toc");
+  var current = [];
+  function update() {
+    var line = 90, best = {};
+    links.forEach(function (a, i) {
+      var t = targets[i];
+      if (!t || t.getBoundingClientRect().top > line) return;
+      var level = a.closest("ol.sub") ? "sub" : "top";
+      best[level] = a;
+    });
+    if (best.sub && best.top && !best.top.parentNode.contains(best.sub)) best.sub = null;
+    var next = [best.top, best.sub].filter(Boolean);
+    if (next.length === current.length && next.every(function (a, i) { return a === current[i]; })) return;
+    current.forEach(function (a) { a.classList.remove("active"); });
+    next.forEach(function (a) { a.classList.add("active"); });
+    current = next;
+    var last = next[next.length - 1];
+    if (last && toc.scrollHeight > toc.clientHeight) {
+      var r = last.getBoundingClientRect(), tr = toc.getBoundingClientRect();
+      if (r.top < tr.top || r.bottom > tr.bottom)
+        toc.scrollTop += r.top - tr.top - toc.clientHeight / 3;
+    }
+  }
+  window.addEventListener("scroll", update, { passive: true });
+  window.addEventListener("resize", update);
+  update();
 })();
 </script>
 <script>
