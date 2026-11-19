@@ -139,6 +139,10 @@ details.fold .note { font-size: 14px; color: var(--muted); max-width: none; }
 
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
 html { scroll-behavior: smooth; }
+nav.toc { max-height: calc(100vh - 48px); overflow-y: auto; }
+nav.toc ol.sub { gap: 0; margin: 2px 0 8px; }
+nav.toc ol.sub a { font-size: 12px; padding: 2px 10px 2px 24px; border-left-color: transparent; }
+nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); margin-right: 4px; }
 </style>
 
 <div class="wrap">
@@ -490,6 +494,45 @@ html { scroll-behavior: smooth; }
   </main>
 </div>
 
+<script>
+// Table of contents: list each section's sub-headings (decision terms,
+// subsection titles, operations, open questions) so every Q can be found.
+(function () {
+  document.querySelectorAll("nav.toc > ol > li > a").forEach(function (link) {
+    var sec = document.getElementById(link.getAttribute("href").slice(1));
+    if (!sec) return;
+    var picks = [].slice.call(sec.querySelectorAll(
+      ":scope > h3, :scope > dl > div > dt, :scope .op > .key, :scope .open > .item"));
+    if (!picks.length) picks = [].slice.call(sec.querySelectorAll(".figure h3"));
+    if (!picks.length) return;
+    var counts = {};
+    var base = function (n) { return n.textContent.replace(/（[^）]*）/g, ""); };
+    picks.forEach(function (node) { counts[base(node)] = (counts[base(node)] || 0) + 1; });
+    var ol = document.createElement("ol");
+    ol.className = "sub";
+    picks.forEach(function (node, i) {
+      var text = node.classList.contains("item")
+        ? node.querySelector(".q").textContent + " " + node.querySelector("p").firstChild.textContent
+        : node.textContent;
+      // Same-named terms (e.g. three 暫不採用) get the start of their text.
+      var dd = node.tagName === "DT" && node.nextElementSibling;
+      if (counts[base(node)] > 1 && dd)
+        text += "：" + dd.textContent.split(/[。：]/)[0].slice(0, 12);
+      if (!node.id) node.id = sec.id + "-" + (i + 1);
+      var a = document.createElement("a");
+      a.href = "#" + node.id;
+      var m = text.match(/^(.*?)（(Q\d[^）]*)）(.*)$/) || text.match(/^(Q\d)(?:\s已定案)?\s+(.*)$/);
+      if (m && /^Q\d/.test(m[1])) { var t = document.createElement("span"); t.className = "qtag"; t.textContent = m[1]; a.appendChild(t); a.appendChild(document.createTextNode(m[2])); }
+      else if (m) { var t2 = document.createElement("span"); t2.className = "qtag"; t2.textContent = m[2]; a.appendChild(t2); a.appendChild(document.createTextNode(m[1] + (m[3] || ""))); }
+      else a.textContent = text;
+      var li = document.createElement("li");
+      li.appendChild(a);
+      ol.appendChild(li);
+    });
+    link.parentNode.appendChild(ol);
+  });
+})();
+</script>
 <script>
 // In-page links scroll directly: the page is also viewed as a data: snapshot,
 // where #fragment navigation does nothing.
