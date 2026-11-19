@@ -499,6 +499,7 @@ nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); marg
         <li>音高自動修正：自動折回與 Viterbi 解碼。</li>
         <li>外掛與獨立版全面比對：所有規則與行為都要一致（獨立版只是開發測試用）。<code>isPluginMode()</code> 分支約 85 處，外掛另有自己的 undo、渲染、存檔路徑，尚未逐一檢查。</li>
         <li>非 ARA 的 insert 外掛：試聽播放器有同樣的選項，但渲染器規則與實際播放沒有在宿主裡測過（目前只用 ARA）。</li>
+        <li>Q9 Cubase 實機測試：用 Insert 和 ARA 打開 <code>--apply</code> 的輸出檔，確認播放是新音高；ARA 片段的時間位置對應是否正確。需要使用者操作。細節見第 6 節與 <code>docs/agent-pitchnet-rules.md</code> 第 6 節。</li>
       </ul>
 
       <h3>已知風險</h3>
