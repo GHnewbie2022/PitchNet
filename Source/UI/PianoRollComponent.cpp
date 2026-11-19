@@ -1303,16 +1303,7 @@ void PianoRollComponent::setMidiReferenceNotes(const std::vector<MidiReference::
 
 std::pair<double, double> PianoRollComponent::getMidiReferenceSpan() const
 {
-  const auto& audio = project->getAudioData();
-  double origin = audio.timelineOffsetSeconds;
-  double end = audio.getDuration();
-  if (!audio.playbackRegionRanges.empty())
-  {
-    // A trimmed ARA region begins inside its audio modification.
-    origin = audio.playbackRegionRanges.front().first;
-    end = std::min(end, audio.playbackRegionRanges.front().second);
-  }
-  return {origin, end};
+  return MidiReference::getGuideSpan(project->getAudioData());
 }
 
 float PianoRollComponent::getDoubleClickSnapTarget(const Note& note) const
@@ -1325,11 +1316,9 @@ float PianoRollComponent::getDoubleClickSnapTarget(const Note& note) const
                                        project->getScaleRootNote(), pitchReferenceHz);
     case DoubleClickSnapMode::MidiReference:
     {
-      const auto [origin, end] = getMidiReferenceSpan();
-      const double startSeconds = std::max<double>(origin, framesToSeconds(note.getStartFrame()));
-      const double endSeconds = std::min<double>(end, framesToSeconds(note.getEndFrame()));
-      const auto target = MidiReference::findPitchWithGreatestOverlap(
-          midiReferenceNotes, startSeconds - origin, endSeconds - origin);
+      const auto target = MidiReference::findSnapPitch(
+          midiReferenceNotes, getMidiReferenceSpan(), framesToSeconds(note.getStartFrame()),
+          framesToSeconds(note.getEndFrame()));
       return target ? static_cast<float>(*target) + ScaleUtils::getReferenceOffsetSemitones(pitchReferenceHz)
                     : pitch;
     }

@@ -1,4 +1,5 @@
 #include "MidiReference.h"
+#include "../../Models/Project.h"
 
 #include <algorithm>
 #include <cmath>
@@ -85,5 +86,27 @@ std::optional<int> findPitchWithGreatestOverlap(const std::vector<Note>& notes,
         }
     }
     return ambiguous ? std::nullopt : bestPitch;
+}
+
+std::pair<double, double> getGuideSpan(const AudioData& audio)
+{
+    double origin = audio.timelineOffsetSeconds;
+    double end = audio.getDuration();
+    if (!audio.playbackRegionRanges.empty())
+    {
+        // A trimmed ARA region begins inside its audio modification.
+        origin = audio.playbackRegionRanges.front().first;
+        end = std::min(end, audio.playbackRegionRanges.front().second);
+    }
+    return {origin, end};
+}
+
+std::optional<int> findSnapPitch(const std::vector<Note>& notes, std::pair<double, double> span,
+                                 double noteStartSeconds, double noteEndSeconds)
+{
+    const auto [origin, end] = span;
+    const double startSeconds = std::max<double>(origin, noteStartSeconds);
+    const double endSeconds = std::min<double>(end, noteEndSeconds);
+    return findPitchWithGreatestOverlap(notes, startSeconds - origin, endSeconds - origin);
 }
 }

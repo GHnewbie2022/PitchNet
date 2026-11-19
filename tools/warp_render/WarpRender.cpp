@@ -21,6 +21,9 @@
 #include "../../Source/Utils/OnnxRuntime.h"
 #include "../../Source/Utils/PitchCurveProcessor.h"
 #include "../../Source/Models/ProjectSerializer.h"
+#include "../../Source/Models/DrawnCurve.h"
+#include "../../Source/Audio/IO/MidiReference.h"
+#include "../../Source/Utils/ScaleUtils.h"
 #include "../../Source/Undo/NoteActions.h"
 #include "../../Source/Undo/PitchUndoManager.h"
 #include "../../Source/UI/PianoRollComponent.h"
@@ -30,6 +33,9 @@
 #include "../../Source/JuceHeader.h"
 
 #include <algorithm>
+#include <limits>
+#include <map>
+#include <cmath>
 #include <functional>
 #include <atomic>
 #include <vector>
@@ -1433,6 +1439,652 @@ int main(int argc, char **argv)
       juce::String::fromUTF8(argv[1]));
   const juce::File output = juce::File::getCurrentWorkingDirectory().getChildFile(
       juce::String::fromUTF8(argv[2]));
+  // WarpRender <in.pitchnet> <out.pitchnet> --app-op split|merge|delete
+  // <noteStart> [splitFrame]: the App's own note edit, saved without
+  // synthesis, as the reference an agent's direct JSON edit is checked against.
+  if (argc >= 6 && juce::String::fromUTF8(argv[3]) == "--app-op")
+  {
+    Project project;
+    if (!ProjectSerializer::loadFromFile(project, input))
+    {
+      std::fprintf(stderr, "could not load\n");
+      return 1;
+    }
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+    const juce::String op = juce::String::fromUTF8(argv[4]);
+    const int start = juce::String::fromUTF8(argv[5]).getIntValue();
+    auto noteAt = [&](int frame) -> Note * {
+      for (auto &n : project.getNotes())
+        if (!n.isRest() && n.getStartFrame() == frame)
+          return &n;
+      return nullptr;
+    };
+    Note *note = noteAt(start);
+    if (note == nullptr)
+    {
+      std::fprintf(stderr, "no note starts at %d\n", start);
+      return 1;
+    }
+    NoteSplitter splitter;
+    splitter.setProject(&project);
+    bool ok = false;
+    if (op == "split" && argc >= 7)
+      ok = splitter.splitNoteAtFrame(note, juce::String::fromUTF8(argv[6]).getIntValue());
+    else if (op == "merge")
+      ok = splitter.mergeNotes(note, noteAt(note->getEndFrame()));
+    else if (op == "delete")
+    {
+      std::vector<Note> removed{*note};
+      splitter.removeNotes(removed, drawncurve::without(project.getDrawnCurves(),
+                                                        note->getStartFrame(),
+                                                        note->getEndFrame()));
+      ok = true;
+    }
+    if (!ok)
+    {
+      std::fprintf(stderr, "%s failed\n", op.toRawUTF8());
+      return 1;
+    }
+    if (!ProjectSerializer::saveToFile(project, output))
+      return 1;
+    std::printf("%s ok, %d notes\n", op.toRawUTF8(), (int)project.getNotes().size());
+    return 0;
+  }
+  // WarpRender <in.pitchnet> <out.pitchnet> --snap-midi <guide.mid> [track]:
+  // the App's MIDI-reference double-click on every note selected at once
+  // (SelectHandler), saved without synthesis. Prints one line per note the
+  // snap left alone or that needs a look.
+  if (argc >= 5 && juce::String::fromUTF8(argv[3]) == "--snap-midi")
+  {
+    Project project;
+    if (!ProjectSerializer::loadFromFile(project, input))
+    {
+      std::fprintf(stderr, "could not load\n");
+      return 1;
+    }
+    const juce::File midiFile = juce::File::getCurrentWorkingDirectory().getChildFile(
+        juce::String::fromUTF8(argv[4]));
+    juce::FileInputStream midiIn(midiFile);
+    auto tracks = midiIn.openedOk() ? MidiReference::readTracks(midiIn)
+                                    : std::vector<MidiReference::Track>{};
+    if (tracks.empty())
+    {
+      std::fprintf(stderr, "could not read guide\n");
+      return 1;
+    }
+    size_t trackIndex = 0;
+    if (argc >= 6)
+    {
+      const int number = juce::String::fromUTF8(argv[5]).getIntValue();
+      while (trackIndex < tracks.size() && tracks[trackIndex].number != number)
+        ++trackIndex;
+      if (trackIndex == tracks.size())
+      {
+        std::fprintf(stderr, "no track %d\n", number);
+        return 1;
+      }
+    }
+    MidiReference::State state;
+    state.guide = std::make_shared<MidiReference::Guide>(
+        MidiReference::Guide{midiFile.getFileName(), std::move(tracks)});
+    state.selectedTrack = trackIndex;
+    state.visible = true;
+    project.setMidiReference(state);
+    project.setDoubleClickSnapMode(DoubleClickSnapMode::MidiReference);
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+
+    const auto &guide = state.guide->tracks[trackIndex].notes;
+    const auto span = MidiReference::getGuideSpan(project.getAudioData());
+    const float referenceOffset =
+        ScaleUtils::getReferenceOffsetSemitones(project.getPitchReferenceHz());
+    auto clock = [](double s) {
+      return juce::String::formatted("%d:%06.3f", (int)(s / 60), std::fmod(s, 60.0));
+    };
+    int snapped = 0, unchanged = 0, flagged = 0;
+    for (auto &note : project.getNotes())
+    {
+      if (note.isRest())
+        continue;
+      const double start = framesToSeconds(note.getStartFrame());
+      const double end = framesToSeconds(note.getEndFrame());
+      const float adjusted = note.getMidiNote() + note.getPitchOffset();
+      // getDoubleClickSnapTarget, MidiReference case.
+      const auto target = MidiReference::findSnapPitch(guide, span, start, end);
+      const float snappedMidi =
+          target ? static_cast<float>(*target) + referenceOffset : note.getAdjustedMidiNote();
+
+      // Report only: the overlaps behind the choice.
+      double total = 0.0, best = 0.0, second = 0.0;
+      for (const auto &g : guide)
+      {
+        const double o = std::min(end - span.first, g.endSeconds) -
+                         std::max(start - span.first, g.startSeconds);
+        if (o <= 0.0)
+          continue;
+        total += o;
+        if (o > best) { second = best; best = o; }
+        else if (o > second) second = o;
+      }
+      juce::String reason;
+      if (!target)
+        reason = total > 0.0 ? "tie" : "no-guide";
+      else if (std::abs(snappedMidi - adjusted) >= 6.0f)
+        reason = "jump>=6";
+      else if (second > 0.3 * (end - start))
+        reason = "spans-two";
+      if (reason.isNotEmpty())
+      {
+        ++flagged;
+        std::printf("%s\t%s\t%d\t%.2f\t%s\t%s\n", reason.toRawUTF8(),
+                    clock(start).toRawUTF8(), note.getStartFrame(), adjusted,
+                    target ? juce::String(snappedMidi, 2).toRawUTF8() : "-",
+                    juce::String(end - start, 3).toRawUTF8());
+      }
+
+      // SelectHandler: multi-note double-click.
+      if (std::abs(snappedMidi - adjusted) <= 0.001f)
+      {
+        ++unchanged;
+        continue;
+      }
+      note.setMidiNote(snappedMidi);
+      note.setPitchOffset(0.0f);
+      note.markDirty();
+      ++snapped;
+    }
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+    if (!ProjectSerializer::saveToFile(project, output))
+      return 1;
+    std::printf("snapped %d, unchanged %d, flagged %d\n", snapped, unchanged, flagged);
+    return 0;
+  }
+  // WarpRender <in.pitchnet> <out.pitchnet> --guide-fix <guide.mid> [track]:
+  // the guide rule (spec Q10), saved without synthesis. Per note:
+  //   sung pitch - the note's centre as the App analysed it (midiNote)
+  //   target     - the guide pitch nearest it among those within 0.25 s of
+  //                the held part (a late or early entry finds its own note);
+  //                none covering 30% of the held part, none within a
+  //                semitone, or two about as near: left and reported
+  //   held part  - on the white line (the composed pitch), frames within
+  //                10 dB of the note's loudest, trimmed of the slide in and
+  //                out (first/last frame within 40 cents of the median of the
+  //                later half); its line fit is the trend
+  //   flatten    - held 0.15 s or longer with a trend of 16-100 cents:
+  //                pitchDrift 0.5 from 0.5 s, else a tilt about the held start
+  //                (right side only, so the slide in keeps its shape)
+  //   shift      - the held part moves by the note's deviation; a short glide
+  //                (held up to 0.2 s, trend beyond 40 cents) whose end extreme
+  //                runs straight into the next note's slide the other way is
+  //                placed by that extreme instead, just past the target
+  // Left alone: within 10 cents and nothing to flatten.
+  // Shifts are measured on the rebuilt curve and corrected three times.
+  if (argc >= 5 && juce::String::fromUTF8(argv[3]) == "--guide-fix")
+  {
+    constexpr float band = 0.4f;           // semitones, trimming band
+    constexpr float tolerance = 0.10f;     // semitones, left alone within
+    constexpr int windowFrames = 22;       // ~0.25 s around the held part
+    constexpr double minCover = 0.3;       // share of the held part with a guide
+    constexpr float maxDeviation = 1.0f;   // semitones to the nearest candidate
+    constexpr float tieMargin = 0.1f;      // semitones between two candidates
+    constexpr float flattenMin = 0.16f, flattenMax = 0.40f; // trend, semitones
+    constexpr double driftHeldSeconds = 0.5;
+    constexpr float driftFactor = 0.5f;
+    constexpr float overshoot = 0.10f;     // semitones past the target
+    constexpr float quietBelowPeakDb = 10.0f; // frames this far under the loudest are not judged
+    constexpr double extremeHeldSeconds = 0.2; // only short glides are placed by their extreme
+    constexpr float extremeReach = 1.0f;   // semitones from the note's centre
+    constexpr float maxExtraShift = 0.5f;  // semitones a shift may exceed the deviation by
+    constexpr int settleFrames = 5;        // in a row inside the band to start/end the held part
+    constexpr float otherNoteTolerance = 0.25f; // semitones: sung this close to another note
+    constexpr float maxFlattenTrend = 1.0f; // semitones: steeper is a slide, not a sag
+    constexpr double flattenHeldSeconds = 0.15;
+    Project project;
+    if (!ProjectSerializer::loadFromFile(project, input))
+    {
+      std::fprintf(stderr, "could not load\n");
+      return 1;
+    }
+    const juce::File midiFile = juce::File::getCurrentWorkingDirectory().getChildFile(
+        juce::String::fromUTF8(argv[4]));
+    juce::FileInputStream midiIn(midiFile);
+    auto tracks = midiIn.openedOk() ? MidiReference::readTracks(midiIn)
+                                    : std::vector<MidiReference::Track>{};
+    if (tracks.empty())
+    {
+      std::fprintf(stderr, "could not read guide\n");
+      return 1;
+    }
+    size_t trackIndex = 0;
+    if (argc >= 6)
+    {
+      const int number = juce::String::fromUTF8(argv[5]).getIntValue();
+      while (trackIndex < tracks.size() && tracks[trackIndex].number != number)
+        ++trackIndex;
+      if (trackIndex == tracks.size())
+      {
+        std::fprintf(stderr, "no track %d\n", number);
+        return 1;
+      }
+    }
+    MidiReference::State state;
+    state.guide = std::make_shared<MidiReference::Guide>(
+        MidiReference::Guide{midiFile.getFileName(), std::move(tracks)});
+    state.selectedTrack = trackIndex;
+    state.visible = true;
+    project.setMidiReference(state);
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+
+    const auto &audio = project.getAudioData();
+    const auto span = MidiReference::getGuideSpan(audio);
+    const float referenceOffset =
+        ScaleUtils::getReferenceOffsetSemitones(project.getPitchReferenceHz());
+    // Guide notes on the frame grid of the audio.
+    struct GuideNote { double start, end; float pitch; };
+    std::vector<GuideNote> guide;
+    for (const auto &g : state.guide->tracks[trackIndex].notes)
+      guide.push_back({(span.first + g.startSeconds) * SAMPLE_RATE / HOP_SIZE,
+                       (span.first + g.endSeconds) * SAMPLE_RATE / HOP_SIZE,
+                       static_cast<float>(g.midiPitch) + referenceOffset});
+    const auto nan = std::numeric_limits<float>::quiet_NaN();
+    auto white = [&](int frame) {
+      const auto &a = project.getAudioData();
+      if (frame < 0 || frame >= (int)a.f0.size() || frame >= (int)a.voicedMask.size() ||
+          !a.voicedMask[(size_t)frame] || a.f0[(size_t)frame] <= 0.0f)
+        return nan;
+      return 69.0f + 12.0f * std::log2(a.f0[(size_t)frame] / 440.0f);
+    };
+    auto clock = [](double s) {
+      return juce::String::formatted("%d:%06.3f", (int)(s / 60), std::fmod(s, 60.0));
+    };
+    // Level of the recording at a frame (dB RMS).
+    auto levelDb = [&](int frame) {
+      const auto &source = audio.originalWaveform;
+      const int first = frame * HOP_SIZE;
+      const int last = std::min(source.getNumSamples(), first + HOP_SIZE);
+      if (source.getNumChannels() == 0 || first < 0 || last <= first)
+        return -200.0f;
+      const float *x = source.getReadPointer(0);
+      double energy = 0.0;
+      for (int i = first; i < last; ++i)
+        energy += static_cast<double>(x[i]) * x[i];
+      return static_cast<float>(10.0 * std::log10(energy / (last - first) + 1.0e-20));
+    };
+
+    struct Plan
+    {
+      Note *note;
+      std::vector<int> measured; // absolute frames whose mean is the centre
+      float target, want;        // want: where the measured point should land
+      int extreme;               // absolute frame of a glide's extreme, or -1
+      juce::String how;
+      Note before = {};          // the note as it was, to put back
+      float deviation = 0.0f;    // sung - target
+    };
+    std::vector<Plan> plans;
+    std::map<std::string, int> counts;
+    for (auto &note : project.getNotes())
+    {
+      if (note.isRest())
+        continue;
+      const int s = note.getStartFrame(), e = note.getEndFrame(), n = e - s;
+      std::vector<int> voiced;
+      for (int i = 0; i < n; ++i)
+        if (!std::isnan(white(s + i)))
+          voiced.push_back(i);
+      auto report = [&](const char *reason, float centre, float trend, float target) {
+        ++counts[reason];
+        std::printf("%s\t%s\t%d\t%.2f\t%+.0f\t%s\n", reason, clock(framesToSeconds(s)).toRawUTF8(),
+                    s, centre, trend * 100.0f,
+                    target > 0.0f ? juce::String(target, 0).toRawUTF8() : "-");
+      };
+      if (voiced.empty())
+      {
+        report("no-voiced", 0.0f, 0.0f, 0.0f);
+        continue;
+      }
+      // Loud frames only: a note dying away (a dip in its tail) is not what
+      // is heard as its pitch.
+      std::vector<int> heard;
+      {
+        float peak = -1000.0f;
+        for (int i : voiced)
+          peak = std::max(peak, levelDb(s + i));
+        for (int i : voiced)
+          if (levelDb(s + i) >= peak - quietBelowPeakDb)
+            heard.push_back(i);
+        if (heard.empty())
+          heard = voiced;
+      }
+      // Held part: trim the slide in and out against the median of the
+      // later half (less its last eighth): a voice lands on its note after
+      // the slide in, so the first half can be scoop and hesitation.
+      // Held part: trim the slide in and out against the median of the
+      // later half (less its last eighth): a voice lands on its note after
+      // the slide in, so the first half can be scoop and hesitation.
+      std::vector<float> middle;
+      for (size_t i = (heard.size() >= 4 ? heard.size() / 2 : 0);
+           i < (heard.size() >= 4 ? heard.size() - heard.size() / 8 : heard.size()); ++i)
+        middle.push_back(white(s + heard[i]));
+      std::sort(middle.begin(), middle.end());
+      const float ref = middle.size() % 2 ? middle[middle.size() / 2]
+                                          : 0.5f * (middle[middle.size() / 2 - 1] +
+                                                    middle[middle.size() / 2]);
+      // From the first frame that starts `settleFrames` heard frames in a row
+      // inside the band to the last that ends such a run: a brief excursion
+      // at either end (a dip on the way in) is left out.
+      int h0 = -1, h1 = -1;
+      {
+        const size_t run = std::min<size_t>(settleFrames, heard.size());
+        auto inside = [&](size_t k) { return std::abs(white(s + heard[k]) - ref) <= band; };
+        auto settled = [&](size_t first) {
+          for (size_t k = first; k < first + run; ++k)
+            if (!inside(k))
+              return false;
+          return true;
+        };
+        for (size_t k = 0; k + run <= heard.size(); ++k)
+          if (settled(k))
+          {
+            if (h0 < 0)
+              h0 = heard[k];
+            h1 = heard[k + run - 1] + 1;
+          }
+        if (h0 < 0)
+          for (size_t k = 0; k < heard.size(); ++k)
+            if (inside(k))
+            {
+              if (h0 < 0)
+                h0 = heard[k];
+              h1 = heard[k] + 1;
+            }
+      }
+      if (h0 < 0)
+      {
+        h0 = heard.front();
+        h1 = heard.back() + 1;
+      }
+      // The frames measured: heard frames inside the held part.
+      std::vector<int> measured;
+      for (int i : heard)
+        if (i >= h0 && i < h1)
+          measured.push_back(i);
+      // Centre and trend (least-squares line).
+      double sum = 0.0, sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+      for (int i : measured)
+      {
+        const float v = white(s + i);
+        sum += v;
+        const double x = i - h0;
+        sx += x; sy += v; sxx += x * x; sxy += x * v;
+      }
+      const int count = static_cast<int>(measured.size());
+      float centre = static_cast<float>(sum / count);
+      const double denominator = count * sxx - sx * sx;
+      const float slope = count >= 3 && denominator > 0.0
+                              ? static_cast<float>((count * sxy - sx * sy) / denominator)
+                              : 0.0f;
+      float trend = slope * static_cast<float>(h1 - h0 - 1);
+      // A short glide note is placed by the extreme that runs into the next
+      // note's slide the other way.
+      int extreme = -1;
+      if (std::abs(trend) > flattenMax)
+      {
+        const bool falling = trend < 0.0f;
+        if (framesToSeconds(h1 - h0) <= extremeHeldSeconds && voiced.back() == n - 1 &&
+            !std::isnan(white(e)) && !std::isnan(white(e + 2)))
+        {
+          size_t at = 0;
+          for (size_t i = 1; i < voiced.size(); ++i)
+          {
+            const float v = white(s + voiced[i]), best = white(s + voiced[at]);
+            if (falling ? v < best : v > best)
+              at = i;
+          }
+          const float after = white(e + 2) - white(e);
+          // Only a landing near the note itself: a dive of semitones into the
+          // next note is a transition, not where this note is sung.
+          if ((falling ? after > 0.0f : after < 0.0f) && at + 4 >= voiced.size() &&
+              std::abs(white(s + voiced[at]) - (note.getMidiNote() + note.getPitchOffset())) <=
+                  extremeReach)
+            extreme = s + voiced[at];
+        }
+      }
+      // The pitch heard: the note's centre as the App analysed it (its blob).
+      // It matched the user's ear where every white-line estimate tried
+      // missed one case or another (a vibrato cut to its trough, a scoop's
+      // hesitation, a dying tail); the white line still decides the flatten,
+      // the glide and how far the curve really moved.
+      const float sung = note.getMidiNote() + note.getPitchOffset();
+      // Guide: coverage, then the nearest candidate.
+      const int a = s + h0, b = s + h1;
+      double covered = 0.0;
+      for (const auto &g : guide)
+        covered += std::max(0.0, std::min<double>(b, g.end) - std::max<double>(a, g.start));
+      if (covered / std::max(1, b - a) < minCover)
+      {
+        report("no-guide", sung, trend, 0.0f);
+        continue;
+      }
+      std::vector<float> candidates;
+      for (const auto &g : guide)
+        if (g.end > a - windowFrames && g.start < b + windowFrames &&
+            std::find(candidates.begin(), candidates.end(), g.pitch) == candidates.end())
+          candidates.push_back(g.pitch);
+      std::sort(candidates.begin(), candidates.end(), [&](float x, float y) {
+        return std::abs(sung - x) < std::abs(sung - y);
+      });
+      if (candidates.empty() || std::abs(sung - candidates[0]) > maxDeviation)
+      {
+        report("melody-diff", sung, trend, 0.0f);
+        continue;
+      }
+      if (candidates.size() > 1 &&
+          std::abs(std::abs(sung - candidates[0]) - std::abs(sung - candidates[1])) < tieMargin)
+      {
+        report("ambiguous", sung, trend, 0.0f);
+        continue;
+      }
+      const float target = candidates[0];
+      // Sung cleanly on another semitone: a different melody, not intonation.
+      if (const float semitone = std::round(sung - referenceOffset) + referenceOffset;
+          std::abs(semitone - target) > 0.5f && std::abs(sung - semitone) <= otherNoteTolerance)
+      {
+        report("other-note", sung, trend, target);
+        continue;
+      }
+      const bool flatten = extreme < 0 && std::abs(trend) >= flattenMin &&
+                           std::abs(trend) <= maxFlattenTrend &&
+                           framesToSeconds(h1 - h0) >= flattenHeldSeconds;
+      if (extreme < 0 && std::abs(sung - target) <= tolerance && !flatten)
+      {
+        ++counts["in-tune"];
+        continue;
+      }
+      // The held part moves by the note's deviation (the tilt's own lift of
+      // it is corrected away by the measuring passes).
+      Plan plan{&note, {}, target, centre - (sung - target), -1, "shift"};
+      plan.before = note;
+      plan.deviation = sung - target;
+      for (int i : measured)
+        plan.measured.push_back(s + i);
+      if (extreme >= 0)
+      {
+        plan.extreme = extreme;
+        plan.want = target + (trend < 0.0f ? -overshoot : overshoot);
+        plan.how = "extreme";
+      }
+      else if (flatten)
+      {
+        if (framesToSeconds(h1 - h0) >= driftHeldSeconds)
+        {
+          note.setPitchDrift(driftFactor);
+          plan.how = "drift";
+        }
+        else
+        {
+          const float pivot = static_cast<float>(h0) / static_cast<float>(n - 1);
+          note.setTiltLeft(0.0f);
+          note.setTiltRight(-slope * static_cast<float>(n - 1) * (1.0f - pivot));
+          note.setTiltPivot(pivot);
+          plan.how = "tilt";
+        }
+      }
+      note.markDirty();
+      plans.push_back(plan);
+      ++counts[("fix-" + plan.how).toStdString()];
+    }
+    // Shift: measure on the rebuilt curve, correct, three times.
+    for (int pass = 0; pass < 3; ++pass)
+    {
+      PitchCurveProcessor::rebuildBaseFromNotes(project);
+      for (const auto &plan : plans)
+      {
+        float now = 0.0f;
+        if (plan.extreme >= 0)
+          now = white(plan.extreme);
+        else
+        {
+          double sum = 0.0;
+          int count = 0;
+          for (int f : plan.measured)
+            if (const float v = white(f); !std::isnan(v))
+            {
+              sum += v;
+              ++count;
+            }
+          now = count > 0 ? static_cast<float>(sum / count) : plan.want;
+        }
+        if (!std::isnan(now))
+          plan.note->setMidiNote(plan.note->getMidiNote() + plan.want - now);
+      }
+    }
+    // Never move a note further than it is off (the guide video's rule):
+    // anything that did is put back and reported.
+    {
+      bool reverted = false;
+      for (auto &plan : plans)
+        if (std::abs(plan.note->getMidiNote() - plan.before.getMidiNote()) >
+            std::abs(plan.deviation) + maxExtraShift)
+        {
+          std::printf("over-shift\t%s\t%d\t%.2f\t%+.0f\t%.0f\n",
+                      clock(framesToSeconds(plan.note->getStartFrame())).toRawUTF8(),
+                      plan.note->getStartFrame(), plan.before.getMidiNote(),
+                      (plan.note->getMidiNote() - plan.before.getMidiNote()) * 100.0f,
+                      plan.target);
+          *plan.note = plan.before;
+          --counts[("fix-" + plan.how).toStdString()];
+          plan.how = "";
+          ++counts["over-shift"];
+          reverted = true;
+        }
+      plans.erase(std::remove_if(plans.begin(), plans.end(),
+                                 [](const Plan &p) { return p.how.isEmpty(); }),
+                  plans.end());
+      (void)reverted;
+    }
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+    for (const auto &plan : plans)
+      std::printf("fix-%s\t%s\t%d\t%.2f\t%.2f\t%s\n", plan.how.toRawUTF8(),
+                  clock(framesToSeconds(plan.note->getStartFrame())).toRawUTF8(),
+                  plan.note->getStartFrame(), plan.note->getMidiNote(), plan.target,
+                  plan.how == "tilt" ? juce::String::formatted("R%+.2f P%.2f",
+                      plan.note->getTiltRight(), plan.note->getTiltPivot()).toRawUTF8()
+                  : plan.how == "drift" ? "drift 0.5" : "");
+    if (!ProjectSerializer::saveToFile(project, output))
+      return 1;
+    for (const auto &[k, v] : counts)
+      std::printf("# %s %d\n", k.c_str(), v);
+    return 0;
+  }
+  // WarpRender <in.pitchnet> <out.f32> --vocoder-probe <start> <end>
+  // [<from> <to> <semitones>]: the vocoder's raw output for frames
+  // [start,end) of the project's composed F0 and analysis mel, optionally with
+  // the F0 of frames [from,to) moved by some semitones. Float32, mono, written
+  // as is. For finding what an edit's waveform depends on.
+  if (argc >= 6 && juce::String::fromUTF8(argv[3]) == "--vocoder-probe")
+  {
+    Project loaded;
+    if (!ProjectSerializer::loadFromFile(loaded, input))
+      return 1;
+    sourceaudio::attachRecording(loaded, input);
+    juce::String ortError;
+    if (!OnnxRuntime::initialise(&ortError))
+      return 1;
+    EditorController controller(false);
+    controller.setProject(std::make_unique<Project>(loaded));
+    auto &p = *controller.getProject();
+    auto &data = p.getAudioData();
+    if (data.melSpectrogram.empty())
+    {
+      MelSpectrogram mel(data.sampleRate, N_FFT, HOP_SIZE, NUM_MELS, FMIN, FMAX);
+      data.melSpectrogram = mel.compute(data.originalWaveform.getReadPointer(0),
+                                        data.originalWaveform.getNumSamples());
+    }
+    PitchCurveProcessor::rebuildBaseFromNotes(p);
+    const int start = juce::String::fromUTF8(argv[4]).getIntValue();
+    const int end = juce::String::fromUTF8(argv[5]).getIntValue();
+    auto f0 = p.getAdjustedF0ForRange(start, end);
+    if (argc >= 9)
+    {
+      const int from = juce::String::fromUTF8(argv[6]).getIntValue();
+      const int to = juce::String::fromUTF8(argv[7]).getIntValue();
+      const float ratio = std::pow(2.0f, juce::String::fromUTF8(argv[8]).getFloatValue() / 12.0f);
+      for (int f = std::max(from, start); f < std::min(to, end); ++f)
+        if (f0[(size_t)(f - start)] > 0.0f)
+          f0[(size_t)(f - start)] *= ratio;
+    }
+    std::vector<std::vector<float>> melRange(data.melSpectrogram.begin() + start,
+                                             data.melSpectrogram.begin() + end);
+    auto *vocoder = controller.getVocoder();
+    // Loaded as resynthesizeIncrementalAsync loads it.
+    if (vocoder != nullptr && !vocoder->isLoaded())
+      vocoder->loadModel(PlatformPaths::getVocoderModelFile());
+    if (vocoder == nullptr || !vocoder->isLoaded())
+    {
+      std::fprintf(stderr, "vocoder not loaded\n");
+      return 1;
+    }
+    const auto wave = vocoder->infer(melRange, f0);
+    juce::FileOutputStream out(output);
+    if (!out.openedOk())
+      return 1;
+    out.setPosition(0);
+    out.truncate();
+    out.write(wave.data(), wave.size() * sizeof(float));
+    std::printf("probe [%d,%d) -> %zu samples\n", start, end, wave.size());
+    return 0;
+  }
+  // WarpRender <in.pitchnet> <ignored> --labels <start> <end>: the breath /
+  // sibilance label and voiced flag of each frame, as a load computes them.
+  if (argc >= 6 && juce::String::fromUTF8(argv[3]) == "--labels")
+  {
+    Project project;
+    if (!ProjectSerializer::loadFromFile(project, input))
+      return 1;
+    const auto &a = project.getAudioData();
+    const int start = juce::String::fromUTF8(argv[4]).getIntValue();
+    const int end = juce::String::fromUTF8(argv[5]).getIntValue();
+    for (int f = start; f < end; ++f)
+      std::printf("%d\tvoiced %d\tlabel %d\n", f,
+                  f < (int)a.voicedMask.size() && a.voicedMask[(size_t)f] ? 1 : 0,
+                  f < (int)a.breathSibilance.size() ? (int)a.breathSibilance[(size_t)f] : -1);
+    return 0;
+  }
+  // WarpRender <in.pitchnet> <out.pitchnet> --rebuild: the pitch curves
+  // rebuilt from the notes as the App does after an edit, saved without
+  // synthesis. The saved pitchData f0 is then the white line the App would
+  // draw for these note values.
+  if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--rebuild")
+  {
+    Project project;
+    if (!ProjectSerializer::loadFromFile(project, input))
+      return 1;
+    PitchCurveProcessor::rebuildBaseFromNotes(project);
+    if (!ProjectSerializer::saveToFile(project, output))
+      return 1;
+    std::printf("rebuilt\n");
+    return 0;
+  }
   // WarpRender <before.pitchnet> <after.pitchnet> --diff: frames whose final
   // pitch or note gain/formant differ between two projects, independent of
   // how the notes were cut.
