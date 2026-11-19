@@ -23,6 +23,7 @@
 #include "../../Source/Models/ProjectSerializer.h"
 #include "../../Source/Models/DrawnCurve.h"
 #include "../../Source/Audio/IO/MidiReference.h"
+#include "../../Source/Audio/BreathSibilanceAnalysis.h"
 #include "../../Source/Utils/ScaleUtils.h"
 #include "../../Source/Undo/NoteActions.h"
 #include "../../Source/Undo/PitchUndoManager.h"
@@ -35,6 +36,7 @@
 #include <algorithm>
 #include <limits>
 #include <map>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <atomic>
@@ -42,6 +44,8 @@
 #include <string>
 #include <cstdio>
 #include <memory>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace
 {
@@ -1620,6 +1624,21 @@ int main(int argc, char **argv)
   // Shifts are measured on the rebuilt curve and corrected three times.
   if (argc >= 5 && juce::String::fromUTF8(argv[3]) == "--guide-fix")
   {
+    // Run twice. The first run (its report thrown away) finds the notes that
+    // hold two pitches where only the second needs moving (a C sung on, then
+    // a slide up to a sharp D): the App's own split cuts each at the start of
+    // its slide. The second run judges the split project; each cut-off
+    // second half is placed as the first run planned it.
+    struct SplitRequest
+    {
+      int start, cut;             // the note, and the frame the App splits it at
+      int landing0, landing1;     // absolute frames of the landing [landing0, landing1)
+      int pivot;                  // absolute frame the drift starts turning from
+      float level, target;        // the landing's level, and where it goes
+    };
+    std::vector<SplitRequest> splitRequests;
+    auto guideFix = [&](bool probe) -> int
+    {
     constexpr float band = 0.4f;           // semitones, trimming band
     constexpr float tolerance = 0.10f;     // semitones, left alone within
     constexpr int windowFrames = 22;       // ~0.25 s around the held part
@@ -1633,8 +1652,69 @@ int main(int argc, char **argv)
     constexpr float quietBelowPeakDb = 10.0f; // frames this far under the loudest are not judged
     constexpr double extremeHeldSeconds = 0.2; // only short glides are placed by their extreme
     constexpr float extremeReach = 1.0f;   // semitones from the note's centre
+    constexpr float slideStep = 0.07f;     // semitones per frame in a slide
+    constexpr int plateauBefore = 5;       // frames held before a slide
+    constexpr float plateauSpread = 0.5f;  // semitones those frames stay within
     constexpr float maxExtraShift = 0.5f;  // semitones a shift may exceed the deviation by
-    constexpr int settleFrames = 5;        // in a row inside the band to start/end the held part
+    constexpr int settleFrames = 5;
+    constexpr float tailSlideStep = 0.10f;  // semitones per frame, every frame
+    constexpr int tailSlideFrames = 4;
+    constexpr float tailSlideSpan = 1.0f;   // semitones in all
+    constexpr float tailSlideReach = 0.6f;  // semitones around what precedes it
+    constexpr float tailSlideDrag = 0.2f;   // semitones the slide must have moved the centre
+    constexpr double otherNoteMaxCover = 0.5;
+    constexpr double tieOverlapRatio = 2.5;  // a tie broken by this many times the overlap
+    constexpr double tieOverlapShare = 0.6;  // ... covering this share of the held part
+    constexpr float consonantTolerance = 0.15f; // semitones left alone on a note edged by a consonant
+    constexpr float tailReach = 0.6f;        // semitones a guideless tail may be off its note
+    constexpr float tailMinOff = 0.30f;      // ... and at least this, to be worth it
+    constexpr double tailMaxSeconds = 0.25;  // a tail is short
+    constexpr float tailMaxQuieterDb = 5.0f; // and nearly as loud as the note before
+    constexpr float tailMinFall = 1.5f;      // semitones it falls from that note
+    constexpr float followMin = 0.2f;        // semitones between two notes' shifts for a tail to follow
+    constexpr int followFrames = 5;          // frames of the slide at a note's end
+    constexpr float followRise = 0.3f;       // semitones it must move toward the next note
+    constexpr float followEndTolerance = 0.35f; // semitones from the off-key note it slides to
+    constexpr float followMinOffKey = 0.4f;  // semitones the next note must have moved
+    constexpr float offKeyDeviation = 1.5f;  // semitones of reach for off-key singing
+    constexpr double approachSeconds = 0.15; // a scoop note is no longer than this
+    constexpr double passingSeconds = 0.2;   // a chromatic passing note is no longer than this
+    constexpr float passingTolerance = 0.35f; // semitones its neighbours may be off a semitone away
+    constexpr float passingOnNote = 0.25f;   // semitones from the off-key note it is sung on
+    constexpr double ornamentSeconds = 0.12; // a turn's note is no longer than this
+    constexpr float slideAwayMin = 0.6f;
+    constexpr double solidHeldSeconds = 0.15; // a held part this long ...
+    constexpr float solidSpread = 0.6f;      // ... and this steady (10-90%) gives the sung pitch
+    constexpr double minNoteSeconds = 0.15;  // a note this long, sung late or early against the guide
+    constexpr float snapMinOff = 0.2f;       // semitones off an in-key note, to snap a free note
+    constexpr float snapMaxOff = 0.5f;
+    constexpr float snapMaxSpread = 0.5f;
+    constexpr double snapHeldSeconds = 0.1;
+    constexpr int tailDriftFrames = 4;       // loud frames after the landing, drifting away
+    constexpr float tailDriftMin = 0.4f;     // semitones the note's end is off its landing
+    constexpr float tailDriftDrag = 0.25f;   // share of the drift the analysed centre followed
+    constexpr int tailDriftLoud = 2;         // ... of them heard
+    constexpr float tailDriftWobble = 0.05f; // semitones a drift may step back on its way
+    constexpr float tailDriftReturn = 0.15f; // semitones its end may come back from its furthest
+    constexpr float tailDriftBefore = 0.2f;  // semitones the note may go the drift's way before landing
+    constexpr float tailDriftLanding = 0.5f; // semitones the landing may be off the target
+    constexpr float splitGap = 1.5f;         // semitones between a note's first part and its landing
+    constexpr float splitBand = 0.6f;        // semitones the first part wobbles around its pitch
+    constexpr double splitPartSeconds = 0.1; // the first part this long, to be a note of its own
+    constexpr float splitFromPrevious = 0.6f; // semitones it may be off the note before's pitch
+    constexpr float tailDriftAway = 0.3f;    // semitones the drift ends further from the target
+    constexpr float scaleStepReach = 0.7f;   // semitones from the step between two notes a third apart
+    constexpr float scaleStepEnds = 0.3f;    // semitones the notes either side are off their own
+    constexpr float turnStep = 0.5f;         // semitones to the turn's middle note
+    constexpr float offKeyNearestOn = 0.35f; // semitones from the off-key note it was sung on
+    constexpr float offKeyNearestMargin = 0.12f; // semitones between the in-key notes either side     // semitones an extreme must pass the held part to be a slide away
+    constexpr float ornamentStep = 0.5f;     // semitones above or below both neighbours
+    constexpr float approachRise = 0.2f;     // semitones its last frames move toward the target
+    constexpr float approachMinOffset = 0.5f; // semitones off the target, for a real scoop
+    constexpr float offKeyTolerance = 0.3f;  // semitones from the off-key note it was sung on
+    constexpr float offKeyMaxSpread = 0.5f;  // semitones the held part may span
+    constexpr float reviewDisagree = 0.30f; // analysed centre vs white line, semitones
+    constexpr float reviewShift = 0.60f;    // shifts larger than this get a second look        // in a row inside the band to start/end the held part
     constexpr float otherNoteTolerance = 0.25f; // semitones: sung this close to another note
     constexpr float maxFlattenTrend = 1.0f; // semitones: steeper is a slide, not a sag
     constexpr double flattenHeldSeconds = 0.15;
@@ -1673,6 +1753,21 @@ int main(int argc, char **argv)
     state.visible = true;
     project.setMidiReference(state);
     PitchCurveProcessor::rebuildBaseFromNotes(project);
+    if (!probe && !splitRequests.empty())
+    {
+      // The App's own split (NoteSplitter), which keeps the sung pitch.
+      NoteSplitter splitter;
+      splitter.setProject(&project);
+      for (const auto &request : splitRequests)
+        for (auto &n : project.getNotes())
+          if (!n.isRest() && n.getStartFrame() == request.start)
+          {
+            if (!splitter.splitNoteAtFrame(&n, request.cut))
+              std::fprintf(stderr, "split at %d failed\n", request.cut);
+            break;
+          }
+      PitchCurveProcessor::rebuildBaseFromNotes(project);
+    }
 
     const auto &audio = project.getAudioData();
     const auto span = MidiReference::getGuideSpan(audio);
@@ -1685,6 +1780,41 @@ int main(int argc, char **argv)
       guide.push_back({(span.first + g.startSeconds) * SAMPLE_RATE / HOP_SIZE,
                        (span.first + g.endSeconds) * SAMPLE_RATE / HOP_SIZE,
                        static_cast<float>(g.midiPitch) + referenceOffset});
+    // The key, from the guide itself: pitch classes holding at least
+    // inScaleShare of its sounding time (a C major melody: C D E F G A B).
+    std::array<bool, 12> inScale{};
+    {
+      std::array<double, 12> held{};
+      double total = 0.0;
+      for (const auto &g : guide)
+      {
+        const int pc = ((static_cast<int>(std::lround(g.pitch - referenceOffset)) % 12) + 12) % 12;
+        held[static_cast<size_t>(pc)] += g.end - g.start;
+        total += g.end - g.start;
+      }
+      // The major scale (or its relative minor: the same seven notes) that
+      // holds the most of the guide's time.
+      static constexpr int major[7] = {0, 2, 4, 5, 7, 9, 11};
+      int bestRoot = 0;
+      double bestHeld = -1.0;
+      for (int root = 0; root < 12; ++root)
+      {
+        double inside = 0.0;
+        for (int step : major)
+          inside += held[static_cast<size_t>((root + step) % 12)];
+        if (inside > bestHeld)
+        {
+          bestHeld = inside;
+          bestRoot = root;
+        }
+      }
+      for (int step : major)
+        inScale[static_cast<size_t>((bestRoot + step) % 12)] = total > 0.0;
+    }
+    auto outOfKey = [&](float pitch) {
+      const int pc = ((static_cast<int>(std::lround(pitch - referenceOffset)) % 12) + 12) % 12;
+      return !inScale[static_cast<size_t>(pc)];
+    };
     const auto nan = std::numeric_limits<float>::quiet_NaN();
     auto white = [&](int frame) {
       const auto &a = project.getAudioData();
@@ -1719,14 +1849,62 @@ int main(int argc, char **argv)
       juce::String how;
       Note before = {};          // the note as it was, to put back
       float deviation = 0.0f;    // sung - target
+      juce::String review;       // reasons for a second look
     };
     std::vector<Plan> plans;
+    struct InTune
+    {
+      Note *note;
+      float target, sung, centre;
+      std::vector<int> measured;
+    };
+    std::vector<InTune> inTune;
+    // The white line as recorded, before any of this pass's changes.
+    std::vector<float> recorded(static_cast<size_t>(audio.f0.size()));
+    for (size_t f = 0; f < recorded.size(); ++f)
+      recorded[f] = white(static_cast<int>(f));
     std::map<std::string, int> counts;
+    // A one-sided tilt turning from pivot (absolute frame) to the note's end,
+    // by the amount that brings what follows closest to level (least squares).
+    auto tiltTail = [&](Note &target, int start, int frames, int pivot, float level) {
+      const float p = static_cast<float>(pivot - start) / static_cast<float>(frames - 1);
+      double sw = 0.0, sww = 0.0;
+      for (int f = pivot + 1; f < start + frames; ++f)
+        if (!std::isnan(white(f)))
+        {
+          const double w = (static_cast<double>(f - start) / (frames - 1) - p) / (1.0 - p);
+          sw += w * (white(f) - level);
+          sww += w * w;
+        }
+      target.setTiltLeft(0.0f);
+      target.setTiltPivot(p);
+      target.setTiltRight(sww > 0.0 ? static_cast<float>(-sw / sww) : 0.0f);
+    };
     for (auto &note : project.getNotes())
     {
       if (note.isRest())
         continue;
       const int s = note.getStartFrame(), e = note.getEndFrame(), n = e - s;
+      // The second half of a note the App split for the first run: placed
+      // as the first run planned it.
+      if (!probe)
+        if (const auto hint = std::find_if(splitRequests.begin(), splitRequests.end(),
+                                           [&](const SplitRequest &r) { return r.cut == s; });
+            hint != splitRequests.end())
+        {
+          Plan plan{&note, {}, hint->target, hint->target, -1, "split-tail-tilt"};
+          plan.before = note;
+          plan.deviation = hint->level - hint->target;
+          for (int f = hint->landing0; f < hint->landing1; ++f)
+            if (!std::isnan(white(f)))
+              plan.measured.push_back(f);
+          tiltTail(note, s, n, hint->pivot, hint->level);
+          note.markDirty();
+          plans.push_back(plan);
+          ++counts["fix-split-tail-tilt"];
+          std::printf("split\t%s\t%d\t%d\n", clock(framesToSeconds(hint->start)).toRawUTF8(), hint->start, hint->cut);
+          continue;
+        }
       std::vector<int> voiced;
       for (int i = 0; i < n; ++i)
         if (!std::isnan(white(s + i)))
@@ -1843,6 +2021,28 @@ int main(int argc, char **argv)
           const float after = white(e + 2) - white(e);
           // Only a landing near the note itself: a dive of semitones into the
           // next note is a transition, not where this note is sung.
+          // A note that holds and then slides a long way into the next is a
+          // held note with a slide, not a glide: its extreme is not a landing.
+          bool heldThenSlides = false;
+          {
+            int run = 0;
+            for (size_t i = at; i > 0 && falling == (white(s + voiced[i]) < white(s + voiced[i - 1])) &&
+                                std::abs(white(s + voiced[i]) - white(s + voiced[i - 1])) >= slideStep;
+                 --i)
+              ++run;
+            const size_t slideStart = at >= static_cast<size_t>(run) ? at - static_cast<size_t>(run) : 0;
+            if (run >= 4 && slideStart >= static_cast<size_t>(plateauBefore))
+            {
+              float lo = 1000.0f, hi = -1000.0f;
+              for (size_t i = slideStart - static_cast<size_t>(plateauBefore); i < slideStart; ++i)
+              {
+                lo = std::min(lo, white(s + voiced[i]));
+                hi = std::max(hi, white(s + voiced[i]));
+              }
+              heldThenSlides = hi - lo <= plateauSpread;
+            }
+          }
+          (void)heldThenSlides;
           if ((falling ? after > 0.0f : after < 0.0f) && at + 4 >= voiced.size() &&
               std::abs(white(s + voiced[at]) - (note.getMidiNote() + note.getPitchOffset())) <=
                   extremeReach)
@@ -1854,7 +2054,118 @@ int main(int argc, char **argv)
       // missed one case or another (a vibrato cut to its trough, a scoop's
       // hesitation, a dying tail); the white line still decides the flatten,
       // the glide and how far the curve really moved.
-      const float sung = note.getMidiNote() + note.getPitchOffset();
+      float sung = note.getMidiNote() + note.getPitchOffset();
+      const float heldMean = centre;
+      // A slide into the next note at the end (a steady run up or down of a
+      // semitone or more) drags the analysed centre with it: judge the note
+      // by the median of what comes before the slide instead.
+      bool tailSlide = false;
+      {
+        int k = static_cast<int>(heard.size()) - 1;
+        if (k >= 4 && heard[static_cast<size_t>(k)] >= n - 2)
+        {
+          const float last = white(s + heard[static_cast<size_t>(k)]);
+          const float step0 = last - white(s + heard[static_cast<size_t>(k - 1)]);
+          const float sign = step0 >= 0.0f ? 1.0f : -1.0f;
+          int first = k;
+          while (first > 0 && heard[static_cast<size_t>(first - 1)] == heard[static_cast<size_t>(first)] - 1 &&
+                 sign * (white(s + heard[static_cast<size_t>(first)]) -
+                         white(s + heard[static_cast<size_t>(first - 1)])) >= tailSlideStep)
+            --first;
+          const float rise = sign * (last - white(s + heard[static_cast<size_t>(first)]));
+          if (k - first >= tailSlideFrames && rise >= tailSlideSpan && first >= 3)
+          {
+            // What comes before the slide still has its own slide in: the
+            // frames near the median of its later half (wide enough for a
+            // vibrato), averaged. Used only where the slide really dragged
+            // the analysed centre away from it.
+            std::vector<float> later;
+            for (int i = first / 2; i < first; ++i)
+              later.push_back(white(s + heard[static_cast<size_t>(i)]));
+            std::sort(later.begin(), later.end());
+            const float preRef = later[later.size() / 2];
+            std::vector<int> kept;
+            double keptSum = 0.0;
+            for (int i = 0; i < first; ++i)
+              if (std::abs(white(s + heard[static_cast<size_t>(i)]) - preRef) <= tailSlideReach)
+              {
+                kept.push_back(heard[static_cast<size_t>(i)]);
+                keptSum += white(s + heard[static_cast<size_t>(i)]);
+              }
+            const float before = kept.empty() ? sung : static_cast<float>(keptSum / kept.size());
+            if (!kept.empty() && std::abs(before - sung) > tailSlideDrag)
+            {
+              sung = before;
+              centre = before;
+              measured = kept;
+              h0 = measured.front();
+              h1 = measured.back() + 1;
+              trend = 0.0f;
+              tailSlide = true;
+            }
+          }
+        }
+      }
+      // A long, steady held part says what was sung better than the analysed
+      // centre, which a long scoop drags down or a flick at the end drags up,
+      // and which reads a small deviation smaller than the line shows (the
+      // ear followed the line: a G held 24 cents sharp was heard sharp).
+      if (!tailSlide && framesToSeconds(h1 - h0) >= solidHeldSeconds && measured.size() >= 3)
+      {
+        std::vector<float> values;
+        for (int i : measured)
+          values.push_back(white(s + i));
+        std::sort(values.begin(), values.end());
+        const float spread = values[static_cast<size_t>(std::lround(0.9 * (values.size() - 1)))] -
+                             values[static_cast<size_t>(std::lround(0.1 * (values.size() - 1)))];
+        if (spread <= solidSpread)
+          sung = centre;
+      }
+      // A short landing that then drifts away, loud, to the note's end (a D
+      // that keeps rising toward D sharp): the analysed centre follows the
+      // drift, and moving the whole note by it drags down the slide in from
+      // the note before as well. The landing is the note; the drift is
+      // tilted flat from where the landing ends.
+      bool tailDrift = false;
+      float driftBy = 0.0f, driftEnd = 0.0f;
+      if (extreme < 0 && !tailSlide && framesToSeconds(h1 - h0) < flattenHeldSeconds && voiced.back() >= n - 2)
+      {
+        std::vector<int> tail;
+        for (int i : voiced)
+          if (i >= h1)
+            tail.push_back(i);
+        int loud = 0;
+        for (int i : heard)
+          if (i >= h1)
+            ++loud;
+        if (tail.size() >= static_cast<size_t>(tailDriftFrames) && loud >= tailDriftLoud)
+        {
+          driftEnd = 0.0f;
+          for (size_t k = tail.size() - 3; k < tail.size(); ++k)
+            driftEnd += white(s + tail[k]) / 3.0f;
+          driftBy = driftEnd - centre;
+          const float d = driftBy >= 0.0f ? 1.0f : -1.0f;
+          // One way, to the end: up to its furthest point without turning
+          // back, and staying there (a vibrato's swing comes back).
+          size_t far = 0;
+          for (size_t k = 1; k < tail.size(); ++k)
+            if (d * (white(s + tail[k]) - white(s + tail[far])) > 0.0f)
+              far = k;
+          bool oneWay = d * (white(s + tail.front()) - centre) >= 0.0f;
+          for (size_t k = 0; k < far; ++k)
+            if (d * (white(s + tail[k + 1]) - white(s + tail[k])) < -tailDriftWobble)
+              oneWay = false;
+          // ... and never that side of the landing before it (a vibrato
+          // swings both ways; a slide in comes from the other side).
+          for (int i : voiced)
+            if (i < h0 && d * (white(s + i) - centre) > tailDriftBefore)
+              oneWay = false;
+          const float analysed = note.getMidiNote() + note.getPitchOffset();
+          tailDrift = oneWay && std::abs(driftBy) >= tailDriftMin &&
+                      d * (white(s + tail[far]) - white(s + tail.back())) <= tailDriftReturn &&
+                      d * (analysed - centre) >= tailDriftDrag * std::abs(driftBy);
+        }
+      }
       // Guide: coverage, then the nearest candidate.
       const int a = s + h0, b = s + h1;
       double covered = 0.0;
@@ -1862,42 +2173,497 @@ int main(int argc, char **argv)
         covered += std::max(0.0, std::min<double>(b, g.end) - std::max<double>(a, g.start));
       if (covered / std::max(1, b - a) < minCover)
       {
-        report("no-guide", sung, trend, 0.0f);
-        continue;
+        // A tail without a guide note (the fall after a long note): placed by
+        // where it lands, on the in-key semitone nearest that.
+        const bool joined = !std::isnan(white(s)) && !std::isnan(white(s - 1)) &&
+                            std::any_of(project.getNotes().begin(), project.getNotes().end(),
+                                        [&](const Note &other) {
+                                          return !other.isRest() && &other != &note &&
+                                                 std::abs(other.getEndFrame() - s) <= 1;
+                                        });
+        // The previous note: its level and pitch, for a fall from it.
+        const Note *before = nullptr;
+        for (const auto &other : project.getNotes())
+          if (!other.isRest() && &other != &note && std::abs(other.getEndFrame() - s) <= 1)
+            before = &other;
+        auto levelOf = [&](int f0, int f1) {
+          double energy = 0.0;
+          int count = 0;
+          for (int f = f0; f < f1; ++f)
+          {
+            energy += std::pow(10.0, levelDb(f) / 10.0);
+            ++count;
+          }
+          return count > 0 ? static_cast<float>(10.0 * std::log10(energy / count + 1e-20)) : -200.0f;
+        };
+        bool fallsLoud = false;
+        if (before != nullptr && framesToSeconds(n) <= tailMaxSeconds)
+        {
+          std::vector<float> prev;
+          for (int f = before->getStartFrame(); f < before->getEndFrame(); ++f)
+            if (!std::isnan(white(f)))
+              prev.push_back(white(f));
+          if (!prev.empty())
+          {
+            std::sort(prev.begin(), prev.end());
+            const float prevPitch = prev[prev.size() / 2];
+            fallsLoud = levelOf(s, e) >= levelOf(before->getStartFrame(), before->getEndFrame()) - tailMaxQuieterDb &&
+                        std::abs(prevPitch - white(s + voiced.back())) >= tailMinFall;
+          }
+        }
+        if (joined && fallsLoud && voiced.size() >= 4)
+        {
+          // Where it lands: the last quarter of its voiced frames (at least
+          // 4), quiet as a dying tail is.
+          const size_t keep = std::max<size_t>(4, voiced.size() / 4);
+          std::vector<int> landing(voiced.end() - static_cast<long>(std::min(keep, voiced.size())), voiced.end());
+          std::vector<float> values;
+          double landingSum = 0.0;
+          for (int i : landing)
+          {
+            values.push_back(white(s + i));
+            landingSum += white(s + i);
+          }
+          std::sort(values.begin(), values.end());
+          const float lands = values[values.size() / 2];
+          float tailTarget = 0.0f, tailDistance = 1000.0f;
+          for (int k = -1; k <= 1; ++k)
+          {
+            const float candidate = std::round(lands - referenceOffset) + referenceOffset + k;
+            if (!outOfKey(candidate) && std::abs(lands - candidate) < tailDistance)
+            {
+              tailTarget = candidate;
+              tailDistance = std::abs(lands - candidate);
+            }
+          }
+          if (tailDistance >= tailMinOff && tailDistance <= tailReach)
+          {
+            const float landingMean = static_cast<float>(landingSum / landing.size());
+            Plan plan{&note, {}, tailTarget, landingMean - (lands - tailTarget), -1, "tail"};
+            plan.before = note;
+            plan.deviation = lands - tailTarget;
+            for (int i : landing)
+              plan.measured.push_back(s + i);
+            note.markDirty();
+            plans.push_back(plan);
+            ++counts["fix-tail"];
+            continue;
+          }
+        }
+        bool nearbyGuide = false;
+        for (const auto &g : guide)
+          if (framesToSeconds(voiced.back() + 1 - voiced.front()) >= minNoteSeconds)
+          if (g.end > a - windowFrames && g.start < b + windowFrames)
+            nearbyGuide = true;
+        if (!nearbyGuide)
+        {
+          report("no-guide", sung, trend, 0.0f);
+          continue;
+        }
+        // A guide note ending just before it or starting just after: a late
+        // or early entry, judged against the guide notes around it.
       }
+      // Guide notes sounding with the held part come first; the ones within
+      // windowFrames around it (a late or early entry) only when none of
+      // those is within a semitone of what was sung.
+      // Sung off the key (an A sharp in C major): wrong whatever it is near,
+      // so the guide note sounding with it is in reach a little further.
+      // Only a note sung squarely on an off-key semitone, whose guide note is
+      // the semitone next to it, gets the extra reach.
+      const float offKeySemitone = std::round(sung - referenceOffset) + referenceOffset;
+      float heldSpread = 0.0f;
+      if (measured.size() >= 2)
+      {
+        std::vector<float> values;
+        for (int i : measured)
+          values.push_back(white(s + i));
+        std::sort(values.begin(), values.end());
+        const auto at = [&](double q) {
+          return values[static_cast<size_t>(std::lround(q * (values.size() - 1)))];
+        };
+        heldSpread = at(0.9) - at(0.1); // a scoop's first frames are not the hold
+      }
+      // ... and held there, not passing through it on the way somewhere.
+      const bool offKey = outOfKey(sung) && std::abs(sung - offKeySemitone) <= offKeyTolerance &&
+                          heldSpread <= offKeyMaxSpread;
+      const float reach = offKey ? offKeyDeviation : maxDeviation;
       std::vector<float> candidates;
       for (const auto &g : guide)
-        if (g.end > a - windowFrames && g.start < b + windowFrames &&
+        if (g.end > a && g.start < b && std::abs(sung - g.pitch) <= reach &&
+            (std::abs(sung - g.pitch) <= maxDeviation || std::abs(offKeySemitone - g.pitch) == 1.0f) &&
             std::find(candidates.begin(), candidates.end(), g.pitch) == candidates.end())
           candidates.push_back(g.pitch);
+      const bool fromNeighbours = candidates.empty();
+      if (fromNeighbours)
+        for (const auto &g : guide)
+          if (g.end > a - windowFrames && g.start < b + windowFrames &&
+              std::find(candidates.begin(), candidates.end(), g.pitch) == candidates.end())
+            candidates.push_back(g.pitch);
       std::sort(candidates.begin(), candidates.end(), [&](float x, float y) {
         return std::abs(sung - x) < std::abs(sung - y);
       });
-      if (candidates.empty() || std::abs(sung - candidates[0]) > maxDeviation)
+      bool snapped = false;
+      if (candidates.empty() || std::abs(sung - candidates[0]) > reach)
+      {
+        // The singer's own melody (or a guide note gone wrong): held near an
+        // in-key note, it is that note sung off, whatever the guide says.
+        const float nearest = std::round(centre - referenceOffset) + referenceOffset;
+        if (!outOfKey(nearest) && std::abs(centre - nearest) >= snapMinOff &&
+            std::abs(centre - nearest) <= snapMaxOff && heldSpread <= snapMaxSpread &&
+            framesToSeconds(h1 - h0) >= snapHeldSeconds)
+        {
+          candidates.assign(1, nearest);
+          sung = centre;
+          snapped = true;
+        }
+      }
+      // A step between two notes a third apart (E, D, C): the one in-key
+      // note between them, when the guide has that step close by (sung late
+      // or early). Without it in the guide it is a glide from one to the
+      // other (C, E), not a note.
+      bool scaleStep = false;
+      if (candidates.empty() || std::abs(sung - candidates[0]) > reach)
+      {
+        const Note *prev = nullptr, *next = nullptr;
+        for (const auto &other : project.getNotes())
+        {
+          if (other.isRest() || &other == &note)
+            continue;
+          if (std::abs(other.getEndFrame() - s) <= 3)
+            prev = &other;
+          if (std::abs(other.getStartFrame() - e) <= 3)
+            next = &other;
+        }
+        if (prev != nullptr && next != nullptr)
+        {
+          const float p0 = std::round(prev->getMidiNote() - referenceOffset) + referenceOffset;
+          const float p1 = std::round(next->getMidiNote() - referenceOffset) + referenceOffset;
+          std::vector<float> between;
+          for (float k = std::min(p0, p1) + 1.0f; k < std::max(p0, p1); k += 1.0f)
+            if (!outOfKey(k))
+              between.push_back(k);
+          if (!outOfKey(p0) && !outOfKey(p1) && std::abs(p0 - p1) >= 3.0f && std::abs(p0 - p1) <= 4.0f &&
+              between.size() == 1 && std::abs(sung - between[0]) <= scaleStepReach &&
+              std::any_of(guide.begin(), guide.end(), [&](const auto &g) {
+                return g.pitch == between[0] && g.end > s - 2 * windowFrames && g.start < e + 2 * windowFrames;
+              }) &&
+              std::abs(prev->getMidiNote() - p0) <= scaleStepEnds && std::abs(next->getMidiNote() - p1) <= scaleStepEnds)
+          {
+            candidates.assign(1, between[0]);
+            scaleStep = true;
+          }
+        }
+      }
+      if (candidates.empty() || std::abs(sung - candidates[0]) > reach)
       {
         report("melody-diff", sung, trend, 0.0f);
+        std::printf("review\tmelody-diff\t%s\t%d\t%.2f\t%.2f\n", clock(framesToSeconds(s)).toRawUTF8(), s, sung, heldMean);
         continue;
+      }
+      // Two about as near: the one sounding longer with the held part.
+      auto overlapWith = [&](float pitch) {
+        double total = 0.0;
+        for (const auto &g : guide)
+          if (g.pitch == pitch)
+            total += std::max(0.0, std::min<double>(b, g.end) - std::max<double>(a, g.start));
+        return total;
+      };
+      // A tie at the start of a turn (E, F sharp, E): the note after the next
+      // returns to it, so it is that note.
+      if (candidates.size() > 1 &&
+          std::abs(std::abs(sung - candidates[0]) - std::abs(sung - candidates[1])) < tieMargin)
+      {
+        const Note *next = nullptr, *afterNext = nullptr;
+        for (const auto &other : project.getNotes())
+          if (!other.isRest() && std::abs(other.getStartFrame() - e) <= 3)
+            next = &other;
+        if (next != nullptr)
+          for (const auto &other : project.getNotes())
+            if (!other.isRest() && std::abs(other.getStartFrame() - next->getEndFrame()) <= 3)
+              afterNext = &other;
+        if (next != nullptr && afterNext != nullptr &&
+            std::abs(next->getMidiNote() - sung) >= turnStep)
+        {
+          const float back = std::round(afterNext->getMidiNote() - referenceOffset) + referenceOffset;
+          for (int k = 0; k < 2; ++k)
+            if (candidates[static_cast<size_t>(k)] == back)
+            {
+              candidates.assign(1, back);
+              break;
+            }
+        }
+      }
+      if (candidates.size() > 1 &&
+          std::abs(std::abs(sung - candidates[0]) - std::abs(sung - candidates[1])) < tieMargin)
+      {
+        const double o0 = overlapWith(candidates[0]), o1 = overlapWith(candidates[1]);
+        const double winner = std::max(o0, o1), loser = std::min(o0, o1);
+        if (winner >= tieOverlapRatio * loser && winner >= tieOverlapShare * std::max(1, b - a))
+        {
+          if (o1 > o0)
+            std::swap(candidates[0], candidates[1]);
+          candidates.resize(1);
+        }
       }
       if (candidates.size() > 1 &&
           std::abs(std::abs(sung - candidates[0]) - std::abs(sung - candidates[1])) < tieMargin)
       {
         report("ambiguous", sung, trend, 0.0f);
+        std::printf("review\tambiguous\t%s\t%d\t%.2f\t%.2f\n", clock(framesToSeconds(s)).toRawUTF8(), s, sung, heldMean);
         continue;
       }
-      const float target = candidates[0];
-      // Sung cleanly on another semitone: a different melody, not intonation.
+      float target = candidates[0];
+      // The guide itself off the key (a rounded A sharp in C major): the
+      // in-key semitone nearest what was sung instead.
+      bool guideOffKey = false;
+      if (outOfKey(target))
+      {
+        float best = target, bestDistance = 1000.0f;
+        for (int k = -2; k <= 2; ++k)
+        {
+          const float candidate = std::round(sung - referenceOffset) + referenceOffset + k;
+          if (!outOfKey(candidate) && std::abs(sung - candidate) < bestDistance)
+          {
+            best = candidate;
+            bestDistance = std::abs(sung - candidate);
+          }
+        }
+        if (bestDistance <= maxDeviation)
+        {
+          target = best;
+          guideOffKey = true;
+        }
+      }
+      // Sung squarely on an off-key note: the nearer in-key note, whatever
+      // the guide says (a guide note gone wrong); about as near either way,
+      // the guide decides.
+      bool offKeyNearest = false;
+      if (outOfKey(offKeySemitone) && std::abs(sung - offKeySemitone) <= offKeyNearestOn &&
+          framesToSeconds(h1 - h0) >= solidHeldSeconds)
+      {
+        float below = offKeySemitone - 1.0f, above = offKeySemitone + 1.0f;
+        while (outOfKey(below)) below -= 1.0f;
+        while (outOfKey(above)) above += 1.0f;
+        const float dBelow = sung - below, dAbove = above - sung;
+        if (std::abs(dBelow - dAbove) >= offKeyNearestMargin)
+        {
+          const float nearer = dBelow < dAbove ? below : above;
+          if (nearer != target)
+          {
+            target = nearer;
+            offKeyNearest = true;
+          }
+        }
+      }
+      // Sung cleanly on another semitone where the guide note is not even
+      // sounding for most of it (an anticipation, a pickup): a different
+      // melody, not intonation.
+      double targetCover = 0.0;
+      {
+        const double v0 = s + voiced.front(), v1 = s + voiced.back() + 1;
+        for (const auto &g : guide)
+          if (g.pitch == target)
+            targetCover += std::max(0.0, std::min(v1, g.end) - std::max(v0, g.start));
+        targetCover /= std::max(1.0, v1 - v0);
+      }
+      // An extreme further from the target than the held part is not where
+      // the voice lands but a slide away from it (into an off-key next note).
+      if (extreme >= 0 && std::abs(white(extreme) - target) > std::abs(centre - target) &&
+          std::abs(white(extreme) - centre) >= slideAwayMin)
+        extreme = -1;
+      // The notes either side, sung pitch, when they touch this one.
+      const Note *prevNote = nullptr, *nextNote = nullptr;
+      for (const auto &other : project.getNotes())
+      {
+        if (other.isRest() || &other == &note)
+          continue;
+        if (std::abs(other.getEndFrame() - s) <= 3)
+          prevNote = &other;
+        if (std::abs(other.getStartFrame() - e) <= 3)
+          nextNote = &other;
+      }
+      if (prevNote != nullptr && nextNote != nullptr)
+      {
+        auto inKeyNear = [&](float pitch) {
+          float best = pitch, distance = 1000.0f;
+          for (int k = -1; k <= 1; ++k)
+          {
+            const float candidate = std::round(pitch - referenceOffset) + referenceOffset + k;
+            if (!outOfKey(candidate) && std::abs(pitch - candidate) < distance)
+            {
+              best = candidate;
+              distance = std::abs(pitch - candidate);
+            }
+          }
+          return best;
+        };
+        const float before = inKeyNear(prevNote->getMidiNote()), after = inKeyNear(nextNote->getMidiNote());
+        const float semitone = std::round(sung - referenceOffset) + referenceOffset;
+        // An off-key semitone between two notes a semitone either side, in
+        // one direction (C, C sharp, D): a chromatic passing note.
+        if (outOfKey(semitone) && std::abs(sung - semitone) <= passingOnNote &&
+            framesToSeconds(n) <= passingSeconds &&
+            std::abs(std::abs(before - semitone) - 1.0f) <= passingTolerance &&
+            std::abs(std::abs(after - semitone) - 1.0f) <= passingTolerance &&
+            (before - semitone) * (after - semitone) < 0.0f)
+        {
+          report("passing", sung, trend, target);
+          continue;
+        }
+        // A short turn above or below both neighbours: an ornament.
+        // (Not when the guide sounding with it is a semitone away: that is
+        // the guide's note sung off, not a turn.)
+        bool guideExplains = false;
+        for (const auto &g : guide)
+          if (g.end > s && g.start < e && std::abs(g.pitch - semitone) <= 1.0f)
+            guideExplains = true;
+        if (outOfKey(semitone) && !guideExplains && framesToSeconds(n) <= ornamentSeconds &&
+            ((sung - before >= ornamentStep && sung - after >= ornamentStep) ||
+             (before - sung >= ornamentStep && after - sung >= ornamentStep)))
+        {
+          report("ornament", sung, trend, target);
+          continue;
+        }
+      }
+      // A short note sliding at its end into the next note, whose guide pitch
+      // is this one's target too: the next note's scoop, kept as sung.
+      {
+        const Note *next = nullptr;
+        for (const auto &other : project.getNotes())
+          if (!other.isRest() && other.getStartFrame() >= e - 1 && other.getStartFrame() <= e + 2)
+            next = &other;
+        if (next != nullptr && framesToSeconds(n) <= approachSeconds && voiced.size() >= 3 &&
+            voiced.back() >= n - 2)
+        {
+          float nextGuide = 0.0f;
+          const double probe = next->getStartFrame() + 3;
+          for (const auto &g : guide)
+            if (g.start <= probe && probe < g.end)
+              nextGuide = g.pitch;
+          const float end0 = white(s + voiced[voiced.size() - 3]);
+          const float end1 = white(s + voiced.back());
+          const float toward = (target > sung ? 1.0f : -1.0f) * (end1 - end0);
+          if (nextGuide == target && std::abs(sung - target) >= approachMinOffset && toward >= approachRise)
+          {
+            report("approach", sung, trend, target);
+            continue;
+          }
+        }
+      }
       if (const float semitone = std::round(sung - referenceOffset) + referenceOffset;
-          std::abs(semitone - target) > 0.5f && std::abs(sung - semitone) <= otherNoteTolerance)
+          !offKey && std::abs(semitone - target) > 0.5f && std::abs(sung - semitone) <= otherNoteTolerance &&
+          targetCover < otherNoteMaxCover)
       {
         report("other-note", sung, trend, target);
+        continue;
+      }
+      // ... landing near the target and drifting away from it.
+      if (tailDrift && std::abs(centre - target) <= tailDriftLanding &&
+          std::abs(driftEnd - target) >= std::abs(centre - target) + tailDriftAway)
+      {
+        // The tilt turns from where the drift starts (back from its end,
+        // while the line keeps moving its way, not before the landing).
+        const float d = driftBy >= 0.0f ? 1.0f : -1.0f;
+        int pivot = voiced.back();
+        for (int i : voiced)
+          if (i >= h1 && d * (white(s + i) - white(s + pivot)) > 0.0f)
+            pivot = i;
+        while (pivot - 1 >= h0 && !std::isnan(white(s + pivot - 1)) &&
+               d * (white(s + pivot) - white(s + pivot - 1)) > 0.0f)
+          --pivot;
+        // The landing, before the turn, is the note's pitch.
+        std::vector<int> landing;
+        double landingSum = 0.0;
+        for (int i : measured)
+          if (i <= pivot)
+          {
+            landing.push_back(s + i);
+            landingSum += white(s + i);
+          }
+        const float level = landing.empty() ? centre : static_cast<float>(landingSum / landing.size());
+        sung = level;
+        const bool needsShift = std::abs(level - target) > tolerance;
+        // Sung on from the note before at its pitch (a C held on into the
+        // syllable, then a slide up to the landing): moving the whole note
+        // would move that C too. The first run asks the App to split the
+        // note where the slide leaves it; only the second half moves.
+        if (needsShift && probe && !landing.empty())
+        {
+          std::vector<float> away;
+          for (int i : voiced)
+            if (i < h0 && std::abs(white(s + i) - level) >= splitGap)
+              away.push_back(white(s + i));
+          int cut = -1;
+          if (!away.empty())
+          {
+            std::sort(away.begin(), away.end());
+            const float before = away[away.size() / 2];
+            // The first part: from the first voiced frame, while it stays
+            // around that pitch.
+            int last = -1;
+            for (int i : voiced)
+            {
+              if (i >= h0 || std::abs(white(s + i) - before) > splitBand)
+                break;
+              last = i;
+            }
+            int loudBefore = 0;
+            for (int i : heard)
+              if (i <= last)
+                ++loudBefore;
+            // ... long enough to be heard as a note, loud, the note before's
+            // pitch, and then one slide to the landing.
+            const Note *prev = nullptr;
+            for (const auto &other : project.getNotes())
+              if (!other.isRest() && &other != &note && std::abs(other.getEndFrame() - s) <= 3)
+                prev = &other;
+            bool slide = last >= 0;
+            for (int i = last; slide && i + 1 < landing.front() - s; ++i)
+              if (std::isnan(white(s + i + 1)) || d * (white(s + i + 1) - white(s + i)) <= 0.0f)
+                slide = false;
+            if (slide && framesToSeconds(last + 1 - voiced.front()) >= splitPartSeconds &&
+                2 * loudBefore >= last + 1 - voiced.front() && prev != nullptr &&
+                std::abs(prev->getMidiNote() + prev->getPitchOffset() - before) <= splitFromPrevious)
+              cut = last + 1;
+          }
+          if (cut > 0)
+          {
+            splitRequests.push_back({s, s + cut, landing.front(), landing.back() + 1, s + pivot, level, target});
+            continue;
+          }
+        }
+        Plan plan{&note, landing, target, needsShift ? target : level, -1, "tail-tilt"};
+        plan.before = note;
+        plan.deviation = sung - target;
+        tiltTail(note, s, n, s + pivot, level);
+        note.markDirty();
+        plans.push_back(plan);
+        ++counts["fix-tail-tilt"];
         continue;
       }
       const bool flatten = extreme < 0 && std::abs(trend) >= flattenMin &&
                            std::abs(trend) <= maxFlattenTrend &&
                            framesToSeconds(h1 - h0) >= flattenHeldSeconds;
+      // A small correction on a note that starts or ends in consonant noise
+      // is not worth it: the render rebuilds the consonant's edge with the
+      // note's pitch (a buzzing "f"), heard more than a few cents.
+      const bool consonantEdge =
+          breathsibilance::isNoise(breathsibilance::labelAt(audio.breathSibilance, s)) ||
+          breathsibilance::isNoise(breathsibilance::labelAt(audio.breathSibilance, s + 1)) ||
+          breathsibilance::isNoise(breathsibilance::labelAt(audio.breathSibilance, e - 1)) ||
+          breathsibilance::isNoise(breathsibilance::labelAt(audio.breathSibilance, e - 2));
+      if (extreme < 0 && consonantEdge && std::abs(sung - target) <= consonantTolerance && !flatten)
+      {
+        ++counts["consonant-small"];
+        continue;
+      }
       if (extreme < 0 && std::abs(sung - target) <= tolerance && !flatten)
       {
         ++counts["in-tune"];
+        std::vector<int> frames;
+        for (int i : measured)
+          frames.push_back(s + i);
+        inTune.push_back({&note, target, sung, centre, frames});
         continue;
       }
       // The held part moves by the note's deviation (the tilt's own lift of
@@ -1905,6 +2671,21 @@ int main(int argc, char **argv)
       Plan plan{&note, {}, target, centre - (sung - target), -1, "shift"};
       plan.before = note;
       plan.deviation = sung - target;
+      // For the agent's own second look: where the rule's evidence is thin.
+      if (!tailSlide && std::abs(sung - heldMean) > reviewDisagree)
+        plan.review += "centre-vs-line ";
+      if (fromNeighbours)
+        plan.review += "neighbour-target ";
+      if (tailSlide)
+        plan.review += "tail-slide ";
+      if (guideOffKey)
+        plan.review += "off-key-guide ";
+      if (offKeyNearest)
+        plan.review += "off-key-nearest ";
+      if (snapped)
+        plan.review += "snapped-to-key ";
+      if (scaleStep)
+        plan.review += "scale-step ";
       for (int i : measured)
         plan.measured.push_back(s + i);
       if (extreme >= 0)
@@ -1933,6 +2714,31 @@ int main(int argc, char **argv)
       plans.push_back(plan);
       ++counts[("fix-" + plan.how).toStdString()];
     }
+    if (probe)
+      return 0;
+    // One vowel cut into two notes of the same pitch: when one is corrected,
+    // the other goes with it, so the two render as one and no splice sits
+    // inside the vowel.
+    auto continuous = [&](const Note &left, const Note &right) {
+      return std::abs(right.getStartFrame() - left.getEndFrame()) <= 1 &&
+             !std::isnan(white(left.getEndFrame() - 1)) && !std::isnan(white(right.getStartFrame()));
+    };
+    for (const auto &held : inTune)
+      for (const auto &plan : std::vector<Plan>(plans))
+        if (plan.target == held.target &&
+            (continuous(*plan.note, *held.note) || continuous(*held.note, *plan.note)) &&
+            !held.measured.empty())
+        {
+          Plan joined{held.note, held.measured, held.target, held.centre - (held.sung - held.target),
+                      -1, "join"};
+          joined.before = *held.note;
+          joined.deviation = held.sung - held.target;
+          held.note->markDirty();
+          plans.push_back(joined);
+          --counts["in-tune"];
+          ++counts["fix-join"];
+          break;
+        }
     // Shift: measure on the rebuilt curve, correct, three times.
     for (int pass = 0; pass < 3; ++pass)
     {
@@ -1954,6 +2760,14 @@ int main(int argc, char **argv)
             }
           now = count > 0 ? static_cast<float>(sum / count) : plan.want;
         }
+        if (std::getenv("GUIDE_FIX_DEBUG") != nullptr &&
+            plan.note->getStartFrame() == std::atoi(std::getenv("GUIDE_FIX_DEBUG")))
+          std::fprintf(stderr, "debug pass %d: how %s tilt L%.2f R%.2f P%.2f drift %.2f | midi %.3f want %.3f now %.3f measured %zu frames [%d..%d]\n",
+                       pass, plan.how.toRawUTF8(), plan.note->getTiltLeft(), plan.note->getTiltRight(),
+                       plan.note->getTiltPivot(), plan.note->getPitchDrift(),
+                       plan.note->getMidiNote(), plan.want, now, plan.measured.size(),
+                       plan.measured.empty() ? -1 : plan.measured.front(),
+                       plan.measured.empty() ? -1 : plan.measured.back());
         if (!std::isnan(now))
           plan.note->setMidiNote(plan.note->getMidiNote() + plan.want - now);
       }
@@ -1982,12 +2796,81 @@ int main(int argc, char **argv)
                   plans.end());
       (void)reverted;
     }
+    // A note whose end slides into the next note lands where that note now
+    // is: its tail turns (a tilt from where the slide starts) by the
+    // difference between the two notes' shifts.
+    {
+      std::map<int, float> shiftOf;
+      for (const auto &plan : plans)
+        shiftOf[plan.note->getStartFrame()] = plan.note->getMidiNote() - plan.before.getMidiNote();
+      auto &notes = project.getNotes();
+      for (auto &left : notes)
+      {
+        if (left.isRest())
+          continue;
+        const Note *right = nullptr;
+        for (const auto &other : notes)
+          if (!other.isRest() && &other != &left && continuous(left, other))
+            right = &other;
+        if (right == nullptr)
+          continue;
+        const float leftShift = shiftOf.count(left.getStartFrame()) ? shiftOf[left.getStartFrame()] : 0.0f;
+        const float rightShift = shiftOf.count(right->getStartFrame()) ? shiftOf[right->getStartFrame()] : 0.0f;
+        const float follow = rightShift - leftShift;
+        const int e = left.getEndFrame(), n = e - left.getStartFrame();
+        if (std::abs(follow) < followMin || n < 8 || std::abs(left.getTiltLeft()) > 0.001f ||
+            std::abs(left.getTiltRight()) > 0.001f)
+          continue;
+        // The slide: the last frames moving steadily toward the next note.
+        const float goal = recorded[static_cast<size_t>(right->getStartFrame())];
+        const int from = e - followFrames;
+        const float dir = goal - recorded[static_cast<size_t>(from)] >= 0.0f ? 1.0f : -1.0f;
+        bool slides = true;
+        for (int f = from; f < e - 1; ++f)
+          if (std::isnan(recorded[static_cast<size_t>(f)]) || std::isnan(recorded[static_cast<size_t>(f + 1)]) ||
+              dir * (recorded[static_cast<size_t>(f + 1)] - recorded[static_cast<size_t>(f)]) < 0.0f)
+            slides = false;
+        if (!slides || dir * (recorded[static_cast<size_t>(e - 1)] - recorded[static_cast<size_t>(from)]) < followRise)
+          continue;
+        // Only where the slide lands off the key (a D sharp the next note was
+        // corrected away from): elsewhere the slide is the singer's own.
+        const float end = recorded[static_cast<size_t>(e - 1)];
+        const float endNote = std::round(end - referenceOffset) + referenceOffset;
+        if (!outOfKey(endNote) || std::abs(end - endNote) > followEndTolerance || std::abs(follow) < followMinOffKey)
+          continue;
+        auto existing = std::find_if(plans.begin(), plans.end(), [&](const Plan &p) { return p.note == &left; });
+        if (existing == plans.end())
+        {
+          Plan follower{&left, {}, 0.0f, 0.0f, -1, "follow"};
+          follower.before = left;
+          plans.push_back(follower);
+          existing = plans.end() - 1;
+          ++counts["fix-follow"];
+        }
+        else
+          existing->how += "+follow";
+        left.setTiltLeft(0.0f);
+        left.setTiltPivot(static_cast<float>(from - left.getStartFrame()) / static_cast<float>(n - 1));
+        left.setTiltRight(follow);
+        left.markDirty();
+      }
+    }
+    for (auto &plan : plans)
+    {
+      if (std::abs(plan.note->getMidiNote() - plan.before.getMidiNote()) > reviewShift)
+        plan.review += "big-shift ";
+      if (plan.review.isNotEmpty())
+        std::printf("review\t%s\t%s\t%d\t%.2f\t%+.0f\t%.0f\n", plan.review.trim().toRawUTF8(),
+                    clock(framesToSeconds(plan.note->getStartFrame())).toRawUTF8(),
+                    plan.note->getStartFrame(), plan.before.getMidiNote(),
+                    (plan.note->getMidiNote() - plan.before.getMidiNote()) * 100.0f, plan.target);
+    }
     PitchCurveProcessor::rebuildBaseFromNotes(project);
     for (const auto &plan : plans)
       std::printf("fix-%s\t%s\t%d\t%.2f\t%.2f\t%s\n", plan.how.toRawUTF8(),
                   clock(framesToSeconds(plan.note->getStartFrame())).toRawUTF8(),
                   plan.note->getStartFrame(), plan.note->getMidiNote(), plan.target,
-                  plan.how == "tilt" ? juce::String::formatted("R%+.2f P%.2f",
+                  plan.how.endsWith("tilt") ? juce::String::formatted("R%+.2f P%.2f",
                       plan.note->getTiltRight(), plan.note->getTiltPivot()).toRawUTF8()
                   : plan.how == "drift" ? "drift 0.5" : "");
     if (!ProjectSerializer::saveToFile(project, output))
@@ -1995,6 +2878,20 @@ int main(int argc, char **argv)
     for (const auto &[k, v] : counts)
       std::printf("# %s %d\n", k.c_str(), v);
     return 0;
+    };
+    {
+      std::fflush(stdout);
+      const int saved = dup(1), sink = open("/dev/null", O_WRONLY);
+      dup2(sink, 1);
+      const int probed = guideFix(true);
+      std::fflush(stdout);
+      dup2(saved, 1);
+      close(sink);
+      close(saved);
+      if (probed != 0)
+        return probed;
+    }
+    return guideFix(false);
   }
   // WarpRender <in.pitchnet> <out.f32> --vocoder-probe <start> <end>
   // [<from> <to> <semitones>]: the vocoder's raw output for frames
