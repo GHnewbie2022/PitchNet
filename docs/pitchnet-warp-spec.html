@@ -142,6 +142,12 @@ html { scroll-behavior: smooth; }
 nav.toc { max-height: calc(100vh - 48px); overflow-y: auto; }
 nav.toc ol.sub { gap: 0; margin: 2px 0 8px; }
 nav.toc ol.sub a { font-size: 12px; padding: 2px 10px 2px 24px; border-left-color: transparent; }
+ol.steps { margin: 8px 0 16px; padding-left: 24px; }
+ol.steps > li { margin: 4px 0; }
+ol.paren { list-style: none; counter-reset: paren; padding-left: 8px; margin: 4px 0; }
+ol.paren > li { counter-increment: paren; }
+ol.paren > li::before { content: counter(paren) ") "; color: var(--muted); }
+p.subhead { margin: 16px 0 4px; }
 nav.toc a.active { background: color-mix(in srgb, var(--warp) 38%, transparent); color: var(--fg); border-left: 3px solid var(--warp); font-weight: 700; }
 nav.toc ol.sub a.l3 { padding-left: 38px; }
 nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); margin-right: 4px; }
@@ -400,7 +406,7 @@ nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); marg
     <section id="agent">
       <h2><span class="num">6</span>AI agent 修音（Q9 定案）</h2>
       <p>AI agent 修音：agent 直接改 .pitchnet 的音符，改完執行 <code>WarpRender 新檔 輸出 --apply --before 原檔</code> 重新合成。</p>
-      <p><b>起點：</b>SLEEP FREAKS 2026-11-12 的短片（x.com/SLEEPFREAKS_DTM/status/2120817056505544837）：把未編輯的 .pitchnet 和導引旋律 MIDI 交給 Codex，依約 12 行規則修音，再在 Cubase 用 Insert 掛 PitchNet 打開新檔比較。影片沒有交代 agent 怎麼把修改合成成聲音。<br><b>根因（圖解 1）：</b>.pitchnet 存了整首播放用的聲音（waveform），打開檔案時直接播放，不會照音符重新合成；開檔時也沿用檔案裡存的音高曲線。只改音符數字，獨立版、Insert、ARA 都聽不到。<br><b>解法（圖解 2、3，使用者決定）：</b>agent 呼叫 PitchNet 本體合成。<code>--apply</code> 先照音符重建音高曲線，跟原檔逐格比對，只重算有差異的音符，寫回 waveform 後存檔。<br><b>不採用：</b>刪掉 waveform 改走重新合成的開檔路徑（整首變成聲碼器聲音，跟原錄音相比訊噪比 -2.8 dB）；agent 自己寫腳本跑聲碼器（混合遮罩、接縫相位對齊、伸縮對應都要另外重寫，難以跟 PitchNet 一致）；開檔時補算；agent 手動拿掉 renderedEdit；改存檔格式記錄合成參數。<br><b>進度：</b>已完成 <code>--apply</code>（e1dcba1）、給 agent 的規則 <a href="file:///Users/eajrockmacmini/Documents/VS%20Code/My%20Project/vocal%20editing%20%E5%B7%A5%E5%85%B7%E9%96%8B%E7%99%BC/PitchNet/docs/agent-pitchnet-rules.md"><code>/Users/eajrockmacmini/Documents/VS Code/My Project/vocal editing 工具開發/PitchNet/docs/agent-pitchnet-rules.md</code></a>（f2e3aa9）、獨立版 App 實機驗證；實驗紀錄見本節最後。待測（Cubase Insert 與 ARA、音量與共振峰、切音符等）集中在規則檔第 6 節。</p>
+      <p><b>起點：</b>SLEEP FREAKS 2026-11-12 的短片（x.com/SLEEPFREAKS_DTM/status/2120817056505544837）：把未編輯的 .pitchnet 和導引旋律 MIDI 交給 Codex，依約 12 行規則修音，再在 Cubase 用 Insert 掛 PitchNet 打開新檔比較。影片沒有交代 agent 怎麼把修改合成成聲音。<br><b>根因（圖解 1）：</b>.pitchnet 存了整首播放用的聲音（waveform），打開檔案時直接播放，不會照音符重新合成；開檔時也沿用檔案裡存的音高曲線。只改音符數字，獨立版、Insert、ARA 都聽不到。<br><b>解法（圖解 2、3，使用者決定）：</b>agent 呼叫 PitchNet 本體合成。<code>--apply</code> 先照音符重建音高曲線，跟原檔逐格比對，只重算有差異的音符，寫回 waveform 後存檔。<br><b>不採用：</b>刪掉 waveform 改走重新合成的開檔路徑（整首變成聲碼器聲音，跟原錄音相比訊噪比 -2.8 dB）；agent 自己寫腳本跑聲碼器（混合遮罩、接縫相位對齊、伸縮對應都要另外重寫，難以跟 PitchNet 一致）；開檔時補算；agent 手動拿掉 renderedEdit；改存檔格式記錄合成參數。<br><b>進度：</b>已完成 <code>--apply</code>（e1dcba1）、給 agent 的規則（f2e3aa9，見本節「給 agent 的規則」）、獨立版 App 與 Cubase 14（Insert、ARA）實機驗證；實驗紀錄見本節最後。待測（音量與共振峰、切音符等）集中在本節「待測」。</p>
       <div class="figs" style="grid-template-columns: minmax(0, 1fr); margin-top: 16px">
           <div class="figure">
           <div class="cap"><h3>Q9 圖解 1：為什麼 agent 改的音高聽不到</h3><span class="tag">2026-11-19 實測</span></div>
@@ -410,7 +416,7 @@ nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); marg
           <div class="figure">
           <div class="cap"><h3>Q9 圖解 2：解法——agent 改完後執行 --apply</h3><span class="tag">2026-11-19 離線與獨立版驗證</span></div>
           <div class="svgbox"><svg viewBox="0 0 700 160" role="img" aria-label="agent 改完後執行 --apply 的流程"><rect x="0" y="30" width="160" height="64" rx="8" style="fill: var(--surface); stroke: var(--line); stroke-width: 1"/><text x="80" y="58" text-anchor="middle" style="fill: var(--fg); font: 600 13px var(--font-body)">1. agent 改音符</text><text x="80" y="78" text-anchor="middle" style="fill: var(--muted); font:  12px var(--font-body)">只改數字</text><rect x="180" y="30" width="160" height="64" rx="8" style="fill: var(--note-soft); stroke: var(--note); stroke-width: 2"/><text x="260" y="58" text-anchor="middle" style="fill: var(--fg); font: 600 13px var(--font-body)">2. 執行 --apply</text><text x="260" y="78" text-anchor="middle" style="fill: var(--muted); font:  12px var(--font-body)">加上 --before 原檔</text><rect x="360" y="30" width="160" height="64" rx="8" style="fill: var(--note-soft); stroke: var(--note); stroke-width: 2"/><text x="440" y="58" text-anchor="middle" style="fill: var(--fg); font: 600 13px var(--font-body)">3. 重新合成</text><text x="440" y="78" text-anchor="middle" style="fill: var(--muted); font:  12px var(--font-body)">只算有變的音符</text><rect x="540" y="30" width="160" height="64" rx="8" style="fill: var(--surface); stroke: var(--ok); stroke-width: 2"/><text x="620" y="58" text-anchor="middle" style="fill: var(--fg); font: 600 13px var(--font-body)">4. 獨立版播放</text><text x="620" y="78" text-anchor="middle" style="fill: var(--ok); font:  12px var(--font-body)">新音高 ✓</text><line x1="162" x2="171" y1="62" y2="62" style="stroke: var(--muted); stroke-width: 1.5"/><path d="M178 62 L170 58 L170 66 Z" style="fill: var(--muted)"/><line x1="342" x2="351" y1="62" y2="62" style="stroke: var(--muted); stroke-width: 1.5"/><path d="M358 62 L350 58 L350 66 Z" style="fill: var(--muted)"/><line x1="522" x2="531" y1="62" y2="62" style="stroke: var(--muted); stroke-width: 1.5"/><path d="M538 62 L530 58 L530 66 Z" style="fill: var(--muted)"/><text x="350" y="124" text-anchor="middle" style="fill: var(--muted); font:  12px var(--font-body)">第 3 步把新聲音寫回檔案裡「整首播放用的聲音」，同時打上「已合成」記號</text><text x="350" y="144" text-anchor="middle" style="fill: var(--muted); font:  12px var(--font-body)">其他地方的聲音逐個取樣不變</text></svg></div>
-          <p class="note">指令：<code>WarpRender 新檔.pitchnet 輸出.pitchnet --apply --before 原檔.pitchnet</code>（--before 必填）。合成用的是 PitchNet 本體的程式，合成前先照音符重建音高曲線，跟在 App 裡編輯時一樣。--before 要給這一輪 agent 修改之前的檔案。已驗證：獨立版 App 打開輸出檔，改過的音符顯示在新音高，檔案裡的播放聲音音高也跟著改變。未驗證：Cubase（Insert、ARA）打開輸出檔。</p>
+          <p class="note">指令：<code>WarpRender 新檔.pitchnet 輸出.pitchnet --apply --before 原檔.pitchnet</code>（--before 必填）。合成用的是 PitchNet 本體的程式，合成前先照音符重建音高曲線，跟在 App 裡編輯時一樣。--before 要給這一輪 agent 修改之前的檔案。已驗證：獨立版 App 打開輸出檔，改過的音符顯示在新音高，檔案裡的播放聲音音高也跟著改變。Cubase 14 用 Insert 和 ARA 打開輸出檔也已驗證（見「驗證紀錄」）。</p>
         </div>
         <div class="figure">
           <div class="cap"><h3>Q9 圖解 3：--apply 怎麼決定要重算哪些音符（跟原檔逐格比對）</h3><span class="tag">2026-11-19 離線驗證</span></div>
@@ -418,11 +424,108 @@ nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); marg
           <p class="note">逐格比對：新舊兩個檔案各自算出整首的最終音高、增益、共振峰，一格一格比，差距 0.1 cents 以下當作相同。音符切成幾段不影響判斷，所以不用逐一對應新舊音符。「agent 改過的音符」包括：只被 agent 改過的、在 PitchNet 修過又被 agent 改的、被改回原音高的（重新合成後聲音回到原錄音）。--before 是必填，沒給就直接報錯結束，不會默默漏算。原本的方案 1（agent 拿掉記號）與方案 2（改存檔格式）不再需要。</p>
         </div>
       </div>
+      <h3 id="agent-rules">給 agent 的規則</h3>
+      <p>這份規則給直接修改 .pitchnet 音符數字的 AI agent 使用。目前只涵蓋「改音符音高」；其他修改都在「待測」，驗證前不要做。「規則 1～5」每一條都有實測根據，根據寫在「驗證紀錄」。</p>
+      <h3 id="agent-rule-1">規則 1：為什麼一定要執行 --apply</h3>
+      <ol class="steps">
+        <li>.pitchnet 裡存了整首播放用的聲音（waveform）。<br>打開檔案時直接播放它，不會依照音符重新合成。</li>
+        <li>只改音符數字，播放的聲音不會變。</li>
+        <li><code>WarpRender --apply 會重新合成有改到的音符，寫回 waveform 後存檔。</code></li>
+      </ol>
+      <h3 id="agent-rule-2">規則 2：工作流程</h3>
+      <ol class="steps">
+        <li>開始修改前，先把要改的檔案複製一份，當作這一輪的「原檔」。<br>例：<code>cp song.pitchnet song.before.pitchnet</code></li>
+        <li>修改另一份（「新檔」）的音符，依照規則 3。原檔不要動。</li>
+        <li>執行：<br><code>WarpRender 新檔.pitchnet 輸出.pitchnet --apply --before 原檔.pitchnet</code><ol class="paren"><li><code>WarpRender 位置：PitchNet/out/dev/tests/WarpRender</code></li><li>沒給 --before 時：印出用法、結束碼 2、不產生輸出檔。</li><li>成功時：結束碼 0，最後一行是「synthesized N notes, wrote 輸出檔路徑」。</li></ol></li>
+        <li>依照規則 4 檢查結果。</li>
+        <li>把「輸出.pitchnet」交給使用者。</li>
+        <li>連續修改多輪時，每一輪的原檔是上一輪的輸出檔。<br>不要拿最初的檔案當原檔，否則前幾輪的音符會再合成一次，聲音會有細微差異。</li>
+      </ol>
+      <h3 id="agent-rule-3">規則 3：怎麼改音高</h3>
+      <ol class="steps">
+        <li>只改 rest 為 false 的音符。</li>
+        <li>改 midiNote，並把 lastNonMacroMidiNote 設成相同的值。</li>
+        <li>pitchOffset 保持 0。最終音高 = midiNote + pitchOffset，<br>兩個欄位都加 3 會變成移 6 個半音。</li>
+        <li>單位是半音（MIDI 音高，60 = C4，可以有小數）。<br>移調 n 個半音：midiNote = 目前的 midiNote + n。</li>
+        <li>改回原音高：midiNote 設成 originalMidiNote。</li>
+        <li>除了 midiNote 和 lastNonMacroMidiNote，其他欄位都不要改。</li>
+        <li>用 JSON 函式庫讀進整份檔案，改完整份寫回。</li>
+      </ol>
+      <h3 id="agent-rule-4">規則 4：找音符與檢查結果</h3>
+      <ol class="steps">
+        <li>時間換算：音符的 startFrame／endFrame 單位是格，1 格 = 512 個取樣，取樣率 44100 Hz。<br>秒數 = 格數 × 512 ÷ 44100。</li>
+        <li>--apply 的輸出應該符合：<ol class="paren"><li>「changed frames [起,迄)」落在改過的音符範圍，前後各多幾格是音高曲線的過渡。</li><li>「note @起始格」列出的就是改過的音符。</li><li>「synthesized N notes」的 N 等於改過的音符數。</li><li>最後一個音符之後的空白格子也可能被列為不同，不影響結果。</li></ol></li>
+        <li>再用比對指令確認：<br><code>WarpRender 原檔.pitchnet 輸出.pitchnet --diff</code><br>每個改過的音符列一行，移 n 個半音的音符，最大差距約 n × 100 cents。</li>
+        <li>結果不符合時，不要交出輸出檔；回報指令、完整輸出和改過的音符。</li>
+      </ol>
+      <h3 id="agent-rule-5">規則 5：適用範圍</h3>
+      <ol class="steps">
+        <li>獨立版 App：已驗證。</li>
+        <li>Cubase 14（Insert 與 ARA）：已驗證。</li>
+      </ol>
+      <h3 id="agent-todo">待測</h3>
+      <p>以下項目還沒驗證，驗證前 agent 不要做。</p>
+      <ol class="steps">
+                <li>修改 volumeDb（音量）、formantShift（共振峰）後，--apply 的聲音是否正確。</li>
+        <li>修改 tiltLeft、tiltRight、tiltPivot、vibrato、pitchDrift、<br>smoothLeftFrames、smoothRightFrames 後，--apply 的聲音是否正確。</li>
+        <li>agent 自己切開音符的做法<br>（analysisSpans、originalDeltaPitch、f0Values 的切法）。</li>
+        <li>合併、新增、刪除音符。</li>
+        <li>lastNonMacroMidiNote 沒跟著改時，之後在 App 用音高中心工具會不會回到舊音高。</li>
+        <li>改了規則 3 第 6 條以外的欄位會發生什麼事。</li>
+      </ol>
+      <h3 id="agent-evidence">驗證紀錄</h3>
+      <ol class="steps">
+        <li>「打開檔案直接播放 waveform、只改數字聽不到」：Q9 根因調查實測。</li>
+        <li>規則 2 第 3 步的用法與結束碼：2026-11-19 實際執行，<br>沒給 --before 時結束碼 2、沒有輸出檔；成功時結束碼 0。</li>
+        <li>改音高（煙幕專案，第 130 個音符 +3 半音，2026-11-19）：<ol class="paren"><li>只改 midiNote、只改 pitchOffset 兩種改法，輸出逐個取樣相同。</li><li>waveform 只在這個音符的範圍改變（取樣 2,969,089～3,052,521，格 5799～5961），<br>和「格數 × 512」的換算相符。</li><li>離線量 waveform 音高：比原檔高 304／297／306 cents。</li><li>兩個欄位都 +3：--diff 量到 600 cents。</li></ol></li>
+        <li>獨立版 App：打開輸出檔，音符從 D4 顯示到 F4，其他音符不變。</li>
+        <li>第二輪（以上一輪的輸出當原檔，同時改 midiNote 和 lastNonMacroMidiNote）：<br>第 130 個音符改回 originalMidiNote、第 221 個音符 +2 半音。<br>重算 2 個，--diff 300.03／200.00 cents；<br>跟最初的原檔比，第 130 個音符的聲音回到逐個取樣相同。</li>
+        <li>拿最初的檔案處理已處理過的檔案：音符再合成一次，波形最大差 -37.8 dBFS<br>（Jingle bells 實驗）。</li>
+        <li>最後一個音符之後的格子被列為不同、不影響結果：Jingle bells 實驗。</li>
+        <li>Cubase 14（2026-11-19，使用者操作，48 kHz 專案，步驟見「Cubase 實機測試步驟」）：<ol class="paren"><li>Insert 與 ARA 都用拖放打開輸出檔，「始」播出新音高；Insert 按 bypass 就聽到原錄音。</li><li>匯出整首比對：ARA 和使用者從專案匯出的原錄音（orig.wav）相減，<br>只有改過的音符不同，其餘差距約 -130 dB，時間位置對齊。</li><li>Insert 和 ARA 在 20 kHz 以下相同，差異只在 21 kHz 以上（最大 -46 dBFS）：<br>Insert 整首經過 44.1 kHz（r8brain 轉回 48 kHz，21.5 kHz 以上被濾掉）；<br>ARA 沒改過的段落直接播原錄音，22～24 kHz 跟原錄音一樣。</li><li>改過的音符在 ARA、Insert 都缺 21.5 kHz 以上：聲碼器只能跑 44.1 kHz，<br>重新合成前先從 48 kHz 降到 44.1 kHz。使用者決定不做分頻補高頻<br>（幾乎聽不到，處理反而可能讓下面的頻率失真）。</li></ol></li>
+      </ol>
+      <h3 id="agent-cubase">Cubase 實機測試步驟（已完成）</h3>
+      <p>這一節給使用者操作。做完後把結果和匯出的 wav 交回，由 agent 離線比對。</p>
+      <p class="subhead"><b>8.1 開始前</b></p>
+      <ol class="steps">
+        <li>測試檔：<br>/Users/eajrockmacmini/Documents/VS Code/My Project/vocal editing 工具開發/素材/Sing/Q9 Cubase 測試/煙幕 Q9 輸出.pitchnet<br>內容：第 130 個音符（1:07.3～1:09.2，歌詞「不會重新開始」的「始」）從 D4 移到 F4，其他地方跟原檔相同<br>（--diff 只有格 5797～5982 不同，最大 300.04 cents）。</li>
+        <li>原錄音：素材/Sing/煙幕_乾音(NEW).wav（48 kHz、單聲道、24 bit、約 4 分 9 秒）。</li>
+        <li>外掛要用 2026-11-19 17:32 之後安裝的 PitchNet Dev：<br>這一版才能把 .pitchnet 拖進外掛視窗。Cubase 要重開才會載入新版。</li>
+        <li>用 ARA 打開檔案會覆蓋那個片段的修音資料：開新的 Cubase 專案測試，不要用正式專案。</li>
+        <li>Cubase 14 開新專案，取樣率 48 kHz。</li>
+      </ol>
+      <p class="subhead"><b>8.2 Insert 模式</b></p>
+      <ol class="steps">
+        <li>新增 1 條單聲道音軌，匯入 煙幕_乾音(NEW).wav，對齊專案開頭（0 秒）。</li>
+        <li>在這條軌的 Insert 掛 PitchNet Dev（VST3），打開外掛視窗。</li>
+        <li>從 Finder 把測試檔拖進外掛視窗。<br>拖不進去時：點一下外掛視窗，按 Cmd+O 選測試檔。<br>Cmd+O 跳出的是 Cubase 的「開啟專案」時：按取消，記下來，略過 8.2 後面的步驟。</li>
+        <li>在外掛畫面捲到 1:07～1:09，記下那顆長音符是不是在 F4（原本 D4）。</li>
+        <li>檔案 → 匯出 → 音訊混音：整首，48 kHz、24 bit、wav，<br>存到「Q9 Cubase 測試」資料夾，檔名 insert.wav。</li>
+      </ol>
+      <p class="subhead"><b>8.3 ARA 模式</b></p>
+      <ol class="steps">
+        <li>另外新增 1 條單聲道音軌，匯入同一個 wav，對齊 0 秒。<br>8.2 那條軌先靜音或拿掉 Insert。</li>
+        <li>選這個音訊片段，從 Extensions 選 PitchNet Dev，打開編輯器。</li>
+        <li>把測試檔拖進編輯器（拖不進去時改用 Cmd+O，處理方式同 8.2 第 3 步）。</li>
+        <li>記下 1:07～1:09 的音符是不是在 F4，<br>以及編輯器裡的音符位置有沒有跟 Cubase 時間軸上的波形對齊。</li>
+        <li>匯出整首，檔名 ara.wav。</li>
+      </ol>
+      <p class="subhead"><b>8.4 回報</b></p>
+      <ol class="steps">
+        <li>8.2、8.3 各自是用拖放還是 Cmd+O 打開的，有沒有被 Cubase 攔走。</li>
+        <li>1:07～1:09 的音符有沒有顯示在 F4；ARA 的音符有沒有跟波形對齊。</li>
+        <li>匯出了哪些 wav。</li>
+      </ol>
+      <p class="subhead"><b>8.5 agent 的離線比對（預期結果）</b></p>
+      <ol class="steps">
+        <li>insert.wav、ara.wav 跟原錄音比，只有 67.3～69.2 秒不同。</li>
+        <li>這段的音高比原錄音高約 300 cents。</li>
+      </ol>
       <details class="fold">
         <summary>展開實驗紀錄（2026-11-19）</summary>
         <div class="foldbody">
           <p><b>合成工具（e1dcba1）：</b><code>WarpRender 輸入.pitchnet 輸出.pitchnet --apply</code>。讀檔後，把音高或增益跟原錄音不同、又沒有 renderedEdit 的音符標成需要重新合成，用 PitchNet 本體的增量合成（<code>resynthesizeIncrementalAsync</code>）只重算這些音符，寫回檔案裡的 waveform 並存檔；合成器會自動打上 renderedEdit。離線驗證（Jingle bells，3 個音符 pitchOffset +2 半音、沒有 renderedEdit）：重算 3 個音符，音高升 +1.91～+2.11 半音；跟原檔不同的取樣只在這 3 個音符的範圍內（PitchNet 格 714～807、3394～3489、6713～6805）；跟之前驗證過的 --resynth 結果最大差 -111.7 dBFS；輸出檔有 3 個 renderedEdit；對輸出檔再執行一次時重算 0 個音符。限制：「PitchNet 修過、又被 agent 改」的音符還帶著 renderedEdit，不會被重算（圖解 3）。獨立版實測（2026-11-19，煙幕專案，第 130 個音符 pitchOffset 0 → +3，格 5800～5962）：--apply 只重算這 1 個音符，播放用的 waveform 只有取樣 2,969,089～3,052,521（格 5799～5961）跟原檔不同；在獨立版 App（PitchNet Dev）打開輸出檔，該音符從 D4 顯示為 F4，其他音符位置不變；離線量 waveform 的音高（自相關，67.8／68.2／68.7 秒）比原檔高 304／297／306 cents。播放時的聲音沒有實際聽，App 載入後直接播檔案裡的 waveform。agent 規則：只改 midiNote，pitchOffset 保持 0。最終音高 = midiNote + pitchOffset（<code>Note::getAdjustedMidiNote</code>）；pitchOffset 只在 App 拖曳中暫用，放開時加進 midiNote 並歸 0（<code>PitchEditor::endNoteDrag</code>），煙幕專案 624 個音符的 pitchOffset 全是 0、改過音高的 22 個音符都改在 midiNote。改 midiNote +3 與改 pitchOffset +3 的 --apply 輸出逐個取樣相同。第一次做測試檔時兩個欄位都 +3，--diff 量到 600 cents（移了 6 個半音），是測試檔的錯誤，--apply 本身沒有問題。Cubase 打開輸出檔尚未實機測試。切音符的對應（2026-11-19 離線實驗，<code>WarpRender 原檔 新檔 --diff</code>）：不逐一對應音符，改成兩個檔案各自用 <code>rebuildBaseFromNotes</code> 重建音高曲線後逐格比較最終音高（<code>getAdjustedF0</code>）與音符增益、共振峰。注意：檔案裡存的音高曲線不會跟著 agent 改的 pitchOffset 更新，不重建就比不出差異（第一次比對 4 個案例全部 0 格）。重建後：已合成的音符再 +1 半音 → 只有格 3394～3490 不同（音符 3397～3486）；切開沒改過的音符 → 0 格；切開後把後半 +1 半音 → 格 538～604 不同（後半 541～584，前後多出的是音高曲線的過渡）；切開已合成的音符、音高不變 → 0 格。結論：音符切成幾段不影響比對，只抓真正聽得到的音高差異。切音符時把音符自己的音高曲線陣列切錯 10 格：沒改音高的音符 0 格不同（打開時會從錄音重新貼合）；有改音高的音符最多差 203 cents，--apply 後聲音也不同（最大差 -13.0 dBFS），代表錯誤會照實反映在聲音上，屬於 agent 的資料錯誤，比對本身沒有誤判。修正（根因）：開檔時沿用檔案裡存的音高曲線，不會照音符重建；App 是在編輯時呼叫 <code>rebuildBaseFromNotes</code>。原本的 --apply 少了這一步，已合成的音符再改一次時仍合成成舊音高（2→3 半音，結果還是 +2）。--apply 合成前已加上 <code>rebuildBaseFromNotes</code>，重測：該音符升 +1.04 半音；原本的 3 音符案例，輸出跟修正前逐個取樣相同。逐格比對已接進 --apply（<code>WarpRender 新檔 輸出檔 --apply --before 原檔</code>）：跟原檔比對最終音高、增益、共振峰，有差的格子上的音符重新合成（包括被改回原音高、但聲音裡還是舊修改的音符）。--before 改為必填（使用者決定），拿掉「沒有 renderedEdit 就重算」的規則：有原檔時逐格比對已涵蓋所有 agent 改過的音符，6 個案例改版前後輸出逐個取樣相同；沒給 --before 時印出用法並結束（結束碼 2）。差距 0.1 cents 以下視為相同（重建曲線的浮點誤差，實測最大 0.015 cents）。離線驗證：已合成音符 2→3 半音，抓到格 3394～3490，重算 1 個，跟拿掉 renderedEdit 後的結果逐個取樣相同；切開後把後半 +1 半音，跟不加 --before 的結果相同；只切開（沒改的音符、已合成的音符各 1 次）重算 0 個，輸出跟原檔相同；已合成的音符被改回 0 → 該處回到原錄音的音高；原本的 3 音符案例，加 --before 跟不加的輸出逐個取樣相同。最後一個音符之後沒有音符的格子也會被標成不同（音高曲線延續到結尾），不影響結果。注意：--before 要給這一輪 agent 修改之前的檔案；對已處理過的檔案再拿最初的原檔執行一次，3 個音符會再合成一次，音高相同，波形最大差 -37.8 dBFS。</p>
-          <p><b>agent 規則（f2e3aa9）：</b><a href="file:///Users/eajrockmacmini/Documents/VS%20Code/My%20Project/vocal%20editing%20%E5%B7%A5%E5%85%B7%E9%96%8B%E7%99%BC/PitchNet/docs/agent-pitchnet-rules.md"><code>/Users/eajrockmacmini/Documents/VS Code/My Project/vocal editing 工具開發/PitchNet/docs/agent-pitchnet-rules.md</code></a>。內容：每輪先複製原檔、改完執行 <code>--apply --before</code>、用 <code>--diff</code> 檢查；音高只改 midiNote（lastNonMacroMidiNote 同值）、pitchOffset 保持 0；除了這兩個欄位都不改；規則只寫實測過的結論，每條附驗證紀錄，未驗證的（Cubase、音量、共振峰、tilt 等欄位、切開／合併／新增／刪除音符、lastNonMacroMidiNote 對音高中心工具的影響）集中在「待測」，驗證前 agent 不做。照規則實測一輪（煙幕專案，以上一輪輸出當原檔）：第 130 個音符改回 originalMidiNote、第 221 個音符 +2 半音，--apply 重算 2 個，--diff 為 300.03 與 200.00 cents；跟最初的原檔比，只剩第 221 個音符的範圍不同，第 130 個音符的聲音回到跟原錄音逐個取樣相同。</p>
+          <p><b>agent 規則（f2e3aa9）：</b>原本放在 docs/agent-pitchnet-rules.md，已併入本節「給 agent 的規則」。內容：每輪先複製原檔、改完執行 <code>--apply --before</code>、用 <code>--diff</code> 檢查；音高只改 midiNote（lastNonMacroMidiNote 同值）、pitchOffset 保持 0；除了這兩個欄位都不改；規則只寫實測過的結論，每條附驗證紀錄，未驗證的（Cubase、音量、共振峰、tilt 等欄位、切開／合併／新增／刪除音符、lastNonMacroMidiNote 對音高中心工具的影響）集中在「待測」，驗證前 agent 不做。照規則實測一輪（煙幕專案，以上一輪輸出當原檔）：第 130 個音符改回 originalMidiNote、第 221 個音符 +2 半音，--apply 重算 2 個，--diff 為 300.03 與 200.00 cents；跟最初的原檔比，只剩第 221 個音符的範圍不同，第 130 個音符的聲音回到跟原錄音逐個取樣相同。</p>
         </div>
       </details>
     </section>
@@ -488,7 +591,9 @@ nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); marg
             <tr><td style="white-space:nowrap">聲音</td><td>外掛 Q5 宿主取樣率不同時改用 r8brain（9517ec9）：每個音訊修改把「宿主原始音訊加編輯片段」在背景執行緒用 r8brain 一次轉成宿主取樣率，播放直接複製；轉好之前沿用 Lagrange。離線匯出（非即時）在 prepareToPlay 當下同步轉換，不會用到 Lagrange。拖音高試聽的轉換也從直線內插改成 r8brain。Cubase 實測（2026-11-19，使用者）：48 kHz 專案拖音高試聽正常。Cubase 匯入時會把素材轉成專案取樣率，宿主跟素材取樣率不同的情況實際不會出現，未另外測試。</td><td class="num" style="white-space:normal">9517ec9</td></tr>
             <tr><td style="white-space:nowrap">音符編輯</td><td>剪刀工具命中範圍（43301a7）：從音符所在的一個半音高度，改成整個有顏色的音符色塊；分割導引線也延伸到色塊上下緣。Cubase 實測（2026-11-19，使用者）正常。</td><td class="num" style="white-space:normal">43301a7</td></tr>
             <tr><td style="white-space:nowrap">Q9</td><td>agent 修音的合成工具 <code>WarpRender --apply --before</code>：跟原檔逐格比對，只重算有差異的音符並寫回檔案；獨立版 App 實機驗證。細節見第 6 節。</td><td class="num" style="white-space:normal">e1dcba1</td></tr>
-            <tr><td style="white-space:nowrap">Q9</td><td>給 agent 的規則 <a href="file:///Users/eajrockmacmini/Documents/VS%20Code/My%20Project/vocal%20editing%20%E5%B7%A5%E5%85%B7%E9%96%8B%E7%99%BC/PitchNet/docs/agent-pitchnet-rules.md"><code>/Users/eajrockmacmini/Documents/VS Code/My Project/vocal editing 工具開發/PitchNet/docs/agent-pitchnet-rules.md</code></a>，照規則實測一輪符合預期。細節見第 6 節。</td><td class="num" style="white-space:normal">f2e3aa9</td></tr>
+            <tr><td style="white-space:nowrap">Q9</td><td>給 agent 的規則，照規則實測一輪符合預期。細節見第 6 節「給 agent 的規則」。</td><td class="num" style="white-space:normal">f2e3aa9</td></tr>
+            <tr><td style="white-space:nowrap">檔案</td><td>外掛開啟 .pitchnet：可以把 .pitchnet 拖進外掛視窗，或按 Cmd+O 選檔，兩者走同一個開檔流程（<code>openProjectFile</code>）。外掛只接受 .pitchnet：音訊由宿主提供，拖入音訊檔不反應，Cmd+O 的選檔視窗也只列 .pitchnet（原本可以選到音訊檔）。獨立版不變。建置與 28 項測試通過。Cubase 14 實測（2026-11-19，使用者）：ARA 與 Insert 拖放都可以開檔；焦點在 PitchNet 編輯器時 Cmd+O 是 PitchNet 的開檔，焦點在 Cubase 時才是 Cubase 的開啟專案。</td><td class="num" style="white-space:normal">89d5226</td></tr>
+            <tr><td style="white-space:nowrap">檔案</td><td>開啟 .pitchnet 時顯示讀取進度：原本在畫面執行緒讀取整個檔案（煙幕專案 238 MB 的 JSON），讀完前畫面凍結、沒有任何提示。改成背景讀取，顯示「正在讀取專案...」進度視窗，讀完再開啟。進度依實測各步驟的時間分配（煙幕專案共約 3.1 秒：讀檔 4%、JSON 解析 21%、音高資料 21%、播放聲音 23%、原錄音 21%、mel 5%、其餘 4%），音高資料逐欄、兩段聲音逐段回報，共約 170 次且只增不減；進度條往最新回報值平滑移動、不超過實際進度。唯一停頓是開頭 JSON 解析約 0.66 秒（停在 4%，JUCE 解析無法分段回報）。獨立版與外掛相同。獨立版實測：打開煙幕專案時出現進度視窗（截到 69%、82%），讀完畫面正常、「始」在 F4，關閉時檔案沒有被寫入。Cubase 14 實測（2026-11-19，使用者）：拖入時進度平滑前進，讀完「始」為新音高。</td><td class="num" style="white-space:normal">bee1f6b</td></tr>
           </tbody>
         </table>
       </div>
@@ -499,7 +604,6 @@ nav.toc ol.sub a .qtag { font-family: var(--font-mono); color: var(--warp); marg
         <li>音高自動修正：自動折回與 Viterbi 解碼。</li>
         <li>外掛與獨立版全面比對：所有規則與行為都要一致（獨立版只是開發測試用）。<code>isPluginMode()</code> 分支約 85 處，外掛另有自己的 undo、渲染、存檔路徑，尚未逐一檢查。</li>
         <li>非 ARA 的 insert 外掛：試聽播放器有同樣的選項，但渲染器規則與實際播放沒有在宿主裡測過（目前只用 ARA）。</li>
-        <li>Q9 Cubase 實機測試：用 Insert 和 ARA 打開 <code>--apply</code> 的輸出檔，確認播放是新音高；ARA 片段的時間位置對應是否正確。需要使用者操作。細節見第 6 節與 <a href="file:///Users/eajrockmacmini/Documents/VS%20Code/My%20Project/vocal%20editing%20%E5%B7%A5%E5%85%B7%E9%96%8B%E7%99%BC/PitchNet/docs/agent-pitchnet-rules.md"><code>/Users/eajrockmacmini/Documents/VS Code/My Project/vocal editing 工具開發/PitchNet/docs/agent-pitchnet-rules.md</code></a> 第 6 節。</li>
       </ul>
 
       <h3>已知風險</h3>
