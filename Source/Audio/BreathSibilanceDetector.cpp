@@ -513,6 +513,33 @@ std::vector<std::uint8_t> detect(const float *samples, int numSamples,
         std::copy(out.begin(), out.end(), labels.begin() + start);
       });
 
+  // 5) A sibilant's edges against singing. Where the voice's tail and the
+  // consonant overlap, the frames stay periodic enough for the pitch
+  // detector to call them voiced, so a run can start a frame or three late
+  // (an "f" whose noise began 35 ms before its label). Left unlabelled, an
+  // edited note's render rebuilt that noise on the note's pitch and the
+  // consonant's attack buzzed. Frames next to a sibilant run that still have
+  // most of their energy in the high band join it.
+  {
+    const int maxExtend = std::max(
+        1, static_cast<int>(std::lround(config.sibilanceEdgeSeconds * sampleRate /
+                                        static_cast<double>(hopSize))));
+    auto grown = labels;
+    forEachRun(
+        numFrames, [&](int i) { return labels[static_cast<size_t>(i)] == Sibilance; },
+        [&](int a, int b) {
+          auto joins = [&](int i) {
+            return labels[static_cast<size_t>(i)] == None &&
+                   highShare[static_cast<size_t>(i)] >= config.sibilanceEdgeHighShare;
+          };
+          for (int i = a - 1, k = 0; i >= 0 && k < maxExtend && joins(i); --i, ++k)
+            grown[static_cast<size_t>(i)] = Sibilance;
+          for (int i = b, k = 0; i < numFrames && k < maxExtend && joins(i); ++i, ++k)
+            grown[static_cast<size_t>(i)] = Sibilance;
+        });
+    labels.swap(grown);
+  }
+
   return labels;
 }
 

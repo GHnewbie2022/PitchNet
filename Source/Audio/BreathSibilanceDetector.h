@@ -101,6 +101,11 @@ struct Config
   // this share of the energy and its periodicity is below this.
   float voicedOverrideHighShare = 0.65f;
   float voicedOverridePeriodicity = 0.40f;
+  // A sibilant run grows into neighbouring frames (voiced or not) whose high
+  // band still holds this share of the energy, up to this far each side:
+  // the voice's tail overlapping the consonant's start or end.
+  float sibilanceEdgeHighShare = 0.35f; // the same share that makes an unvoiced frame sibilant-like
+  double sibilanceEdgeSeconds = 0.035;
 
   // Region shaping, in seconds (converted to frames with the hop size).
   double bridgeSeconds = 0.046;        // unvoiced gaps closed inside a region
