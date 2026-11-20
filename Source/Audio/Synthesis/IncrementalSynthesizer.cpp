@@ -634,6 +634,40 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     return;
   }
 
+  // An edited neighbour is rendered again with any note that changed next
+  // to it. The base pitch is smoothed across note boundaries, so a change on
+  // one note bends the first and last frames of the notes beside it; an
+  // untouched neighbour is refitted to keep singing the recording, but an
+  // edited one keeps its curve and its earlier render, which then plays the
+  // old bend under the new line (two drags in a fast turn left the note
+  // between them 2 semitones off at its start: a catch). And a note put back
+  // to the recording next to an edited one sung legato would meet that
+  // note's earlier render, which nothing can line up with the recording.
+  // Rendered again in the same pass, the neighbour follows the new line and
+  // its handovers are lined up (the commit's splices and reset-edge anchors).
+  {
+    constexpr int kBoundaryReach = 12; // frames the base smoothing reaches past a boundary
+    auto &notes = project->getNotes();
+    std::vector<Note *> neighbours;
+    for (const auto &changed : notes) {
+      if (changed.isRest() || !changed.isDirty())
+        continue;
+      for (auto &other : notes) {
+        if (other.isRest() || other.isDirty() || &other == &changed)
+          continue;
+        if (other.isNeutralForOriginalWaveform() && !other.hasRenderedEdit())
+          continue; // plays the recording (refitted to it)
+        if (other.getStartFrame() < changed.getEndFrame() + kBoundaryReach &&
+            other.getEndFrame() > changed.getStartFrame() - kBoundaryReach)
+          neighbours.push_back(&other);
+      }
+    }
+    for (auto *note : neighbours) {
+      note->markDirty();
+      note->markSynthDirty();
+    }
+  }
+
   auto [dirtyStart, dirtyEnd] = project->getDirtyFrameRange();
   const int rawDirtyStart = dirtyStart;
   const int rawDirtyEnd = dirtyEnd;
@@ -1097,6 +1131,18 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
             keptOriginal[static_cast<size_t>(i)] *=
                 sampleGain[static_cast<size_t>(i)];
           }
+          // The render alone (with its gain), and the share of it each
+          // sample keeps (the blend mask, then less where a reset span takes
+          // over): the splice alignment moves and rotates the render first and
+          // weighs it after, so a shift never carries a fade along with it.
+          std::vector<float> synthGained(static_cast<size_t>(samplesToWrite));
+          std::vector<float> renderShare(static_cast<size_t>(samplesToWrite));
+          for (int i = 0; i < samplesToWrite; ++i) {
+            synthGained[static_cast<size_t>(i)] =
+                synthesizedAudio[static_cast<size_t>(i)] * sampleGain[static_cast<size_t>(i)];
+            renderShare[static_cast<size_t>(i)] =
+                (i < static_cast<int>(blendMask.size())) ? blendMask[i] : 0.0f;
+          }
 
           // A neutral dirty note is an explicit reset: its body must be the
           // pristine source, not a vocoder round-trip at neutral pitch.
@@ -1161,6 +1207,10 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
             flushSpan();
           }
 
+          // Where each reset edge hands over from the render to the
+          // recording: the commit's alignment below lines the render up there.
+          std::vector<int> resetEdgeCentres;
+
           auto resetSmoothstep = [](float t) {
             t = std::clamp(t, 0.0f, 1.0f);
             return t * t * (3.0f - 2.0f * t);
@@ -1205,6 +1255,10 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
             const int lastSample = std::min(
                 {samplesToWrite, nextStart,
                  fadeRight ? rightCenter + fadeHalf : span.endSample});
+            if (fadeLeft)
+              resetEdgeCentres.push_back(leftCenter);
+            if (fadeRight)
+              resetEdgeCentres.push_back(rightCenter);
 
             for (int sample = firstSample; sample < lastSample; ++sample) {
               float leftBlend = 1.0f;
@@ -1226,6 +1280,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                                      : originalSegment[index] * breathGain[index];
               targetSegment[index] += blend * (restored - targetSegment[index]);
               keptOriginal[index] += blend * (restored - keptOriginal[index]);
+              renderShare[index] *= 1.0f - blend;
             }
           }
 
@@ -1247,13 +1302,10 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
           // splice to match the audio it fades into (SpliceAlignment.h).
           std::vector<float> committed = targetSegment;
           const auto renderHilbert = splicealign::hilbert(targetSegment);
-          // The render alone, which is what gets moved and rotated: shifting
-          // the kept recording too smeared sibilants with a gliding
-          // fractional delay (a consonant wobbled after a whole-song render).
-          std::vector<float> renderOnly(targetSegment.size());
-          for (size_t i = 0; i < renderOnly.size(); ++i)
-            renderOnly[i] = targetSegment[i] - keptOriginal[i];
-          const auto renderOnlyHilbert = splicealign::hilbert(renderOnly);
+          // The render alone is what gets moved and rotated: shifting the
+          // kept recording too smeared sibilants with a gliding fractional
+          // delay (a consonant wobbled after a whole-song render).
+          const auto synthHilbert = splicealign::hilbert(synthGained);
           for (const auto &range : commitFrameRanges) {
             const int bodyStart =
                 (range.start - capturedStartFrame) * hopSize;
@@ -1333,35 +1385,76 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               leftAlign = rightAlign;
             if (!fadeRight)
               rightAlign = leftAlign;
-            // A shift of a whole period is the same in a voice: of the
-            // right splice's equivalent shifts, the one nearest the left's,
-            // so the glide between them stretches the render as little as
-            // possible (each period of glide is a pitch change).
-            if (fadeLeft && fadeRight) {
-              const double period = periodAt(rightCenter);
-              if (period > 0.0) {
-                while (rightAlign.lag - leftAlign.lag > period / 2.0)
-                  rightAlign.lag -= period;
-                while (rightAlign.lag - leftAlign.lag < -period / 2.0)
-                  rightAlign.lag += period;
+            // A reset span inside the range (a note put back to the
+            // recording next to an edited one rendered in the same pass)
+            // hands the render over to the recording at its edge, mid-voice
+            // when the notes are sung legato. That handover is a splice too:
+            // the render is lined up with the recording there as well (only
+            // the render moves; the recording is written as it is).
+            struct Anchor {
+              int at;
+              splicealign::Alignment alignment;
+            };
+            std::vector<Anchor> anchors{{leftCenter, leftAlign}};
+            for (const int centre : resetEdgeCentres) {
+              if (centre <= leftCenter || centre >= rightCenter)
+                continue;
+              double renderEnergy = 0.0, originalEnergy = 0.0;
+              for (int i = std::max(0, centre - kResetFadeHalfSamples);
+                   i < std::min(samplesToWrite, centre + kResetFadeHalfSamples); ++i) {
+                const float r = synthGained[static_cast<size_t>(i)];
+                const float o = originalSegment[static_cast<size_t>(i)];
+                renderEnergy += static_cast<double>(r) * r;
+                originalEnergy += static_cast<double>(o) * o;
               }
+              // Silence on either side: nothing to line up.
+              constexpr double kAudible = 2 * kResetFadeHalfSamples * 1.0e-6;
+              if (renderEnergy < kAudible || originalEnergy < kAudible)
+                continue;
+              anchors.push_back({centre, splicealign::find(
+                                             originalSegment.data(), synthGained,
+                                             synthHilbert, centre,
+                                             kResetFadeHalfSamples, maxLagAt(centre))});
             }
-            // Glide the short way round.
+            anchors.push_back({rightCenter, rightAlign});
+            std::sort(anchors.begin() + 1, anchors.end() - 1,
+                      [](const Anchor &a, const Anchor &b) { return a.at < b.at; });
+            // From each anchor to the next: a shift of a whole period is the
+            // same in a voice, so of the next anchor's equivalent shifts the
+            // one nearest this one's (the glide between them stretches the
+            // render as little as possible: each period of glide is a pitch
+            // change), and the angle the short way round.
             constexpr double kPi = 3.14159265358979323846;
-            while (rightAlign.angle - leftAlign.angle > kPi)
-              rightAlign.angle -= 2.0 * kPi;
-            while (rightAlign.angle - leftAlign.angle < -kPi)
-              rightAlign.angle += 2.0 * kPi;
-            const double glide =
-                std::max(1, rightCenter - leftCenter);
+            for (size_t k = 1; k < anchors.size(); ++k) {
+              auto &next = anchors[k].alignment;
+              const auto &previous = anchors[k - 1].alignment;
+              const double period = periodAt(anchors[k].at);
+              if (period > 0.0 && (fadeLeft || k + 1 < anchors.size())) {
+                while (next.lag - previous.lag > period / 2.0)
+                  next.lag -= period;
+                while (next.lag - previous.lag < -period / 2.0)
+                  next.lag += period;
+              }
+              while (next.angle - previous.angle > kPi)
+                next.angle -= 2.0 * kPi;
+              while (next.angle - previous.angle < -kPi)
+                next.angle += 2.0 * kPi;
+            }
+            size_t segment = 0;
             for (int sample = firstSample; sample < lastSample; ++sample) {
+              while (segment + 2 < anchors.size() && sample >= anchors[segment + 1].at)
+                ++segment;
+              const auto &from = anchors[segment];
+              const auto &to = anchors[segment + 1];
               const double t = std::clamp(
-                  static_cast<double>(sample - leftCenter) / glide, 0.0, 1.0);
+                  static_cast<double>(sample - from.at) / std::max(1, to.at - from.at),
+                  0.0, 1.0);
               const splicealign::Alignment at{
-                  leftAlign.lag + t * (rightAlign.lag - leftAlign.lag),
-                  leftAlign.angle + t * (rightAlign.angle - leftAlign.angle)};
+                  from.alignment.lag + t * (to.alignment.lag - from.alignment.lag),
+                  from.alignment.angle + t * (to.alignment.angle - from.alignment.angle)};
               committed[static_cast<size_t>(sample)] =
-                  splicealign::sample(renderOnly, renderOnlyHilbert, sample, at) +
+                  renderShare[static_cast<size_t>(sample)] *
+                      splicealign::sample(synthGained, synthHilbert, sample, at) +
                   keptOriginal[static_cast<size_t>(sample)];
             }
 

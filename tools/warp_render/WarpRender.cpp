@@ -1635,6 +1635,7 @@ int main(int argc, char **argv)
       int landing0, landing1;     // absolute frames of the landing [landing0, landing1)
       int pivot;                  // absolute frame the drift starts turning from
       float level, target;        // the landing's level, and where it goes
+      bool planned = true;        // the second half is placed as planned here
     };
     std::vector<SplitRequest> splitRequests;
     auto guideFix = [&](bool probe) -> int
@@ -1698,6 +1699,12 @@ int main(int argc, char **argv)
     constexpr float tailDriftReturn = 0.15f; // semitones its end may come back from its furthest
     constexpr float tailDriftBefore = 0.2f;  // semitones the note may go the drift's way before landing
     constexpr float tailDriftLanding = 0.5f; // semitones the landing may be off the target
+    constexpr int splitPartFrames = 9;       // frames (0.1 s) each half of a two-pitch note holds
+    constexpr int splitStepFrames = 8;       // frames the step between them may take
+    constexpr int tailBodyFrames = 5;        // frames a tail holds before it lands, to be heard
+    constexpr float tailBodyLeft = 0.5f;     // semitones the hold has left the note before
+    constexpr float tailBodyReach = 1.3f;    // semitones the hold may be off the target
+    constexpr float melodyFlatTolerance = 0.2f; // semitones: in tune enough to keep, slant flattened
     constexpr float splitGap = 1.5f;         // semitones between a note's first part and its landing
     constexpr float splitBand = 0.6f;        // semitones the first part wobbles around its pitch
     constexpr double splitPartSeconds = 0.1; // the first part this long, to be a note of its own
@@ -1746,6 +1753,17 @@ int main(int argc, char **argv)
         return 1;
       }
     }
+    // GUIDE_FIX_OFFSET (seconds): the guide moved onto the recording's own
+    // timing (a take sung to its own backing track, the guide from another
+    // version). The reference saved with the project is moved too, so the App
+    // shows it where the rule read it.
+    if (const char *offset = std::getenv("GUIDE_FIX_OFFSET"))
+      for (auto &track : tracks)
+        for (auto &g : track.notes)
+        {
+          g.startSeconds += std::atof(offset);
+          g.endSeconds += std::atof(offset);
+        }
     MidiReference::State state;
     state.guide = std::make_shared<MidiReference::Guide>(
         MidiReference::Guide{midiFile.getFileName(), std::move(tracks)});
@@ -1889,7 +1907,7 @@ int main(int argc, char **argv)
       // as the first run planned it.
       if (!probe)
         if (const auto hint = std::find_if(splitRequests.begin(), splitRequests.end(),
-                                           [&](const SplitRequest &r) { return r.cut == s; });
+                                           [&](const SplitRequest &r) { return r.planned && r.cut == s; });
             hint != splitRequests.end())
         {
           Plan plan{&note, {}, hint->target, hint->target, -1, "split-tail-tilt"};
@@ -1909,6 +1927,64 @@ int main(int argc, char **argv)
       for (int i = 0; i < n; ++i)
         if (!std::isnan(white(s + i)))
           voiced.push_back(i);
+      // A note that ends held on another pitch (a D, then a step down to a C
+      // held to the end): two notes the analysis joined. The first run asks
+      // the App to split it where the line leaves the first one; each half is
+      // then judged as a note.
+      if (probe && voiced.size() >= 2 * static_cast<size_t>(splitPartFrames) &&
+          voiced.back() >= n - 2 && voiced.back() - voiced.front() + 1 == static_cast<int>(voiced.size()))
+      {
+        auto medianOf = [&](int from, int to) { // [from, to) note-relative
+          std::vector<float> v;
+          for (int i = from; i < to; ++i)
+            v.push_back(white(s + i));
+          std::sort(v.begin(), v.end());
+          return v[v.size() / 2];
+        };
+        const int last = voiced.back();
+        const float endPitch = medianOf(last + 1 - splitPartFrames, last + 1);
+        int t0 = last;
+        while (t0 - 1 >= voiced.front() && std::abs(white(s + t0 - 1) - endPitch) <= splitBand)
+          --t0;
+        // The step into it: one way, a few frames.
+        int r0 = t0 - 1;
+        const float d = white(s + t0) >= white(s + t0 - 1) ? 1.0f : -1.0f;
+        while (r0 - 1 >= voiced.front() && d * (white(s + r0) - white(s + r0 - 1)) > 0.0f)
+          --r0;
+        if (last + 1 - t0 >= splitPartFrames && t0 - r0 <= splitStepFrames &&
+            r0 - voiced.front() >= splitPartFrames)
+        {
+          const float mainPitch = medianOf(r0 - splitPartFrames, r0);
+          int m0 = r0 - 1;
+          while (m0 - 1 >= voiced.front() && std::abs(white(s + m0 - 1) - mainPitch) <= splitBand)
+            --m0;
+          int cut = r0;
+          while (cut < t0 && std::abs(white(s + cut) - mainPitch) <= splitBand)
+            ++cut;
+          // Both heard (loud), each long enough to be a note.
+          float peak = -1000.0f;
+          for (int i : voiced)
+            peak = std::max(peak, levelDb(s + i));
+          auto loudIn = [&](int from, int to) {
+            int count = 0;
+            for (int i = from; i < to; ++i)
+              if (levelDb(s + i) >= peak - quietBelowPeakDb)
+                ++count;
+            return count;
+          };
+          // The analysis gave the note the first pitch: the held end is the
+          // one it joined on (where it gave the end's pitch, the first part
+          // is the note's slide in, kept with it).
+          const float analysed = note.getMidiNote() + note.getPitchOffset();
+          if (r0 - m0 >= splitPartFrames && std::abs(mainPitch - endPitch) >= splitGap &&
+              std::abs(analysed - mainPitch) < std::abs(analysed - endPitch) &&
+              2 * loudIn(m0, r0) >= r0 - m0 && 2 * loudIn(t0, last + 1) >= last + 1 - t0)
+          {
+            splitRequests.push_back({s, s + cut, 0, 0, 0, 0.0f, 0.0f, false});
+            continue;
+          }
+        }
+      }
       auto report = [&](const char *reason, float centre, float trend, float target) {
         ++counts[reason];
         std::printf("%s\t%s\t%d\t%.2f\t%+.0f\t%s\n", reason, clock(framesToSeconds(s)).toRawUTF8(),
@@ -2242,6 +2318,47 @@ int main(int argc, char **argv)
             Plan plan{&note, {}, tailTarget, landingMean - (lands - tailTarget), -1, "tail"};
             plan.before = note;
             plan.deviation = lands - tailTarget;
+            // A tail that holds a note before it lands (a D sharp after an E,
+            // then the fall to D): the held note is what is heard, the
+            // landing only its end. When the hold has left the note before
+            // for the landing's side, the hold goes on the target.
+            float prevPitch = 0.0f;
+            {
+              std::vector<float> prev;
+              for (int f = before->getStartFrame(); f < before->getEndFrame(); ++f)
+                if (!std::isnan(white(f)))
+                  prev.push_back(white(f));
+              std::sort(prev.begin(), prev.end());
+              prevPitch = prev.empty() ? 0.0f : prev[prev.size() / 2];
+            }
+            const float towardTarget = tailTarget >= prevPitch ? 1.0f : -1.0f;
+            // What is heard of it: from where the fall in from the note
+            // before first turns, to the end (the hold's wobble and its own
+            // fall alike; the fall in is the note before's).
+            size_t arrived = 0;
+            while (arrived + 1 < voiced.size() &&
+                   towardTarget * (white(s + voiced[arrived + 1]) - white(s + voiced[arrived])) > 0.0f)
+              ++arrived;
+            double heardSum = 0.0;
+            for (size_t k = arrived; k < voiced.size(); ++k)
+              heardSum += white(s + voiced[k]);
+            const float heardMean = static_cast<float>(heardSum / (voiced.size() - arrived));
+            if (h1 - h0 >= tailBodyFrames && measured.size() >= static_cast<size_t>(tailBodyFrames) &&
+                towardTarget * (centre - prevPitch) >= tailBodyLeft &&
+                std::abs(centre - tailTarget) <= tailBodyReach &&
+                std::abs(centre - tailTarget) > std::abs(lands - tailTarget) &&
+                voiced.size() - arrived >= static_cast<size_t>(tailBodyFrames))
+            {
+              plan.want = tailTarget;
+              plan.deviation = heardMean - tailTarget;
+              plan.review += "tail-body ";
+              for (size_t k = arrived; k < voiced.size(); ++k)
+                plan.measured.push_back(s + voiced[k]);
+              note.markDirty();
+              plans.push_back(plan);
+              ++counts["fix-tail"];
+              continue;
+            }
             for (int i : landing)
               plan.measured.push_back(s + i);
             note.markDirty();
@@ -2356,6 +2473,37 @@ int main(int argc, char **argv)
       }
       if (candidates.empty() || std::abs(sung - candidates[0]) > reach)
       {
+        // The singer's own melody, sung in tune on an in-key note: its pitch
+        // stays, but a slant (a vibrato sliding down) is flattened as on any
+        // note, about its own centre.
+        const float inKey = std::round(centre - referenceOffset) + referenceOffset;
+        if (!outOfKey(inKey) && std::abs(centre - inKey) <= melodyFlatTolerance && extreme < 0 &&
+            !tailSlide && std::abs(trend) >= flattenMin && std::abs(trend) <= maxFlattenTrend &&
+            framesToSeconds(h1 - h0) >= flattenHeldSeconds)
+        {
+          Plan plan{&note, {}, inKey, centre, -1, "tilt"};
+          plan.before = note;
+          plan.deviation = 0.0f;
+          plan.review += "melody-flatten ";
+          for (int i : measured)
+            plan.measured.push_back(s + i);
+          if (framesToSeconds(h1 - h0) >= driftHeldSeconds)
+          {
+            note.setPitchDrift(driftFactor);
+            plan.how = "drift";
+          }
+          else
+          {
+            const float pivot = static_cast<float>(h0) / static_cast<float>(n - 1);
+            note.setTiltLeft(0.0f);
+            note.setTiltRight(-slope * static_cast<float>(n - 1) * (1.0f - pivot));
+            note.setTiltPivot(pivot);
+          }
+          note.markDirty();
+          plans.push_back(plan);
+          ++counts[("fix-" + plan.how).toStdString()];
+          continue;
+        }
         report("melody-diff", sung, trend, 0.0f);
         std::printf("review\tmelody-diff\t%s\t%d\t%.2f\t%.2f\n", clock(framesToSeconds(s)).toRawUTF8(), s, sung, heldMean);
         continue;
@@ -2525,6 +2673,44 @@ int main(int argc, char **argv)
           continue;
         }
       }
+      // A short note sung squarely on an off-key semitone that steps by a
+      // semitone, legato, into an in-key next note (G, D sharp, E; D, D sharp,
+      // D): a chromatic appoggiatura or neighbour note starting a turn - an
+      // ornament, kept as sung.
+      if (nextNote != nullptr)
+      {
+        const float semitone = std::round(sung - referenceOffset) + referenceOffset;
+        const float nextPitch = nextNote->getMidiNote() + nextNote->getPitchOffset();
+        const float next = std::round(nextPitch - referenceOffset) + referenceOffset;
+        if (outOfKey(semitone) && std::abs(sung - semitone) <= passingOnNote &&
+            framesToSeconds(voiced.back() + 1 - voiced.front()) <= passingSeconds &&
+            !outOfKey(next) && std::abs(nextPitch - next) <= passingTolerance &&
+            std::abs(std::abs(next - semitone) - 1.0f) < 0.01f &&
+            !std::isnan(white(e - 1)) && !std::isnan(white(nextNote->getStartFrame())))
+        {
+          // ... where the guide already has the note it leads to: an extra
+          // note before it (a D sharp where the guide holds E or D). Where the
+          // guide has a note of its own there (a D between C and E), the
+          // off-key note is that melody note sung wrong.
+          float guideHere = 0.0f;
+          double most = 0.0;
+          for (const auto &g : guide)
+          {
+            const double overlap = std::max(0.0, std::min<double>(s + voiced.back() + 1, g.end) -
+                                                     std::max<double>(s + voiced.front(), g.start));
+            if (overlap > most)
+            {
+              most = overlap;
+              guideHere = g.pitch;
+            }
+          }
+          if (most > 0.0 && guideHere == next)
+          {
+            report("ornament", sung, trend, target);
+            continue;
+          }
+        }
+      }
       // A short note sliding at its end into the next note, whose guide pitch
       // is this one's target too: the next note's scoop, kept as sung.
       {
@@ -2532,7 +2718,9 @@ int main(int argc, char **argv)
         for (const auto &other : project.getNotes())
           if (!other.isRest() && other.getStartFrame() >= e - 1 && other.getStartFrame() <= e + 2)
             next = &other;
-        if (next != nullptr && framesToSeconds(n) <= approachSeconds && voiced.size() >= 3 &&
+        // How long it is sung (a consonant before it is not part of the scoop).
+        if (next != nullptr && framesToSeconds(voiced.back() + 1 - voiced.front()) <= approachSeconds &&
+            voiced.size() >= 3 &&
             voiced.back() >= n - 2)
         {
           float nextGuide = 0.0f;
@@ -3113,6 +3301,62 @@ int main(int argc, char **argv)
                 output.getFullPathName().toRawUTF8());
     return 0;
   }
+  // WarpRender <in.pitchnet> <out.pitchnet> --drags <noteStart:midi>...: the
+  // App's single-note pitch drags (SelectHandler's drag end), one after
+  // another, each rendered as the App renders after it. Prints the notes each
+  // render was asked to redo; saves the project with its composite.
+  if (argc >= 5 && juce::String::fromUTF8(argv[3]) == "--drags")
+  {
+    Project loaded;
+    if (!ProjectSerializer::loadFromFile(loaded, input))
+      return 1;
+    sourceaudio::attachRecording(loaded, input);
+    juce::String ortError;
+    if (!OnnxRuntime::initialise(&ortError))
+      return 1;
+    EditorController controller(false);
+    controller.setProject(std::make_unique<Project>(loaded));
+    auto &p = *controller.getProject();
+    auto &data = p.getAudioData();
+    if (data.melSpectrogram.empty())
+    {
+      MelSpectrogram mel(data.sampleRate, N_FFT, HOP_SIZE, NUM_MELS, FMIN, FMAX);
+      data.melSpectrogram = mel.compute(data.originalWaveform.getReadPointer(0),
+                                        data.originalWaveform.getNumSamples());
+    }
+    for (int k = 4; k < argc; ++k)
+    {
+      const juce::String arg = juce::String::fromUTF8(argv[k]);
+      const int start = arg.upToFirstOccurrenceOf(":", false, false).getIntValue();
+      const float midi = arg.fromFirstOccurrenceOf(":", false, false).getFloatValue();
+      Note *note = nullptr;
+      for (auto &n : p.getNotes())
+        if (!n.isRest() && n.getStartFrame() == start)
+          note = &n;
+      if (note == nullptr)
+        return 1;
+      note->setMidiNote(midi);
+      note->setPitchOffset(0.0f);
+      note->markDirty();
+      note->markSynthDirty();
+      PitchCurveProcessor::rebuildBaseFromNotes(p);
+      p.markNoteEditDirtyRange(note->getStartFrame(), note->getEndFrame());
+      std::atomic<bool> pending{false}, done{false}, ok{false};
+      controller.resynthesizeIncrementalAsync(
+          p, nullptr, [&](bool success) { ok = success; done = true; }, pending, false);
+      const bool finished = waitFor(done, 600000);
+      std::printf("drag %d -> %.2f: render %s; rendered notes:", start, midi,
+                  finished && ok.load() ? "ok" : "failed");
+      for (const auto &n : p.getNotes())
+        if (!n.isRest() && n.hasRenderedEdit() && n.getEndFrame() > start - 40 &&
+            n.getStartFrame() < start + 60)
+          std::printf(" %d", n.getStartFrame());
+      std::printf("\n");
+    }
+    const bool saved = ProjectSerializer::saveToFile(p, output);
+    controller.requestShutdown();
+    return saved ? 0 : 1;
+  }
   // WarpRender <in.pitchnet> <out-prefix> --reset-undo pitch|all <noteStart>...:
   // the App's Restore on the selected notes, then undo, each rendered as the
   // App renders after a history change (afterHistoryChange). Writes the
@@ -3300,10 +3544,15 @@ int main(int argc, char **argv)
     auto &audioDataOut = *rendered;
     const auto heard = sourceaudio::build(audioDataOut);
     writeWav(output, heard.audio, heard.sampleRate, 32);
-    writeWav(output.withFileExtension("composite.wav"), audioDataOut.waveform,
-             audioDataOut.sampleRate, 32);
-    writeWav(output.withFileExtension("reference.wav"),
-             warp::reference(audioDataOut), audioDataOut.sampleRate, 32);
+    // The internal 44.1 kHz composite and reference, for debugging only:
+    // written when PITCHNET_PROJECT_INTERNALS is set.
+    if (std::getenv("PITCHNET_PROJECT_INTERNALS") != nullptr)
+    {
+      writeWav(output.withFileExtension("composite.wav"), audioDataOut.waveform,
+               audioDataOut.sampleRate, 32);
+      writeWav(output.withFileExtension("reference.wav"),
+               warp::reference(audioDataOut), audioDataOut.sampleRate, 32);
+    }
     if (resynthController)
       resynthController->requestShutdown();
     std::printf("wrote %s (%d ch, %d Hz)\n", output.getFullPathName().toRawUTF8(),
@@ -3313,6 +3562,7 @@ int main(int argc, char **argv)
   juce::String anchorsArg, engine = "vocoder", detector = "fcpe", snapshotPrefix;
   double shift = 0.0, shiftFrom = 0.0, shiftTo = 1.0e9;
   bool playback = false; // write what playback and export use (spec Q5)
+  bool saveProject = false; // --save-project: the analysed project, as the App saves a dropped file
   bool ensembleLag = false, dumpNotes = false, separationTest = false, benchPaint = false, testMerge = false, testDraw = false;
   for (int i = 3; i < argc; ++i)
   {
@@ -3320,6 +3570,7 @@ int main(int argc, char **argv)
     const juce::String next = i + 1 < argc ? juce::String::fromUTF8(argv[i + 1]) : "";
     if (arg == "--anchors") { anchorsArg = next; ++i; }
     else if (arg == "--playback") playback = true;
+    else if (arg == "--save-project") saveProject = true;
     else if (arg == "--shift") { shift = next.getDoubleValue(); ++i; }
     else if (arg == "--shift-range")
     {
@@ -3388,6 +3639,15 @@ int main(int argc, char **argv)
   {
     ensembleCheck(controller, audioData);
     return 0;
+  }
+  if (saveProject)
+  {
+    const bool saved = ProjectSerializer::saveToFile(project, output);
+    std::printf("%s %s (audio %s)\n", saved ? "saved" : "could not save",
+                output.getFullPathName().toRawUTF8(),
+                project.getFilePath().getFullPathName().toRawUTF8());
+    controller.requestShutdown();
+    return saved ? 0 : 1;
   }
 
   // Warp anchors.
