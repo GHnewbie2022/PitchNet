@@ -4,6 +4,7 @@
 // =============================================================================
 
 #include "../../Audio/SourceAudio.h"
+#include "../../Audio/RecordingChange.h"
 #include "../MainComponent.h"
 #include "../../Audio/BreathSibilanceAnalysis.h"
 #include "../../Models/ProjectSerializer.h"
@@ -68,62 +69,16 @@ void MainComponent::openLoadedProject(const juce::File &file,
                                       std::shared_ptr<Project> loadedProject) {
   loadedProject->setProjectFilePath(file);
 
-  // .pitchnet files embed the rendered waveform and analysis data. Prefer this
-  // self-contained state so projects reopen exactly as saved, even if the
-  // original audio file has moved or changed.
+  // A project that links its recording (spec Q11) is rebuilt from it.
+  if (loadedProject->linksRecording()) {
+    openLinkedProject(file, loadedProject);
+    return;
+  }
+
+  // .pitchnet files that embed the rendered waveform and analysis data open
+  // as saved, even if the original audio file has moved or changed.
   if (loadedProject->getAudioData().waveform.getNumSamples() > 0) {
-    // The history belongs to the project being replaced: its actions point
-    // into that project's curves (NotePitchDragAction keeps &audioData.f0),
-    // so an undo past the open would write into freed memory. The branch
-    // that resynthesizes below clears it for the same reason.
-    if (undoManager)
-      undoManager->clear();
-    if (editorController)
-      editorController->setProject(std::make_unique<Project>(*loadedProject));
-
-    auto *project = getProject();
-    if (!project)
-      return;
-
-    pianoRoll.setProject(project);
-    pianoRollView.setProject(project);
-    restoreProjectPresentation();
-    savedProjectSnapshot = projectSaveSnapshot();
-    parameterPanel.setProject(project);
-    parameterPanel.setSelectedNote(nullptr);
-    toolbar.setTotalTime(project->getAudioData().getDuration());
-    toolbar.setLoopEnabled(project->getLoopRange().enabled);
-    toolbar.setTransportEnabled(true);
-
-    // Playback plays the recording itself (spec Q5), so find it: the saved
-    // path, else a recording beside the project with the project's name.
-    const bool recordingAttached =
-        !isPluginMode() && attachProjectRecording(*project, file);
-
-    if (!isPluginMode()) {
-      if (auto *engine = editorController ? editorController->getAudioEngine()
-                                           : nullptr) {
-        try {
-          engine->loadProjectAudio(project->getAudioData());
-          const auto &loopRange = project->getLoopRange();
-          if (loopRange.enabled)
-            engine->setLoopRange(loopRange.startSeconds, loopRange.endSeconds);
-          engine->setLoopEnabled(loopRange.enabled);
-          engine->setVolumeDb(project->getVolume());
-        } catch (...) {
-        }
-      }
-    }
-
-    if (hasAnalyzedProject())
-      fitAnalyzedPitchRangeToView(*project);
-    // Back where the project was last saved (overrides the fit above).
-    restoreViewFromProject();
-    repaint();
-    if (isPluginMode())
-      notifyProjectDataChanged();
-    if (!isPluginMode() && !recordingAttached)
-      askForProjectRecording();
+    showOpenedProject(file, *loadedProject, true);
     return;
   }
 
@@ -398,6 +353,211 @@ void MainComponent::openLoadedProject(const juce::File &file,
   }
 
   continueOpenWithAudio(audioFile);
+}
+
+void MainComponent::showOpenedProject(const juce::File &file,
+                                      const Project &openedProject,
+                                      bool findRecording) {
+  // The history belongs to the project being replaced: its actions point
+  // into that project's curves (NotePitchDragAction keeps &audioData.f0),
+  // so an undo past the open would write into freed memory. The branch
+  // that resynthesizes below clears it for the same reason.
+  if (undoManager)
+    undoManager->clear();
+  if (editorController)
+    editorController->setProject(std::make_unique<Project>(openedProject));
+
+  auto *project = getProject();
+  if (!project)
+    return;
+
+  pianoRoll.setProject(project);
+  pianoRollView.setProject(project);
+  restoreProjectPresentation();
+  parameterPanel.setProject(project);
+  parameterPanel.setSelectedNote(nullptr);
+  toolbar.setTotalTime(project->getAudioData().getDuration());
+  toolbar.setLoopEnabled(project->getLoopRange().enabled);
+  toolbar.setTransportEnabled(true);
+
+  // Playback plays the recording itself (spec Q5), so find it: the saved
+  // path, else a recording beside the project with the project's name. A
+  // linked project has read it already.
+  const bool recordingAttached =
+      !findRecording || (!isPluginMode() && attachProjectRecording(*project, file));
+  // As saved, after the recording is attached: an embedded project then
+  // learns its recording's fingerprint, which is not an edit.
+  savedProjectSnapshot = projectSaveSnapshot();
+
+  if (!isPluginMode()) {
+    if (auto *engine = editorController ? editorController->getAudioEngine()
+                                         : nullptr) {
+      try {
+        engine->loadProjectAudio(project->getAudioData());
+        const auto &loopRange = project->getLoopRange();
+        if (loopRange.enabled)
+          engine->setLoopRange(loopRange.startSeconds, loopRange.endSeconds);
+        engine->setLoopEnabled(loopRange.enabled);
+        engine->setVolumeDb(project->getVolume());
+      } catch (...) {
+      }
+    }
+  }
+
+  if (hasAnalyzedProject())
+    fitAnalyzedPitchRangeToView(*project);
+  // Back where the project was last saved (overrides the fit above).
+  restoreViewFromProject();
+  repaint();
+  if (isPluginMode())
+    notifyProjectDataChanged();
+  if (!isPluginMode() && !recordingAttached)
+    askForProjectRecording();
+}
+
+void MainComponent::openLinkedProject(const juce::File &file,
+                                      std::shared_ptr<Project> loadedProject,
+                                      const juce::File &chosen) {
+  // The saved path, else a recording beside the project with its name.
+  juce::File audioFile = chosen;
+  if (audioFile == juce::File{}) {
+    juce::Array<juce::File> candidates{loadedProject->getFilePath()};
+    for (const auto *extension : {".wav", ".aif", ".aiff", ".flac"})
+      candidates.add(file.withFileExtension(extension));
+    for (const auto &candidate : candidates)
+      if (candidate.existsAsFile()) {
+        audioFile = candidate;
+        break;
+      }
+  }
+
+  if (!audioFile.existsAsFile()) {
+    juce::Component::SafePointer<MainComponent> safeThis(this);
+    juce::AlertWindow::showOkCancelBox(
+        juce::AlertWindow::WarningIcon, TR("dialog.audio_missing"),
+        TR("dialog.project_audio_missing") + "\n" +
+            loadedProject->getFilePath().getFullPathName() + "\n\n" +
+            TR("dialog.locate_question"),
+        TR("dialog.locate_audio"), TR("dialog.cancel"), this,
+        juce::ModalCallbackFunction::create([safeThis, file, loadedProject](int result) {
+          if (safeThis == nullptr || result == 0 || safeThis->fileChooser != nullptr)
+            return;
+          safeThis->fileChooser = std::make_unique<juce::FileChooser>(
+              TR("dialog.select_audio"), juce::File{}, "*.wav;*.aif;*.aiff;*.flac");
+          safeThis->fileChooser->launchAsync(
+              juce::FileBrowserComponent::openMode |
+                  juce::FileBrowserComponent::canSelectFiles,
+              [safeThis, file, loadedProject](const juce::FileChooser &fc) {
+                if (safeThis == nullptr)
+                  return;
+                const auto selected = fc.getResult();
+                safeThis->fileChooser.reset();
+                if (selected.existsAsFile())
+                  safeThis->openLinkedProject(file, loadedProject, selected);
+              });
+        }));
+    return;
+  }
+
+  // Every edit is placed by frame: a recording of another rate, channel
+  // count or length cannot carry them (spec Q11).
+  const auto &saved = loadedProject->getRecordingFingerprint();
+  const auto found = recordingchange::shapeOf(audioFile);
+  if (!saved.sameShape(found)) {
+    StyledMessageBox::show(this, TR("dialog.open_failed"),
+                           TR("dialog.recording_other_shape") + "\n" +
+                               audioFile.getFullPathName() + "\n\n" +
+                               TR("dialog.recording_shape_project") + " " +
+                               recordingchange::describe(saved) + "\n" +
+                               TR("dialog.recording_shape_file") + " " +
+                               recordingchange::describe(found),
+                           StyledMessageBox::WarningIcon);
+    return;
+  }
+
+  isLoadingAudio = true;
+  loadingProgress = 0.0;
+  {
+    const juce::ScopedLock sl(loadingMessageLock);
+    loadingMessage = TR("progress.reading_recording");
+  }
+  analysisProgressPopup.setTitle(TR("progress.loading_project_title"));
+  showAnalysisProgress(0.0);
+
+  juce::Component::SafePointer<MainComponent> safeThis(this);
+  auto *controller = editorController;
+  juce::Thread::launch([safeThis, controller, file, audioFile, loadedProject]() {
+    // The pitch detector is only needed where the recording changed; wait
+    // for its models then (they load in the background at startup).
+    const recordingchange::Detect detect =
+        [controller](const float *samples, int numSamples, int frames,
+                     std::vector<float> &f0, std::vector<bool> &voiced) {
+          if (controller == nullptr)
+            return false;
+          for (int waited = 0; !controller->isSelectedPitchDetectorLoaded() && waited < 600;
+               ++waited)
+            juce::Thread::sleep(100);
+          return controller->detectPitch(samples, numSamples, frames, f0, voiced);
+        };
+    const auto opened = recordingchange::openLinked(*loadedProject, audioFile, detect);
+    juce::MessageManager::callAsync([safeThis, file, loadedProject, opened]() {
+      if (safeThis == nullptr)
+        return;
+      safeThis->analysisProgressPopup.setTitle({});
+      safeThis->hideAnalysisProgress();
+      if (opened.result != recordingchange::Opened::Result::opened) {
+        safeThis->isLoadingAudio = false;
+        StyledMessageBox::show(safeThis.getComponent(), TR("dialog.open_failed"),
+                               TR("dialog.project_load_failed") + "\n" +
+                                   loadedProject->getFilePath().getFullPathName(),
+                               StyledMessageBox::WarningIcon);
+        return;
+      }
+      safeThis->showOpenedProject(file, *loadedProject, false);
+      if (!opened.changed) {
+        safeThis->isLoadingAudio = false;
+        return;
+      }
+      // Changed outside: the project now differs from the file (new pitch
+      // where it changed, the new fingerprint), so closing asks to save.
+      safeThis->savedProjectSnapshot = {};
+      const auto report = TR("dialog.recording_changed_detail")
+                              .replace("%1", juce::String(static_cast<int>(
+                                                 opened.update.audioFrames.size())))
+                              .replace("%2", juce::String(opened.update.notesToRender)) +
+                          (opened.update.detected ? juce::String()
+                                                  : "\n" + TR("dialog.recording_changed_no_pitch"));
+      auto *project = safeThis->getProject();
+      if (project == nullptr || opened.update.notesToRender == 0) {
+        safeThis->isLoadingAudio = false;
+        StyledMessageBox::show(safeThis.getComponent(), TR("dialog.recording_changed"),
+                               report, StyledMessageBox::InfoIcon);
+        return;
+      }
+      safeThis->toolbar.showProgress(TR("progress.synthesizing"));
+      safeThis->toolbar.setProgress(-1.0f);
+      safeThis->setToolGroupEnabled(false);
+      safeThis->editorController->resynthesizeIncrementalAsync(
+          *project,
+          [safeThis](const juce::String &message) {
+            if (safeThis != nullptr)
+              safeThis->toolbar.showProgress(message);
+          },
+          [safeThis, report](bool success) {
+            if (safeThis == nullptr)
+              return;
+            safeThis->setToolGroupEnabled(true);
+            safeThis->toolbar.hideProgress();
+            safeThis->isLoadingAudio = false;
+            safeThis->repaint();
+            StyledMessageBox::show(safeThis.getComponent(), TR("dialog.recording_changed"),
+                                   success ? report : TR("dialog.pitch_edits_failed"),
+                                   success ? StyledMessageBox::InfoIcon
+                                           : StyledMessageBox::WarningIcon);
+          },
+          safeThis->pendingIncrementalResynth, safeThis->isPluginMode());
+    });
+  });
 }
 
 bool MainComponent::attachProjectRecording(Project &project,

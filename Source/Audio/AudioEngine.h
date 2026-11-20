@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 
 #include "../JuceHeader.h"
 #include "../Models/Project.h"
@@ -169,6 +170,49 @@ private:
   juce::AudioBuffer<float> retiredWaveform;
   juce::SpinLock pendingWaveformLock;
   std::atomic<bool> waveformSwapPending{false};
+
+  // Where the pending buffer differs from the one playing: a crossfade at the
+  // playhead is only clean where the two are the same audio. Inside the
+  // re-rendered part they are two renders at unrelated phases and the
+  // crossfade cancels (a click once, never there again on replay), so the
+  // swap waits for the playhead to leave that part (or a loop to wrap).
+  // Block hashes of each buffer find the part; the hashes of the playing
+  // and pending buffers trade places with the buffers. All under
+  // pendingWaveformLock.
+  static constexpr int kMaxSwapDeferBlocks = 200; // audio blocks (~2 s): then crossfade anyway
+  std::vector<uint64_t> playingHashes, pendingHashes;
+  // The outgoing audio at the swap point, crossfaded from as it is output
+  // (audio thread only; fixed size, nothing allocated there).
+  std::array<std::array<float, kWaveformSwapFadeSamples>, 2> swapTail{};
+  int swapTailChannels = 0, swapTailLength = 0, swapTailRemaining = 0;
+  int64_t pendingDiffStart = -1, pendingDiffEnd = -1; // samples, [start, end)
+  int pendingDeferredBlocks = 0;                       // audio thread
+  static std::vector<uint64_t> blockHashes(const juce::AudioBuffer<float> &buffer);
+
+public:
+  // Swaps made while playing, for the debug recording (DebugJournal.h): how
+  // many, and the last one's playhead, wait and whether it had to crossfade
+  // inside the re-rendered part after all.
+  struct SwapReport
+  {
+    int count = 0;
+    double positionSeconds = 0.0, waitedSeconds = 0.0;
+    bool forcedInside = false;
+  };
+  SwapReport getSwapReport() const
+  {
+    SwapReport r;
+    r.count = swapCount.load();
+    r.positionSeconds = lastSwapSeconds.load();
+    r.waitedSeconds = lastSwapWaitedSeconds.load();
+    r.forcedInside = lastSwapForced.load();
+    return r;
+  }
+
+private:
+  std::atomic<int> swapCount{0};
+  std::atomic<double> lastSwapSeconds{0.0}, lastSwapWaitedSeconds{0.0};
+  std::atomic<bool> lastSwapForced{false};
 
   // Volume control (linear gain, lock-free for audio thread)
   std::atomic<float> volumeGain{1.0f};

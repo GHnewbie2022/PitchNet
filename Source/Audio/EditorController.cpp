@@ -5,6 +5,7 @@
 #include "../Utils/NoteAmplitude.h"
 #include "../Utils/AudioResampler.h"
 #include "SourceAudio.h"
+#include "RecordingChange.h"
 #include "../Utils/SHA256Utils.h"
 #include "../Utils/ScaleUtils.h"
 #include "../Utils/Constants.h"
@@ -561,8 +562,11 @@ void EditorController::loadAudioFileAsync(
     auto &audioData = newProject->getAudioData();
     audioData.waveform = std::move(buffer);
     audioData.sampleRate = SAMPLE_RATE;
-    // Playback and export use the recording itself (spec Q5).
+    // Playback and export use the recording itself (spec Q5); the project
+    // links it by its fingerprint (spec Q11).
     sourceaudio::load(audioData, file);
+    newProject->setRecordingFingerprint(recordingchange::fingerprint(
+        audioData.sourceAudio, audioData.sourceSampleRate));
 
     if (cancelLoadingFlag.load()) {
       isLoadingAudio = false;
@@ -1370,6 +1374,93 @@ void EditorController::analyzeAudioImpl(
 
   if (onComplete)
     onComplete();
+}
+
+bool EditorController::detectPitch(const float *samples, int numSamples,
+                                   int frames, std::vector<float> &f0Out,
+                                   std::vector<bool> &voicedOut)
+{
+  if (samples == nullptr || numSamples <= 0 || frames <= 0 || shuttingDown.load())
+    return false;
+  std::shared_ptr<SharedInferenceModels> models;
+  std::shared_ptr<FCPEPitchDetector> fcpeModel;
+  std::shared_ptr<RMVPEPitchDetector> rmvpeModel;
+  std::shared_ptr<SwiftF0PitchDetector> swiftF0Model;
+  {
+    const std::lock_guard<std::mutex> lock(modelPtrMutex);
+    models = sharedModels;
+    fcpeModel = fcpePitchDetector;
+    rmvpeModel = rmvpePitchDetector;
+    swiftF0Model = swiftF0PitchDetector;
+  }
+  // The same choice as analyzeAudioImpl.
+  PitchDetectorType detectorType = pitchDetectorType;
+  if (detectorType == PitchDetectorType::Ensemble &&
+      !(rmvpeModel && rmvpeModel->isLoaded() && fcpeModel && fcpeModel->isLoaded() &&
+        swiftF0Model && swiftF0Model->isLoaded()))
+    detectorType = PitchDetectorType::SwiftF0;
+
+  const double vocoderFrameTime = static_cast<double>(HOP_SIZE) / SAMPLE_RATE;
+  auto runRmvpe = [&]() -> std::vector<float> {
+    if (!rmvpeModel || !rmvpeModel->isLoaded())
+      return {};
+    const auto modelLock = lockModel(models, rmvpeModel, &SharedInferenceModels::rmvpe,
+                                     &SharedInferenceModels::rmvpeMutex, shuttingDown);
+    return shuttingDown.load() ? std::vector<float>{}
+                               : rmvpeModel->extractF0(samples, numSamples, SAMPLE_RATE);
+  };
+  auto runFcpe = [&]() -> std::vector<float> {
+    if (!fcpeModel || !fcpeModel->isLoaded())
+      return {};
+    const auto modelLock = lockModel(models, fcpeModel, &SharedInferenceModels::fcpe,
+                                     &SharedInferenceModels::fcpeMutex, shuttingDown);
+    return shuttingDown.load() ? std::vector<float>{}
+                               : fcpeModel->extractF0(samples, numSamples, SAMPLE_RATE);
+  };
+  auto runSwiftF0 = [&]() -> std::vector<float> {
+    if (!swiftF0Model || !swiftF0Model->isLoaded())
+      return {};
+    const auto modelLock = lockModel(models, swiftF0Model, &SharedInferenceModels::swiftF0,
+                                     &SharedInferenceModels::swiftF0Mutex, shuttingDown);
+    return shuttingDown.load() ? std::vector<float>{}
+                               : swiftF0Model->extractF0(samples, numSamples, SAMPLE_RATE);
+  };
+
+  pitchensemble::Curve curve;
+  if (detectorType == PitchDetectorType::Ensemble)
+  {
+    const std::vector<float> found[3] = {runRmvpe(), runFcpe(), runSwiftF0()};
+    std::vector<pitchensemble::Curve> curves;
+    bool any = false;
+    for (int d = 0; d < 3; ++d)
+    {
+      any = any || !found[d].empty();
+      curves.push_back(pitchensemble::resample(found[d], pitchensemble::kFrameTime[d],
+                                               pitchensemble::kOffset[d], frames,
+                                               vocoderFrameTime));
+    }
+    if (!any)
+      return false;
+    curve = pitchensemble::combine(curves);
+  }
+  else
+  {
+    const auto found = detectorType == PitchDetectorType::RMVPE  ? runRmvpe()
+                       : detectorType == PitchDetectorType::FCPE ? runFcpe()
+                                                                 : runSwiftF0();
+    if (found.empty())
+      return false;
+    const double frameTime = detectorType == PitchDetectorType::SwiftF0
+                                 ? SwiftF0PitchDetector::FRAME_TIME
+                                 : 160.0 / 16000.0;
+    curve = pitchensemble::resample(found, frameTime, 0.0, frames, vocoderFrameTime);
+  }
+  if (static_cast<int>(curve.f0.size()) != frames ||
+      static_cast<int>(curve.voiced.size()) != frames)
+    return false;
+  f0Out = std::move(curve.f0);
+  voicedOut = std::move(curve.voiced);
+  return true;
 }
 
 void EditorController::analyzeAudioAsync(

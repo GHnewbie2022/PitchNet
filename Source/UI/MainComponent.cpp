@@ -653,6 +653,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
       toolbar.setUndoRedoEnabled(undoManager && undoManager->canUndo(),
                                  undoManager && undoManager->canRedo());
     };
+    wireDebugJournal(undoManager);
   }
 
   // Initialize new modular components
@@ -812,6 +813,11 @@ MainComponent::MainComponent(bool enableAudioDevice)
   parameterPanel.onProjectBound = [this](Project* project)
   {
     toolbar.setProject(project);
+    // A project opened with debug recording on: mark where this session's
+    // steps begin (DebugJournal.h).
+    if (project != nullptr && project != debugJournalProject)
+      project->getDebugJournal().resume(project->getNotes(), pianoRoll.getCursorTime());
+    debugJournalProject = project;
     if (isPluginMode())
       applyEffectiveHostTimelineState();
   };
@@ -825,6 +831,24 @@ MainComponent::MainComponent(bool enableAudioDevice)
   {
     settingsManager->setUiBrightnessPercent(brightnessPercent);
     applyUiBrightness(brightnessPercent);
+  };
+  parameterPanel.onDebugRecordingChanged = [this](bool on)
+  {
+    auto *project = getProject();
+    if (project == nullptr)
+    {
+      parameterPanel.setDebugRecording(false);
+      return;
+    }
+    auto &journal = project->getDebugJournal();
+    if (on)
+      journal.start(project->getNotes(), pianoRoll.getCursorTime());
+    else
+      journal.stop();
+    LOG(juce::String("debug recording ") + (on ? "on" : "off"));
+    project->setModified(true);
+    if (commandManager)
+      commandManager->commandStatusChanged();
   };
   parameterPanel.onNoiseVisibilityChanged = [this](bool show)
   {
@@ -1412,6 +1436,7 @@ void MainComponent::bindUndoManager(PitchUndoManager *manager)
           safeThis->undoManager && safeThis->undoManager->canUndo(),
           safeThis->undoManager && safeThis->undoManager->canRedo());
     };
+    wireDebugJournal(undoManager);
   }
 
   if (commandManager)
@@ -1687,6 +1712,22 @@ void MainComponent::mouseDoubleClick(const juce::MouseEvent &e)
 void MainComponent::timerCallback()
 {
   dispatchPendingDragAudition();
+
+  // Debug recording: a new render swapped in while playing (AudioEngine).
+  if (auto *engine = editorController ? editorController->getAudioEngine() : nullptr)
+  {
+    const auto swap = engine->getSwapReport();
+    if (swap.count != lastJournalSwapCount)
+    {
+      lastJournalSwapCount = swap.count;
+      if (auto *project = getProject())
+        project->getDebugJournal().recordEvent(
+            "swap", "new audio swapped in while playing", swap.positionSeconds,
+            juce::String::formatted("waited %.2f s for the playhead to leave the re-rendered part%s",
+                                    swap.waitedSeconds,
+                                    swap.forcedInside ? "; gave up, crossfaded inside it" : ""));
+    }
+  }
 
   // The open project's file, or its recording until it is saved.
   {
@@ -4247,7 +4288,10 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID> &commands)
       CommandIDs::zoomInVertical,
       CommandIDs::zoomOutVertical,
       CommandIDs::zoomToSelection,
-      CommandIDs::zoomToFullLength};
+      CommandIDs::zoomToFullLength,
+
+      // Debug recording
+      CommandIDs::debugMark};
 
   commands.addArray(commandArray, sizeof(commandArray) / sizeof(commandArray[0]));
 }
@@ -4466,6 +4510,13 @@ void MainComponent::getCommandInfo(juce::CommandID commandID,
     result.setActive(project != nullptr);
     break;
 
+  case CommandIDs::debugMark:
+    result.setInfo(TR("command.debug_mark"), TR("command.debug_mark.desp"),
+                   TR("category.view"), 0);
+    result.addDefaultKeypress('m', juce::ModifierKeys::noModifiers);
+    result.setActive(project != nullptr && project->getDebugJournal().isEnabled());
+    break;
+
   default:
     break;
   }
@@ -4475,6 +4526,10 @@ bool MainComponent::perform(const ApplicationCommandTarget::InvocationInfo &info
 {
   switch (info.commandID)
   {
+  case CommandIDs::debugMark:
+    markDebugJournal();
+    return true;
+
   // File commands
   case CommandIDs::openFile:
     this->openFile();
@@ -4694,4 +4749,43 @@ void MainComponent::restoreProjectPresentation()
     window->setContentComponentSize(size.x, size.y);
   else
     setSize(size.x, size.y);
+}
+
+
+// Debug recording (DebugJournal.h): every history step goes into the
+// project's journal with the notes it changed, while recording is on.
+void MainComponent::wireDebugJournal(PitchUndoManager *manager)
+{
+  if (manager == nullptr)
+    return;
+  juce::Component::SafePointer<MainComponent> safeThis(this);
+  manager->onHistoryEvent = [safeThis](const juce::String &kind, const juce::String &name)
+  {
+    if (safeThis == nullptr)
+      return;
+    if (auto *project = safeThis->getProject())
+      project->getDebugJournal().recordHistory(project->getNotes(), kind, name,
+                                               safeThis->pianoRoll.getCursorTime());
+  };
+}
+
+// M while recording: where the user heard something, at the playhead.
+void MainComponent::markDebugJournal()
+{
+  auto *project = getProject();
+  if (project == nullptr || !project->getDebugJournal().isEnabled())
+    return;
+  const double at = pianoRoll.getCursorTime();
+  project->getDebugJournal().recordMark(at);
+  project->setModified(true);
+  const int minutes = static_cast<int>(at / 60.0);
+  const double seconds = at - minutes * 60.0;
+  LOG(juce::String::formatted("debug mark at %d:%06.3f", minutes, seconds));
+  toolbar.showProgress(TR("progress.debug_marked") +
+                       juce::String::formatted(" %02d:%06.3f", minutes, seconds));
+  juce::Component::SafePointer<MainComponent> safeThis(this);
+  juce::Timer::callAfterDelay(1200, [safeThis]()
+                              {
+    if (safeThis != nullptr)
+      safeThis->toolbar.hideProgress(); });
 }

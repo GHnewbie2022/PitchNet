@@ -1,5 +1,6 @@
 #include "SourceAudio.h"
 
+#include "RecordingChange.h"
 #include "Synthesis/WarpedSource.h"
 #include "WarpLayer.h"
 #include "../Utils/AudioResampler.h"
@@ -69,11 +70,26 @@ bool attachRecording(Project &project, const juce::File &projectFile,
   const double expectedSeconds =
       audioData.originalWaveform.getNumSamples() /
       static_cast<double>(std::max(1, audioData.sampleRate));
+  const auto &saved = project.getRecordingFingerprint();
 
   auto matches = [&](const juce::File &candidate)
   {
     if (!candidate.existsAsFile())
       return false;
+    if (project.linksRecording())
+    {
+      // A linked project needs a recording of the same shape; one edited
+      // since (another fingerprint) is the caller's to handle
+      // (recordingchange::apply).
+      juce::AudioFormatManager formats;
+      formats.registerBasicFormats();
+      std::unique_ptr<juce::AudioFormatReader> reader(
+          formats.createReaderFor(candidate));
+      return reader != nullptr && saved.isValid() &&
+             static_cast<int>(std::lround(reader->sampleRate)) == saved.sampleRate &&
+             static_cast<int>(reader->numChannels) == saved.channels &&
+             reader->lengthInSamples == saved.samples;
+    }
     if (project.getAudioSha256().isNotEmpty() &&
         !SHA256Utils::fileSHA256(candidate).equalsIgnoreCase(
             project.getAudioSha256()))
@@ -102,8 +118,18 @@ bool attachRecording(Project &project, const juce::File &projectFile,
     if (!matches(candidate) || !load(audioData, candidate))
       continue;
     project.setFilePath(candidate);
+    if (project.linksRecording())
+      return recordingchange::hydrate(project);
     if (project.getAudioSha256().isEmpty())
       project.setAudioSha256(SHA256Utils::fileSHA256(candidate));
+    // The recording is the one analysed: saving links it from now on, with
+    // the analysis copy as the recording gives it.
+    if (!saved.isValid())
+    {
+      recordingchange::adoptRecording(project);
+      project.setRecordingFingerprint(recordingchange::fingerprint(
+          audioData.sourceAudio, audioData.sourceSampleRate));
+    }
     // Saved projects keep no warped reference; without it every warped
     // range would read as an edit.
     if (!audioData.warpMap.isIdentity() &&

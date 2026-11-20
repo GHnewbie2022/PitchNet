@@ -361,6 +361,14 @@ private:
   void clearProjectForNewLoad(std::optional<MidiReference::State> reference = std::nullopt);
   void openProjectFile(const juce::File &file);
   void openLoadedProject(const juce::File &file, std::shared_ptr<Project> loadedProject);
+  // Shows an opened project (copied into the editor); findRecording looks
+  // for the recording of an embedded project (spec Q5).
+  void showOpenedProject(const juce::File &file, const Project &openedProject,
+                         bool findRecording);
+  // A project that links its recording (spec Q11): read it (asking for it
+  // when missing), refuse another shape, analyse again where it changed.
+  void openLinkedProject(const juce::File &file, std::shared_ptr<Project> loadedProject,
+                         const juce::File &chosen = {});
   void analyzeAudio();
   void analyzeAudio(
       Project &targetProject,
@@ -389,6 +397,11 @@ private:
   std::unique_ptr<EditorController> ownedEditorController;
   EditorController *editorController = nullptr;
   std::unique_ptr<PitchUndoManager> ownedUndoManager;
+  // Debug recording (DebugJournal.h).
+  void wireDebugJournal(PitchUndoManager *manager);
+  Project *debugJournalProject = nullptr; // the project the journal last saw opened
+  int lastJournalSwapCount = 0;          // AudioEngine swaps already recorded
+  void markDebugJournal();
   PitchUndoManager *undoManager = nullptr;
   std::unique_ptr<juce::ApplicationCommandManager> commandManager;
   bool toolGroupEnabled = true;

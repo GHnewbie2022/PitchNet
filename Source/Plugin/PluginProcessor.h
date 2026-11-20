@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../Audio/RecordingChange.h"
 #include "../Audio/Engine/PluginTransportController.h"
 #include "../Audio/RealtimePitchProcessor.h"
 #include "../Audio/SourceAudio.h"
@@ -223,12 +224,15 @@ public:
   // pitch/formant offsets — only such projects publish per-region
   // processed audio; unedited regions play their original source.
   static bool projectHasRegionEdits(const Project &project);
+  // hostRecording: the host's recording as it reads now (spec Q11); the
+  // analysed project remembers it.
   void analyzeAraRegionForCanvas(const juce::String &regionKey,
                                  PitchNetAudioModification *modification,
                                  juce::int64 startSampleInModification,
                                  double timelineOffsetSeconds,
                                  const juce::AudioBuffer<float> &buffer,
-                                 double sampleRate);
+                                 double sampleRate,
+                                 const recording::Fingerprint &hostRecording = {});
 
   // Clear the selection when the host destroys the selected playback region.
   // Its Project and undo history belong to the modification and are kept.
@@ -253,9 +257,22 @@ public:
   bool hasAraRegionProject(const juce::String &regionKey) const;
   bool araRegionProjectNeedsSourceHydration(
       const juce::String &regionKey) const;
+  // hostRecording (spec Q11): the host's recording as it reads now. One of
+  // another shape than the saved is refused (*refused, a message, nothing
+  // changed: putting the edited file back restores everything); one edited
+  // since is analysed again where it changed (recordingchange::apply), the
+  // modification plays the new recording at once where nothing is edited,
+  // and the edited notes there render when the region is shown
+  // (finishRecordingChange).
   bool hydrateAraRegionProject(const juce::String &regionKey,
                                const juce::AudioBuffer<float> &sourceBuffer,
-                               double sourceSampleRate);
+                               double sourceSampleRate,
+                               const recording::Fingerprint &hostRecording = {},
+                               PitchNetAudioModification *modification = nullptr,
+                               bool *refused = nullptr);
+  // A region analysed again on hydration, now on the canvas: render its
+  // queued notes and tell the user.
+  void finishRecordingChange(const juce::String &regionKey);
   bool araRegionProjectAppearsToCover(const juce::String &regionKey,
                                       double regionStart,
                                       double regionEnd) const;
@@ -504,6 +521,12 @@ private:
   // The edit's playback pieces (sourceaudio::differingPieces) for `mod`, from
   // `composite`, the edit's 44.1 kHz composite. False if the recording could
   // not be read; the modification then plays the composite as before.
+  void applyRecordingChange(const juce::String &regionKey, Project &project,
+                            const recording::Fingerprint &saved,
+                            const recording::Fingerprint &now,
+                            PitchNetAudioModification *modification);
+  // Regions analysed again on hydration (spec Q11) and not yet rendered.
+  std::map<juce::String, recordingchange::Update> recordingChanges;
   bool buildPlaybackPieces(const juce::String &key,
                            PitchNetAudioModification &modification,
                            const AudioData &edit,

@@ -49,7 +49,8 @@ private:
     /// Install a newly built cache. Keeps the outgoing buffer alive so
     /// processBlock() can ramp between the two instead of cutting.
     /// Caller must hold bufferLock.
-    void publishProcessedBuffer(juce::AudioBuffer<float>&& buffer);
+    void publishProcessedBuffer(juce::AudioBuffer<float>&& buffer,
+                                std::vector<uint64_t>&& hashes);
 
     Project* project = nullptr;
     double sampleRate = 44100.0;
@@ -63,6 +64,16 @@ private:
     juce::AudioBuffer<float> processedBuffer;
     juce::AudioBuffer<float> previousProcessedBuffer;
     int swapFadeRemaining = 0;
+    // A new cache waits while the host plays inside the part it changed (a
+    // crossfade between two renders there cancels): the outgoing cache keeps
+    // playing until the read position leaves that part, or a loop inside it
+    // has waited kMaxSwapDeferBlocks. Block hashes (BufferHashes.h) of both
+    // caches find the part. Under bufferLock.
+    static constexpr int kMaxSwapDeferBlocks = 200;
+    bool swapWaiting = false;
+    int swapDeferredBlocks = 0;
+    juce::int64 swapDiffStart = -1, swapDiffEnd = -1;
+    std::vector<uint64_t> processedHashes, previousHashes;
     std::atomic<bool> ready{false};
     std::atomic<std::uint64_t> invalidateGeneration{0};
     std::atomic<double> position{0.0};

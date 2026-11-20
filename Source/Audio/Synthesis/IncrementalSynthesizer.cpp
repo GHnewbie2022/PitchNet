@@ -649,6 +649,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     constexpr int kBoundaryReach = 12; // frames the base smoothing reaches past a boundary
     auto &notes = project->getNotes();
     std::vector<Note *> neighbours;
+    journalNeighbours.clear();
     for (const auto &changed : notes) {
       if (changed.isRest() || !changed.isDirty())
         continue;
@@ -665,6 +666,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     for (auto *note : neighbours) {
       note->markDirty();
       note->markSynthDirty();
+      journalNeighbours.push_back(note->getStartFrame());
     }
   }
 
@@ -932,6 +934,23 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   const size_t capturedNoteCount = project->getNotes().size();
   auto capturedCancelFlag = cancelFlag;
   auto capturedProject = project;
+  // Debug recording: what this pass was asked to do (DebugJournal.h).
+  juce::String journalDetail;
+  if (project->getDebugJournal().isEnabled()) {
+    juce::StringArray dirtyNotes, neighbourNotes, commits;
+    for (const auto &note : project->getNotes())
+      if (!note.isRest() && note.isDirty())
+        dirtyNotes.add(juce::String(note.getStartFrame()));
+    for (const int start : journalNeighbours)
+      neighbourNotes.add(juce::String(start));
+    for (const auto &range : commitFrameRanges)
+      commits.add("[" + juce::String(range.start) + "," + juce::String(range.end) + ")");
+    journalDetail = "dirty notes " + dirtyNotes.joinIntoString(" ") +
+                    "; rendered with them " + neighbourNotes.joinIntoString(" ") +
+                    "; f0 dirty [" + juce::String(f0DirtyStart) + "," + juce::String(f0DirtyEnd) +
+                    "); render [" + juce::String(startFrame) + "," + juce::String(endFrame) +
+                    "); commit " + commits.joinIntoString(" ") + " (frames, 512 samples)";
+  }
   // Paired with the synthesizeRegion lines above: without an outcome line a
   // log cannot tell a render that committed from one that was superseded.
   const double renderStartMs = juce::Time::getMillisecondCounterHiRes();
@@ -948,7 +967,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
        capturedEndFrame, hopSize, currentJobId, onComplete, elapsedText,
        formantShifts, formantF0, formantSampleRate, hasGlobalFormant, usePsola,
        hasDirtyNoteAnchors, f0DirtyStart, f0DirtyEnd,
-       capturedNoteCount, commitFrameRanges = std::move(commitFrameRanges),
+       capturedNoteCount, journalDetail, commitFrameRanges = std::move(commitFrameRanges),
        blendMask = std::move(blendMask),
        originalSegment = std::move(originalSegment)](
           std::vector<float> synthesizedAudio) {
@@ -974,7 +993,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
         std::thread([this, capturedCancelFlag, capturedProject,
                      capturedStartFrame, capturedEndFrame, hopSize,
                      currentJobId, onComplete, elapsedText, hasDirtyNoteAnchors,
-                     f0DirtyStart, f0DirtyEnd, capturedNoteCount,
+                     f0DirtyStart, f0DirtyEnd, capturedNoteCount, journalDetail,
                      commitFrameRanges, blendMask, originalSegment,
                      formantShifts, formantF0, formantSampleRate, hasGlobalFormant, usePsola,
                      synthesizedAudio = std::move(synthesizedAudio)]() mutable {
@@ -1306,6 +1325,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
           // kept recording too smeared sibilants with a gliding fractional
           // delay (a consonant wobbled after a whole-song render).
           const auto synthHilbert = splicealign::hilbert(synthGained);
+          const bool journalOn = capturedProject->getDebugJournal().isEnabled();
+          std::vector<debugjournal::Splice> journalSplices;
           for (const auto &range : commitFrameRanges) {
             const int bodyStart =
                 (range.start - capturedStartFrame) * hopSize;
@@ -1440,6 +1461,14 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               while (next.angle - previous.angle < -kPi)
                 next.angle += 2.0 * kPi;
             }
+            if (journalOn)
+              for (size_t k = 0; k < anchors.size(); ++k)
+                journalSplices.push_back(
+                    {startSample + anchors[k].at,
+                     k == 0 ? (fadeLeft ? "left" : "left (no fade)")
+                            : k + 1 == anchors.size() ? (fadeRight ? "right" : "right (no fade)")
+                                                      : "reset-edge",
+                     anchors[k].alignment.lag, anchors[k].alignment.angle});
             size_t segment = 0;
             for (int sample = firstSample; sample < lastSample; ++sample) {
               while (segment + 2 < anchors.size() && sample >= anchors[segment + 1].at)
@@ -1476,6 +1505,12 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               mask = std::max(mask, blend);
             }
           }
+
+          // The composite as it was before this pass wrote (debug recording).
+          std::vector<float> journalBefore;
+          if (journalOn && audioData.waveform.getNumChannels() > 0)
+            journalBefore.assign(audioData.waveform.getReadPointer(0, startSample),
+                                 audioData.waveform.getReadPointer(0, startSample) + samplesToWrite);
 
           for (int channel = 0; channel < audioData.waveform.getNumChannels();
                ++channel) {
@@ -1596,6 +1631,34 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                 }
               }
             }
+          }
+
+          // Debug recording: what this pass changed in the composite, with a
+          // little around it, before and after.
+          if (journalOn && !journalBefore.empty()) {
+            const float *after = audioData.waveform.getReadPointer(0, startSample);
+            int first = -1, last = -1;
+            for (int i = 0; i < samplesToWrite; ++i)
+              if (after[i] != journalBefore[static_cast<size_t>(i)]) {
+                if (first < 0)
+                  first = i;
+                last = i;
+              }
+            debugjournal::Entry entry;
+            entry.name = "render pass";
+            entry.detail = journalDetail;
+            entry.splices = std::move(journalSplices);
+            if (first >= 0) {
+              constexpr int kAround = 2048;
+              first = std::max(0, first - kAround);
+              last = std::min(samplesToWrite - 1, last + kAround);
+              entry.audioStart = startSample + first;
+              entry.audioBefore.assign(journalBefore.begin() + first, journalBefore.begin() + last + 1);
+              entry.audioAfter.assign(after + first, after + last + 1);
+            } else {
+              entry.detail += "; wrote nothing";
+            }
+            capturedProject->getDebugJournal().recordRender(std::move(entry));
           }
 
           // Persist only semantic render state. Previously this loop stored a

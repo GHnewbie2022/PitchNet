@@ -396,10 +396,8 @@ private:
   void updatePreviewButtonBounds();
   void triggerPreviewForNote(Note &note);
   std::vector<Note *> getResetTargetNotes(Note &note) const;
-  std::unique_ptr<UndoableAction> createResetTimingAction(Note &note);
   // Recuts the note (and the selected notes) the way the analysis cut them.
   std::unique_ptr<UndoableAction> createRestoreSeparationAction(Note &note);
-  void resetNoteTiming(Note &note);
   // Runs a Restore action, records it, and reports it via
   // onHistoryActionApplied so it is processed like undo/redo.
   void applyRestoreAction(std::unique_ptr<UndoableAction> action);

@@ -54,6 +54,9 @@ namespace CommandIDs
         zoomInVertical      = 0x2062,
         zoomOutVertical     = 0x2063,
         zoomToSelection     = 0x2064,
-        zoomToFullLength    = 0x2065
+        zoomToFullLength    = 0x2065,
+
+        // Debug recording (0x2070-0x207F)
+        debugMark           = 0x2070
     };
 }

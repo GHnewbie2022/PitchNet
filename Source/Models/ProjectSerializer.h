@@ -16,7 +16,11 @@ public:
     // 6: the warp layer (WarpMap.h). Older formats kept per-note timing that
     // the warp map cannot reproduce, so they are refused (spec Q3) and
     // lastLoadWasLegacy() says why.
-    static constexpr int FORMAT_VERSION = 6;
+    // 7: a project file may link its recording instead of embedding the
+    // audio (spec Q11, RecordingFingerprint.h): "recording" and
+    // "editPieces" in place of "waveform", "originalWaveform" and
+    // "melSpectrogram". Version 6 files still open as before.
+    static constexpr int FORMAT_VERSION = 7;
     static constexpr int FIRST_WARP_FORMAT_VERSION = 6;
 
     /** True when the last fromJson()/fromBinaryArchive() call refused a

@@ -13,6 +13,7 @@
 #   ctest --test-dir build --output-on-failure
 
 set(PITCHNET_TEST_SOURCES
+    AudioEngineSwapTests.cpp
     AraRegionMergeTests.cpp
     AraRegionSliceTests.cpp
     AraTempoMapTests.cpp
@@ -28,6 +29,7 @@ set(PITCHNET_TEST_SOURCES
     PitchEnsembleTests.cpp
     PluginStateArchiveTests.cpp
     ProjectModificationRangeTests.cpp
+    RecordingChangeTests.cpp
     TiltPivotTests.cpp
     TimelineCoordinateTests.cpp
     UndoNoteRefTests.cpp

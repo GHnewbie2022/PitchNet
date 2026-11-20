@@ -2,7 +2,10 @@
 #include "../Utils/AppLogger.h"
 #include "../Utils/AudioResampler.h"
 #include "SourceAudio.h"
+#include "BufferHashes.h"
+#include <tuple>
 #include <algorithm>
+#include <cstring>
 
 AudioEngine::AudioEngine() {}
 
@@ -304,6 +307,29 @@ void AudioEngine::getNextAudioBlock(
     }
   }
 
+  // Just after a swap: crossfade from the outgoing audio kept at the swap
+  // into what was output, sample for sample (unity rate only: otherwise the
+  // tail and the output are not on the same grid, and the swap is plain).
+  if (swapTailRemaining > 0 && swapTailChannels > 0) {
+    if (unity) {
+      const int count = std::min(numOutputSamples, swapTailRemaining);
+      const int first = swapTailLength - swapTailRemaining;
+      for (int ch = 0; ch < outputBuffer->getNumChannels(); ++ch) {
+        const auto &tail = swapTail[static_cast<size_t>(std::min(ch, swapTailChannels - 1))];
+        float *out = outputBuffer->getWritePointer(ch, startSample);
+        for (int i = 0; i < count; ++i) {
+          const float t = static_cast<float>(first + i) / static_cast<float>(swapTailLength);
+          const float weight = t * t * (3.0f - 2.0f * t);
+          const float old = tail[static_cast<size_t>(first + i)];
+          out[i] = old + weight * (out[i] - old);
+        }
+      }
+      swapTailRemaining -= count;
+    } else {
+      swapTailRemaining = 0;
+    }
+  }
+
   // Apply volume gain (lock-free read)
   float gain = volumeGain.load();
   if (std::abs(gain - 1.0f) > 0.0001f) // Only apply if not unity gain
@@ -343,10 +369,20 @@ void AudioEngine::getNextAudioBlock(
 
 void AudioEngine::changeListenerCallback(juce::ChangeBroadcaster *source) {}
 
+std::vector<uint64_t> AudioEngine::blockHashes(const juce::AudioBuffer<float> &buffer) {
+  return bufferhashes::of(buffer);
+}
+
 void AudioEngine::publishWaveform(const juce::AudioBuffer<float> &buffer,
                                   int sampleRate) {
+  auto hashes = blockHashes(buffer);
   {
     const juce::SpinLock::ScopedLockType lock(pendingWaveformLock);
+    // The part that differs from what is playing (a different length: all).
+    std::tie(pendingDiffStart, pendingDiffEnd) =
+        bufferhashes::differing(hashes, playingHashes, buffer.getNumSamples());
+    pendingHashes = std::move(hashes);
+    pendingDeferredBlocks = 0;
     // Release the previously retired buffer here, on the message thread, so
     // the audio thread's move-assignment in applyPendingWaveformSwap() never
     // has to free anything.
@@ -371,12 +407,37 @@ void AudioEngine::applyPendingWaveformSwap() {
 
   const int newLength = pendingWaveform.getNumSamples();
 
-  // Blend the outgoing audio into the head of the incoming buffer at the
-  // playhead. Both buffers are versions of the same timeline and are identical
-  // outside the re-rendered region, so the ramp is linear (smoothstep-weighted)
-  // rather than equal-power: cos/sin sums to sqrt(2) on correlated content and
-  // would trade the click for a level bump. Nothing before the playhead is
-  // touched.
+  // Playing inside the part the two buffers differ in: keep the outgoing
+  // audio until the playhead is out of it (crossfading two renders there
+  // cancels), unless that takes too long (a loop inside the part).
+  const int64_t playhead = currentPosition.load();
+  const bool inside = pendingDiffStart >= 0 &&
+                      playhead + kWaveformSwapFadeSamples > pendingDiffStart &&
+                      playhead < pendingDiffEnd;
+  if (playing.load() && inside && pendingDeferredBlocks < kMaxSwapDeferBlocks) {
+    ++pendingDeferredBlocks;
+    return;
+  }
+  if (playing.load()) {
+    const double rate = std::max(1, pendingWaveformSampleRate);
+    lastSwapSeconds.store(static_cast<double>(playhead) / rate);
+    lastSwapWaitedSeconds.store(currentSampleRate > 0.0
+                                    ? pendingDeferredBlocks * 512.0 / currentSampleRate
+                                    : 0.0);
+    lastSwapForced.store(inside);
+    swapCount.fetch_add(1);
+  }
+
+  // Keep the outgoing audio's next samples at the playhead; the block
+  // that plays them crossfades from them into the incoming audio as it is
+  // output (getNextAudioBlock). The crossfade used to be written into the
+  // incoming buffer itself, so a swap made inside the re-rendered part (two
+  // renders at unrelated phases, cancelling) stayed in the playing buffer as
+  // a click heard on every pass until the buffer was rebuilt - never in the
+  // saved or exported audio. The ramp is linear (smoothstep-weighted) rather
+  // than equal-power: cos/sin sums to sqrt(2) on correlated content and would
+  // trade the click for a level bump.
+  swapTailRemaining = 0;
   const int64_t position = currentPosition.load();
   if (playing.load() && newLength > 0 && position >= 0 &&
       position < static_cast<int64_t>(newLength) &&
@@ -385,28 +446,22 @@ void AudioEngine::applyPendingWaveformSwap() {
         std::min<int64_t>(newLength - position,
                           currentWaveform.getNumSamples() - position));
     const int fadeSamples = std::min(kWaveformSwapFadeSamples, available);
-    const int channels =
-        std::min(pendingWaveform.getNumChannels(),
-                 currentWaveform.getNumChannels());
-
-    for (int channel = 0; channel < channels; ++channel) {
+    swapTailChannels = std::min(static_cast<int>(swapTail.size()),
+                                currentWaveform.getNumChannels());
+    for (int channel = 0; channel < swapTailChannels; ++channel) {
       const float *outgoing =
           currentWaveform.getReadPointer(channel, static_cast<int>(position));
-      float *incoming =
-          pendingWaveform.getWritePointer(channel, static_cast<int>(position));
-      for (int sample = 0; sample < fadeSamples; ++sample) {
-        const float t =
-            static_cast<float>(sample) / static_cast<float>(fadeSamples);
-        const float weight = t * t * (3.0f - 2.0f * t);
-        incoming[sample] =
-            outgoing[sample] + weight * (incoming[sample] - outgoing[sample]);
-      }
+      std::copy(outgoing, outgoing + fadeSamples,
+                swapTail[static_cast<size_t>(channel)].begin());
     }
+    swapTailLength = swapTailRemaining = fadeSamples;
   }
 
   retiredWaveform = std::move(currentWaveform);
   currentWaveform = std::move(pendingWaveform);
   waveformSampleRate = pendingWaveformSampleRate;
+  std::swap(playingHashes, pendingHashes); // no allocation on the audio thread
+  pendingDiffStart = pendingDiffEnd = -1;
 
   if (currentSampleRate > 0)
     playbackRatio = static_cast<double>(waveformSampleRate) / currentSampleRate;
@@ -469,6 +524,7 @@ void AudioEngine::loadWaveform(const juce::AudioBuffer<float> &sourceBuffer,
   if (preservePosition && playing.load() && !rateChanged) {
     publishWaveform(buffer, sampleRate);
   } else {
+    auto hashes = blockHashes(buffer); // before the locks: the audio thread waits on them
     const juce::SpinLock::ScopedLockType lock(waveformLock);
 
     // Drop any handoff that has not been picked up yet; this buffer supersedes
@@ -478,6 +534,8 @@ void AudioEngine::loadWaveform(const juce::AudioBuffer<float> &sourceBuffer,
       const juce::SpinLock::ScopedLockType pending(pendingWaveformLock);
       pendingWaveform.setSize(0, 0);
       retiredWaveform.setSize(0, 0);
+      playingHashes = std::move(hashes);
+      pendingDiffStart = pendingDiffEnd = -1;
     }
 
     currentWaveform = buffer;

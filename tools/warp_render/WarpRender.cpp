@@ -13,6 +13,7 @@
 // --snapshot draws the piano roll in the Warp and Timing tools to
 // <prefix>_*.png, with a drag of the first anchor pushed past its limit.
 #include "../../Source/Audio/SourceAudio.h"
+#include "../../Source/Audio/RecordingChange.h"
 #include "../../Source/Audio/PitchEnsemble.h"
 #include "../../Source/Audio/EditorController.h"
 #include "../../Source/Audio/WarpLayer.h"
@@ -3206,6 +3207,114 @@ int main(int argc, char **argv)
   // pitch, gain or formant differ from the original is synthesized now (the
   // same incremental path as an edit in the App), and the project is saved
   // with the new composite so Cubase plays the edit.
+  // WarpRender <in.pitchnet> <out.pitchnet> --reopen [recording]: open as
+  // the App does (spec Q11). A project that links its recording reads it
+  // (the saved path, or the file given): refused if its shape differs,
+  // analysed again where its content changed, and the edited notes there
+  // rendered. An embedded project finds its recording and is saved linked.
+  if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--reopen")
+  {
+    Project loaded;
+    if (!ProjectSerializer::loadFromFile(loaded, input))
+    {
+      std::fprintf(stderr, "could not load %s\n", input.getFullPathName().toRawUTF8());
+      return 1;
+    }
+    juce::String ortError;
+    if (!OnnxRuntime::initialise(&ortError))
+    {
+      std::fprintf(stderr, "ONNX Runtime: %s\n", ortError.toRawUTF8());
+      return 1;
+    }
+    EditorController controller(false);
+    controller.reloadInferenceModels(false);
+    {
+      const auto start = juce::Time::getMillisecondCounter();
+      while (!controller.isSelectedPitchDetectorLoaded() || controller.isInferenceBusy())
+      {
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
+        if (juce::Time::getMillisecondCounter() - start > 120000)
+        {
+          std::fprintf(stderr, "pitch model did not load\n");
+          return 1;
+        }
+      }
+    }
+    controller.setProject(std::make_unique<Project>(loaded));
+    auto &p = *controller.getProject();
+    const auto started = juce::Time::getMillisecondCounterHiRes();
+    if (p.linksRecording())
+    {
+      const juce::File file =
+          argc >= 5 ? juce::File::getCurrentWorkingDirectory().getChildFile(
+                          juce::String::fromUTF8(argv[4]))
+                    : p.getFilePath();
+      const auto opened = recordingchange::openLinked(
+          p, file,
+          [&](const float *samples, int numSamples, int frames, std::vector<float> &f0,
+              std::vector<bool> &voiced) {
+            return controller.detectPitch(samples, numSamples, frames, f0, voiced);
+          });
+      if (opened.result != recordingchange::Opened::Result::opened)
+      {
+        std::printf("refused: %s (file %d Hz %d ch %lld samples, saved %d Hz %d ch %lld)\n",
+                    opened.result == recordingchange::Opened::Result::otherShape
+                        ? "another shape" : "unreadable",
+                    opened.found.sampleRate, opened.found.channels,
+                    static_cast<long long>(opened.found.samples),
+                    p.getRecordingFingerprint().sampleRate,
+                    p.getRecordingFingerprint().channels,
+                    static_cast<long long>(p.getRecordingFingerprint().samples));
+        controller.requestShutdown();
+        return 3;
+      }
+      std::printf("opened %s, changed %d, detected %d, %.0f ms\n",
+                  file.getFullPathName().toRawUTF8(), opened.changed ? 1 : 0,
+                  opened.update.detected ? 1 : 0,
+                  juce::Time::getMillisecondCounterHiRes() - started);
+      for (const auto &[from, to] : opened.update.audioFrames)
+        std::printf("audio changed frames [%d,%d)\n", from, to);
+      for (const auto &[from, to] : opened.update.pitchFrames)
+        std::printf("pitch changed frames [%d,%d)\n", from, to);
+      std::printf("notes to render %d\n", opened.update.notesToRender);
+      for (const auto &note : p.getNotes())
+        if (!note.isRest() && note.isDirty())
+          std::printf("render note %d-%d midi %.2f\n", note.getStartFrame(), note.getEndFrame(),
+                      note.getMidiNote());
+      if (opened.update.notesToRender > 0)
+      {
+        const auto renderStart = juce::Time::getMillisecondCounterHiRes();
+        std::atomic<bool> pending{false}, done{false}, ok{false};
+        controller.resynthesizeIncrementalAsync(
+            p, nullptr, [&](bool success) { ok = success; done = true; }, pending, false);
+        if (!waitFor(done, 600000) || !ok.load())
+        {
+          std::fprintf(stderr, "resynth failed\n");
+          controller.requestShutdown();
+          return 1;
+        }
+        std::printf("rendered in %.0f ms\n",
+                    juce::Time::getMillisecondCounterHiRes() - renderStart);
+      }
+    }
+    else
+    {
+      if (!sourceaudio::attachRecording(p, input))
+      {
+        std::fprintf(stderr, "recording not found\n");
+        controller.requestShutdown();
+        return 1;
+      }
+      std::printf("embedded project, recording %s attached, fingerprint %d blocks\n",
+                  p.getFilePath().getFullPathName().toRawUTF8(),
+                  static_cast<int>(p.getRecordingFingerprint().hashes.size()));
+    }
+    const bool saved = ProjectSerializer::saveToFile(p, output);
+    controller.requestShutdown();
+    std::printf("saved %s (%lld bytes)\n", output.getFullPathName().toRawUTF8(),
+                static_cast<long long>(output.getSize()));
+    return saved ? 0 : 1;
+  }
   if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--apply")
   {
     if (argc < 6 || juce::String::fromUTF8(argv[4]) != "--before")
@@ -3301,6 +3410,161 @@ int main(int argc, char **argv)
                 output.getFullPathName().toRawUTF8());
     return 0;
   }
+  // WarpRender <project.pitchnet> <ignored> --debug-report: the project's
+  // debug recording (DebugJournal.h) read back: every step, every render pass
+  // and its splices, and at each mark the passes that wrote there and how the
+  // composite there compares with the recording.
+  if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--debug-report")
+  {
+    Project project;
+    if (!ProjectSerializer::loadFromFile(project, input))
+      return 1;
+    auto entries = project.getDebugJournal().copyEntries();
+    // --debug-report <time> [dump folder]: also analyse that time (seconds) as
+    // if marked last, and write the audio each pass wrote around every mark
+    // (before / after, float32 raw, 44.1 kHz) into the folder.
+    if (argc >= 5)
+    {
+      debugjournal::Entry extra;
+      extra.kind = "mark";
+      extra.name = "given on the command line";
+      extra.playhead = juce::String::fromUTF8(argv[4]).getDoubleValue();
+      extra.time = std::numeric_limits<juce::int64>::max();
+      entries.push_back(extra);
+    }
+    const juce::File dumpDir = argc >= 6 ? juce::File::getCurrentWorkingDirectory().getChildFile(
+                                               juce::String::fromUTF8(argv[5]))
+                                         : juce::File();
+    const auto &audio = project.getAudioData();
+    const int rate = audio.sampleRate > 0 ? audio.sampleRate : SAMPLE_RATE;
+    auto clockOf = [](double s) {
+      const int m = static_cast<int>(s / 60.0);
+      return juce::String::formatted("%02d:%06.3f", m, s - m * 60.0);
+    };
+    auto noteText = [](const debugjournal::NoteState &n) {
+      return juce::String::formatted("%d-%d midi %.2f%s%s%s%s", n.start, n.end, n.midi,
+                                     std::abs(n.tiltLeft) + std::abs(n.tiltRight) > 1e-4f
+                                         ? juce::String::formatted(" tilt %.2f/%.2f@%.2f", n.tiltLeft, n.tiltRight, n.tiltPivot).toRawUTF8() : "",
+                                     std::abs(n.drift - 1.0f) > 1e-4f ? juce::String::formatted(" drift %.2f", n.drift).toRawUTF8() : "",
+                                     std::abs(n.volume) > 1e-4f ? juce::String::formatted(" vol %.1fdB", n.volume).toRawUTF8() : "",
+                                     std::abs(n.formant) > 1e-4f ? juce::String::formatted(" formant %.2f", n.formant).toRawUTF8() : "");
+    };
+    auto whenOf = [](juce::int64 ms) {
+      const juce::Time when(ms);
+      return when.formatted("%Y-%m-%d %H:%M:%S") + juce::String::formatted(".%03d", when.getMilliseconds());
+    };
+    std::printf("debug recording: %zu entries, recording %s\n", entries.size(),
+                project.getDebugJournal().isEnabled() ? "on" : "off");
+    int index = 0;
+    for (const auto &e : entries)
+    {
+      ++index;
+      if (e.kind == "start")
+        std::printf("\n");
+      std::printf("#%d %s %-6s %s  (playhead %s)\n", index, whenOf(e.time).toRawUTF8(), e.kind.toRawUTF8(),
+                  e.name.toRawUTF8(), clockOf(e.playhead).toRawUTF8());
+      if (e.kind == "start")
+      {
+        std::printf("     %zu notes\n", e.after.size());
+        continue;
+      }
+      for (const auto &n : e.before)
+        std::printf("     - %s\n", noteText(n).toRawUTF8());
+      for (const auto &n : e.after)
+        std::printf("     + %s\n", noteText(n).toRawUTF8());
+      if (e.detail.isNotEmpty())
+        std::printf("     %s\n", e.detail.toRawUTF8());
+      for (const auto &s : e.splices)
+        std::printf("     splice %s %-10s lag %+.1f angle %+.2f\n",
+                    clockOf(static_cast<double>(s.at) / rate).toRawUTF8(), s.kind.toRawUTF8(), s.lag, s.angle);
+      if (!e.audioAfter.empty())
+        std::printf("     wrote %s - %s\n", clockOf(static_cast<double>(e.audioStart) / rate).toRawUTF8(),
+                    clockOf(static_cast<double>(e.audioStart + e.audioAfter.size()) / rate).toRawUTF8());
+    }
+    // At each mark: the passes that wrote there (latest last), their splices
+    // near it, and the composite against the recording around it.
+    auto levelDb = [](const float *x, int n) {
+      double e = 0.0;
+      for (int i = 0; i < n; ++i)
+        e += static_cast<double>(x[i]) * x[i];
+      return 10.0 * std::log10(e / std::max(1, n) + 1e-24);
+    };
+    const auto &reference = warp::reference(audio);
+    for (const auto &mark : entries)
+    {
+      if (mark.kind != "mark")
+        continue;
+      const int at = static_cast<int>(mark.playhead * rate);
+      std::printf("\n== mark %s (set %s)\n", clockOf(mark.playhead).toRawUTF8(),
+                  whenOf(mark.time).toRawUTF8());
+      int pass = 0;
+      for (const auto &e : entries)
+      {
+        ++pass;
+        if (e.kind != "render" || e.time > mark.time)
+          continue;
+        const int from = e.audioStart, to = e.audioStart + static_cast<int>(e.audioAfter.size());
+        const int near = static_cast<int>(0.3 * rate);
+        if (to < at - near || from > at + near)
+          continue;
+        std::printf("   pass #%d wrote %s - %s: %s\n", pass,
+                    clockOf(static_cast<double>(from) / rate).toRawUTF8(),
+                    clockOf(static_cast<double>(to) / rate).toRawUTF8(), e.detail.toRawUTF8());
+        if (dumpDir != juce::File())
+        {
+          dumpDir.createDirectory();
+          for (const auto &[suffix, samples] : {std::pair<const char *, const std::vector<float> *>{"before", &e.audioBefore},
+                                                 {"after", &e.audioAfter}})
+          {
+            const auto file = dumpDir.getChildFile(juce::String::formatted("pass%04d_%d_%s.f32", pass, e.audioStart, suffix));
+            file.deleteFile();
+            juce::FileOutputStream out(file);
+            out.write(samples->data(), samples->size() * sizeof(float));
+          }
+        }
+        for (const auto &s : e.splices)
+          if (std::abs(s.at - at) < near)
+            std::printf("      splice %s (%+.0f ms from the mark) %s lag %+.1f angle %+.2f\n",
+                        clockOf(static_cast<double>(s.at) / rate).toRawUTF8(),
+                        1000.0 * (s.at - at) / rate, s.kind.toRawUTF8(), s.lag, s.angle);
+      }
+      // Composite vs recording, 256-sample windows over +-150 ms: level
+      // difference and correlation (a cancelling crossfade: a dip with the
+      // correlation going through zero or below).
+      if (audio.waveform.getNumSamples() > 0 && reference.getNumSamples() > 0)
+      {
+        // The composite as it was when the mark was set: each sample from the
+        // last pass before the mark that wrote it, else the saved composite.
+        std::vector<float> heard(audio.waveform.getReadPointer(0),
+                                 audio.waveform.getReadPointer(0) + audio.waveform.getNumSamples());
+        for (const auto &e : entries)
+          if (e.kind == "render" && e.time <= mark.time && !e.audioAfter.empty())
+            for (size_t i = 0; i < e.audioAfter.size(); ++i)
+              if (const auto k = static_cast<size_t>(e.audioStart) + i; k < heard.size())
+                heard[k] = e.audioAfter[i];
+        const float *c = heard.data();
+        const float *o = reference.getReadPointer(0);
+        const int total = std::min(static_cast<int>(heard.size()), reference.getNumSamples());
+        std::printf("   composite when marked vs recording (ms: level diff dB / correlation):\n     ");
+        for (int s = at - static_cast<int>(0.15 * rate); s < at + static_cast<int>(0.15 * rate); s += 512)
+        {
+          if (s < 0 || s + 256 > total)
+            continue;
+          double ab = 0, aa = 0, bb = 0;
+          for (int i = s; i < s + 256; ++i)
+          {
+            ab += static_cast<double>(c[i]) * o[i];
+            aa += static_cast<double>(c[i]) * c[i];
+            bb += static_cast<double>(o[i]) * o[i];
+          }
+          std::printf("%+.0f:%+.1f/%+.2f  ", 1000.0 * (s - at) / rate, levelDb(c + s, 256) - levelDb(o + s, 256),
+                      ab / std::sqrt(aa * bb + 1e-24));
+        }
+        std::printf("\n");
+      }
+    }
+    return 0;
+  }
   // WarpRender <in.pitchnet> <out.pitchnet> --drags <noteStart:midi>...: the
   // App's single-note pitch drags (SelectHandler's drag end), one after
   // another, each rendered as the App renders after it. Prints the notes each
@@ -3324,6 +3588,12 @@ int main(int argc, char **argv)
       data.melSpectrogram = mel.compute(data.originalWaveform.getReadPointer(0),
                                         data.originalWaveform.getNumSamples());
     }
+    // PITCHNET_DEBUG_RECORD: record the drags in the project's debug journal,
+    // as the App does with recording on (history steps, render passes) and a
+    // mark at each dragged note's start, as if heard there.
+    const bool record = std::getenv("PITCHNET_DEBUG_RECORD") != nullptr;
+    if (record)
+      p.getDebugJournal().start(p.getNotes(), 0.0);
     for (int k = 4; k < argc; ++k)
     {
       const juce::String arg = juce::String::fromUTF8(argv[k]);
@@ -3341,10 +3611,15 @@ int main(int argc, char **argv)
       note->markSynthDirty();
       PitchCurveProcessor::rebuildBaseFromNotes(p);
       p.markNoteEditDirtyRange(note->getStartFrame(), note->getEndFrame());
+      if (record)
+        p.getDebugJournal().recordHistory(p.getNotes(), "apply", "Drag Note Pitch",
+                                          framesToSeconds(start));
       std::atomic<bool> pending{false}, done{false}, ok{false};
       controller.resynthesizeIncrementalAsync(
           p, nullptr, [&](bool success) { ok = success; done = true; }, pending, false);
       const bool finished = waitFor(done, 600000);
+      if (record)
+        p.getDebugJournal().recordMark(framesToSeconds(start) + 0.05);
       std::printf("drag %d -> %.2f: render %s; rendered notes:", start, midi,
                   finished && ok.load() ? "ok" : "failed");
       for (const auto &n : p.getNotes())

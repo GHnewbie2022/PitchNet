@@ -1,6 +1,7 @@
 #include "../Utils/NoteAmplitude.h"
 #include "ProjectSerializer.h"
 #include "../Audio/BreathSibilanceAnalysis.h"
+#include "../Audio/RecordingChange.h"
 #include "../Utils/Constants.h"
 #include "../Utils/MelSpectrogram.h"
 #include "../Utils/PitchCurveProcessor.h"
@@ -231,8 +232,9 @@ bool readMel(juce::InputStream& in, std::vector<std::vector<float>>& mel)
 bool ProjectSerializer::lastLoadWasLegacy() { return lastLoadLegacy; }
 
 bool ProjectSerializer::saveToFile(const Project& project, const juce::File& file) {
-    // A .pitchnet document is self-contained: retain its rendered waveform and
-    // analysis caches so it can reopen without the original source audio.
+    // With its recording known (a fingerprint) the document links it and
+    // keeps only the rendered edits (spec Q11); without, it embeds the audio
+    // and the analysis caches so it reopens without the source.
     auto json = toJson(project, true, true);
     auto jsonString = juce::JSON::toString(json, true); // Pretty print
 
@@ -409,6 +411,9 @@ juce::var ProjectSerializer::toJson(const Project& project,
     loopObj->setProperty("start", loopRange.startSeconds);
     loopObj->setProperty("end", loopRange.endSeconds);
     obj->setProperty("loop", juce::var(loopObj));
+    // Debug recording (DebugJournal.h), only when there is one.
+    if (project.getDebugJournal().isEnabled() || !project.getDebugJournal().isEmpty())
+        obj->setProperty("debugJournal", project.getDebugJournal().toJson());
 
     // Notes array
     juce::Array<juce::var> notesArray;
@@ -420,12 +425,25 @@ juce::var ProjectSerializer::toJson(const Project& project,
 
     if (includePitchData)
         obj->setProperty("pitchData", pitchDataToJson(project.getAudioData()));
+    // The recording the analysis and the edits belong to (spec Q11).
+    const auto& fingerprint = project.getRecordingFingerprint();
+    if (fingerprint.isValid())
+        obj->setProperty("recording", recording::toJson(fingerprint));
     if (includeAnalysisCache) {
-        obj->setProperty("waveform", audioBufferToJson(project.getAudioData().waveform));
-        obj->setProperty("originalWaveform",
-                         audioBufferToJson(project.getAudioData().originalWaveform));
-        obj->setProperty("melSpectrogram",
-                         melSpectrogramToJson(project.getAudioData().melSpectrogram));
+        const auto& audio = project.getAudioData();
+        if (fingerprint.isValid() && audio.originalWaveform.getNumSamples() > 0 &&
+            audio.waveform.getNumSamples() > 0) {
+            // Linked: the recording is read again on open; only the rendered
+            // edits are kept, as the runs where they differ from it.
+            obj->setProperty("editPieces",
+                             recording::toJson(recordingchange::editPieces(audio)));
+        } else {
+            obj->setProperty("waveform", audioBufferToJson(audio.waveform));
+            obj->setProperty("originalWaveform",
+                             audioBufferToJson(audio.originalWaveform));
+            obj->setProperty("melSpectrogram",
+                             melSpectrogramToJson(audio.melSpectrogram));
+        }
     }
 
     juce::Array<juce::var> segmentRanges;
@@ -480,6 +498,15 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
     project.setName(json.getProperty("name", "Untitled").toString());
     project.setFilePath(juce::File(json.getProperty("audioPath", "").toString()));
     project.setAudioSha256(json.getProperty("audioSha256", "").toString());
+    project.setRecordingFingerprint(
+        recording::fingerprintFromJson(json.getProperty("recording", juce::var())));
+    // A file that links its recording carries the rendered edits as pieces;
+    // the audio is rebuilt from the recording (recordingchange::hydrate).
+    project.getLinkedEditPieces().clear();
+    project.setLinksRecording(json.hasProperty("editPieces"));
+    if (project.linksRecording())
+        project.getLinkedEditPieces() =
+            recording::piecesFromJson(json.getProperty("editPieces", juce::var()));
 
     project.uiWidth = juce::jlimit(0, 16384, static_cast<int>(json.getProperty("uiWidth", 0)));
     project.uiHeight = juce::jlimit(0, 16384, static_cast<int>(json.getProperty("uiHeight", 0)));
@@ -670,6 +697,7 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
         json.getProperty("timelineSnapWarp", false)));
 
     // Loop range
+    project.getDebugJournal().fromJson(json.getProperty("debugJournal", juce::var()));
     auto loopVar = json.getProperty("loop", juce::var());
     if (loopVar.isObject()) {
         const double loopStart = loopVar.getProperty("start", 0.0);
@@ -807,6 +835,9 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
     // Not stored: rebuilt from the pristine audio when the JSON carried it.
     // A binary archive reads its buffers after this and relabels then.
     breathsibilance::ensure(audioData);
+
+    // A recording goes on from the notes as loaded.
+    project.getDebugJournal().resync(project.getNotes());
 
     project.setModified(false);
     return true;

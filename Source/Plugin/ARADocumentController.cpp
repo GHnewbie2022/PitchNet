@@ -1839,6 +1839,7 @@ void PitchNetDocumentController::requestRegionCanvasAnalysis(
   if (processor->hasAraRegionProject(liveKey) &&
       !processor->araRegionProjectNeedsSourceHydration(liveKey)) {
     processor->showAraRegionProjectIfActive(liveKey);
+    processor->finishRecordingChange(liveKey);
     return;
   }
   if (!processor->hasAraRegionProject(liveKey)) {
@@ -1875,18 +1876,32 @@ void PitchNetDocumentController::requestRegionCanvasAnalysis(
   if (!reader.read(&buffer, 0, numSamples, 0, true, false))
     return;
 
+  // The recording as the host reads it now, every channel (spec Q11): the
+  // saved state tells from it whether the file was edited since.
+  recording::Fingerprint hostRecording;
+  {
+    juce::ARAAudioSourceReader allChannels(source);
+    hostRecording = recordingchange::fingerprint(allChannels);
+  }
+  auto *pitchModification =
+      region->getAudioModification<PitchNetAudioModification>();
+
   // ARA region archives retain edit data, but not project waveforms or mel.
   // Reattach the source and rebuild mel/rendered audio now, without running
   // pitch detection or note segmentation again.
+  bool refused = false;
   if (processor->hasAraRegionProject(liveKey) &&
-      processor->hydrateAraRegionProject(liveKey, buffer,
-                                         sourceSampleRate)) {
+      processor->hydrateAraRegionProject(liveKey, buffer, sourceSampleRate,
+                                         hostRecording, pitchModification,
+                                         &refused)) {
     processor->showAraRegionProjectIfActive(liveKey);
+    processor->finishRecordingChange(liveKey);
     return;
   }
+  // Another shape than the saved state's: told, and left as it is.
+  if (refused)
+    return;
 
-  auto *pitchModification =
-      region->getAudioModification<PitchNetAudioModification>();
   ARA_DIAG("canvasFallThroughToAnalyse key=" + liveKey + " hasProject=" +
            juce::String(processor->hasAraRegionProject(liveKey) ? 1 : 0) +
            " needsHydration=" +
@@ -1896,7 +1911,7 @@ void PitchNetDocumentController::requestRegionCanvasAnalysis(
   processor->analyzeAraRegionForCanvas(liveKey, pitchModification,
                                        /*startSampleInModification*/ 0,
                                        /*timelineOffsetSeconds*/ 0.0, buffer,
-                                       sourceSampleRate);
+                                       sourceSampleRate, hostRecording);
 }
 
 void PitchNetDocumentController::setCurrentPlaybackRegion(

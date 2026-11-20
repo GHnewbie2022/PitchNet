@@ -1,4 +1,6 @@
 #include "RealtimePitchProcessor.h"
+#include "BufferHashes.h"
+#include <tuple>
 #include "../Utils/AudioResampler.h"
 #include <algorithm>
 #include <cmath>
@@ -39,6 +41,7 @@ void RealtimePitchProcessor::prepareToPlay(double sr, int) {
       processedBuffer.setSize(0, 0);
       previousProcessedBuffer.setSize(0, 0);
       swapFadeRemaining = 0;
+      swapWaiting = false;
     }
   }
   sampleRate = sr;
@@ -132,12 +135,31 @@ bool RealtimePitchProcessor::processBlock(
       return false;
     }
 
+    // A new cache waiting: keep playing the outgoing one while inside the
+    // part the new one changed, then start the ramp where both agree.
+    const juce::AudioBuffer<float> *source = &processedBuffer;
+    if (swapWaiting) {
+      const bool inside = swapDiffStart >= 0 &&
+                          posSamples + kBufferSwapFadeSamples > swapDiffStart &&
+                          posSamples < swapDiffEnd;
+      if (hostPlaying && inside && swapDeferredBlocks < kMaxSwapDeferBlocks &&
+          previousProcessedBuffer.getNumSamples() > posSamples) {
+        ++swapDeferredBlocks;
+        source = &previousProcessedBuffer;
+        available = std::min(available, previousProcessedBuffer.getNumSamples() -
+                                            static_cast<int>(posSamples));
+      } else {
+        swapWaiting = false;
+        swapFadeRemaining = kBufferSwapFadeSamples;
+      }
+    }
+
     int toCopy = std::min(numSamples, available);
     int channelsToCopy =
-        std::min(numChannels, processedBuffer.getNumChannels());
+        std::min(numChannels, source->getNumChannels());
 
     for (int ch = 0; ch < channelsToCopy; ++ch) {
-      output.copyFrom(ch, 0, processedBuffer, ch, static_cast<int>(posSamples),
+      output.copyFrom(ch, 0, *source, ch, static_cast<int>(posSamples),
                       toCopy);
       if (toCopy < numSamples)
         output.clear(ch, toCopy, numSamples - toCopy);
@@ -186,20 +208,31 @@ bool RealtimePitchProcessor::processBlock(
 }
 
 void RealtimePitchProcessor::publishProcessedBuffer(
-    juce::AudioBuffer<float> &&buffer) {
+    juce::AudioBuffer<float> &&buffer, std::vector<uint64_t> &&hashes) {
   const bool canCrossfade =
       ready.load() && processedBuffer.getNumSamples() > 0 &&
       buffer.getNumSamples() > 0;
 
-  if (canCrossfade) {
+  if (swapWaiting && canCrossfade) {
+    // Still playing the outgoing cache: it stays the one ramped from; the
+    // cache that never played is simply replaced.
+  } else if (canCrossfade) {
     previousProcessedBuffer = std::move(processedBuffer);
-    swapFadeRemaining = kBufferSwapFadeSamples;
+    std::swap(previousHashes, processedHashes);
   } else {
     previousProcessedBuffer.setSize(0, 0, false, false, true);
-    swapFadeRemaining = 0;
+    previousHashes.clear();
   }
 
   processedBuffer = std::move(buffer);
+  processedHashes = std::move(hashes);
+  swapFadeRemaining = 0;
+  swapWaiting = canCrossfade;
+  swapDeferredBlocks = 0;
+  std::tie(swapDiffStart, swapDiffEnd) =
+      canCrossfade ? bufferhashes::differing(processedHashes, previousHashes,
+                                             processedBuffer.getNumSamples())
+                   : std::pair<int64_t, int64_t>{-1, -1};
   ready = processedBuffer.getNumSamples() > 0;
 }
 
@@ -235,6 +268,7 @@ void RealtimePitchProcessor::invalidate() {
     processedBuffer.setSize(0, 0);
     previousProcessedBuffer.setSize(0, 0);
     swapFadeRemaining = 0;
+    swapWaiting = false;
     return;
   }
 
@@ -245,8 +279,9 @@ void RealtimePitchProcessor::invalidate() {
 
   if (srcSampleRate == dstSampleRate || srcSampleRate <= 0) {
     // No resampling needed
+    auto hashes = bufferhashes::of(waveformSnapshot); // before the lock
     const juce::ScopedLock sl(bufferLock);
-    publishProcessedBuffer(std::move(waveformSnapshot));
+    publishProcessedBuffer(std::move(waveformSnapshot), std::move(hashes));
   } else {
     // Build the host-rate cache in the background. Chaining ownership of the
     // previous worker keeps destruction safe without blocking the caller.
@@ -264,10 +299,11 @@ void RealtimePitchProcessor::invalidate() {
           // adding variable-output streaming state to processBlock().
           auto resampled = AudioResampler::resample(
               waveform, srcSampleRate, dstSampleRate);
+          auto hashes = bufferhashes::of(resampled); // before the lock
           const juce::ScopedLock sl(bufferLock);
           if (invalidateGeneration.load() != generation)
             return;
-          publishProcessedBuffer(std::move(resampled));
+          publishProcessedBuffer(std::move(resampled), std::move(hashes));
         });
   }
 }

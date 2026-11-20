@@ -22,7 +22,10 @@ public:
         redoStack.clear();
         redoStack.shrink_to_fit();
 
+        const auto name = action->getName();
         undoStack.push_back(std::move(action));
+        if (onHistoryEvent)
+            onHistoryEvent("apply", name);
 
         // Limit history size
         while (undoStack.size() > maxHistory)
@@ -46,6 +49,8 @@ public:
         
         const bool requiresResynthesis = action->requiresAudioResynthesis();
         action->undo();
+        if (onHistoryEvent)
+            onHistoryEvent("undo", action->getName());
         redoStack.push_back(std::move(action));
         
         if (onHistoryChanged)
@@ -63,6 +68,8 @@ public:
         
         const bool requiresResynthesis = action->requiresAudioResynthesis();
         action->redo();
+        if (onHistoryEvent)
+            onHistoryEvent("redo", action->getName());
         undoStack.push_back(std::move(action));
         
         if (onHistoryChanged)
@@ -104,6 +111,9 @@ public:
     }
     std::function<std::unique_ptr<UndoableAction>(std::unique_ptr<UndoableAction>)> decorateAction;
     std::function<void()> onHistoryChanged;
+    // Each step as it happens - "apply" (an action added, already done),
+    // "undo" or "redo" - with the action's name (the debug recording).
+    std::function<void(const juce::String& kind, const juce::String& name)> onHistoryEvent;
     
 private:
     std::vector<std::unique_ptr<UndoableAction>> undoStack;

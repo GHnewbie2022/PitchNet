@@ -27,9 +27,11 @@ namespace PitchCurveProcessor
      * the curve: the note's edge follows the base's bend toward it smoothly.
      * Stretched notes are fitted per timeline frame through the warp. Refit
      * the curves of such notes reaching into [start, end), rebuild, and
-     * return the start frames of the notes changed.
+     * return the start frames of the notes changed. With apply false nothing
+     * is changed: the notes whose curve is not the fit are only reported.
      */
-    std::vector<int> refitUntouchedCurves(Project& project, int start, int end);
+    std::vector<int> refitUntouchedCurves(Project& project, int start, int end,
+                                          bool apply = true);
 
     /** Drop every pitch edit on the note: it sings what the analysis gave it. */
     void resetNoteToUnedited(Note& note);

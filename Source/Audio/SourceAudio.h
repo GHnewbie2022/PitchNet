@@ -45,7 +45,10 @@ bool load(AudioData &audioData, const juce::File &file);
  * A candidate must be as long as the analysed copy (and match the saved
  * fingerprint, if any). On success the project remembers the file and its
  * fingerprint, and a warped project's reference is rebuilt so build() can
- * tell edits from the warp.
+ * tell edits from the warp. A project that links its recording (spec Q11)
+ * takes a recording of the saved shape and is rebuilt from it
+ * (recordingchange::hydrate); an embedded one remembers the recording's
+ * fingerprint (RecordingFingerprint.h), so it is saved linked from then on.
  */
 bool attachRecording(Project &project, const juce::File &projectFile,
                      const juce::File &chosen = {});

@@ -115,6 +115,14 @@ public:
                         &onProgress,
                     std::function<void()> onComplete = nullptr);
 
+  // The pitch of part of the analysis audio (44.1 kHz mono), as
+  // analyzeAudio detects it with the current detector: f0 (Hz, 0 =
+  // unvoiced) and voicing over `frames` analysis frames from the first
+  // sample. False when the detector is not loaded or fails. Used to analyse
+  // again the parts of a recording edited outside (RecordingChange.h).
+  bool detectPitch(const float *samples, int numSamples, int frames,
+                   std::vector<float> &f0, std::vector<bool> &voiced);
+
   void segmentIntoNotes(Project &targetProject,
                         std::function<void()> onStreamingUpdate = nullptr,
                         std::function<void(double)> onProgress = nullptr);

@@ -14,7 +14,6 @@
 #include "../Utils/UI/Theme.h"
 #include "../Utils/PitchCurveProcessor.h"
 #include "../Utils/ScaleUtils.h"
-#include "../Undo/WarpAction.h"
 #include "../Undo/NoteActions.h"
 #include "PianoRoll/BreathSibilanceRenderer.h"
 #include "PianoRoll/PianoRollViewHelpers.h"
@@ -230,11 +229,6 @@ namespace
   {
     return note.getVolumeDb() != 0.0f || note.getSibilantBalance() != 0.0f;
   }
-  bool hasTimingEdits(const Note& note)
-  {
-    return note.getStartFrame() != note.getSrcStartFrame() ||
-           note.getEndFrame() != note.getSrcEndFrame();
-  }
 
   // Several actions as one history step: redone in order, undone backwards.
   class SequenceAction final : public UndoableAction
@@ -270,15 +264,25 @@ namespace
   public:
     ResetNoteEditsAction(Project& project, std::vector<Note*> notes,
                          bool pitch, bool formant, bool amplitude,
-                         juce::String name, std::unique_ptr<UndoableAction> timing = {})
-        : project(project), notes(noteref::refs(notes)), name(std::move(name)),
-          timing(std::move(timing))
+                         juce::String name)
+        : project(project), notes(noteref::refs(notes)), name(std::move(name))
     {
       before.reserve(notes.size());
       after.reserve(notes.size());
       // Resetting pitch drops the drawn curves on those notes.
       curvesBefore = project.getDrawnCurves();
       curvesAfter = curvesBefore;
+      // Untouched notes whose curve is not the recorded pitch's fit (the
+      // refit reports them without changing anything).
+      int reachFrom = std::numeric_limits<int>::max(), reachTo = std::numeric_limits<int>::min();
+      for (const auto* note : notes)
+      {
+        reachFrom = std::min(reachFrom, note->getStartFrame());
+        reachTo = std::max(reachTo, note->getEndFrame());
+      }
+      const auto offRecording = reachFrom < reachTo
+          ? PitchCurveProcessor::refitUntouchedCurves(project, reachFrom, reachTo, false)
+          : std::vector<int>{};
       for (const auto* note : notes)
       {
         if (pitch)
@@ -294,10 +298,17 @@ namespace
         // restored note put a handover from the render to the recording on
         // its edge - mid-voice, unaligned, next to an edited neighbour sung
         // legato (a catch at 0:08.11 after Restore on three notes and undo).
-        // A note that plays the recording now (neutral, no rendered audio
-        // of an edit in the composite) and keeps its centre plays it after
-        // too: its stored curve may differ from the analysis's only by the
-        // refit to the base around it, which is not an edit.
+        // A note that plays the recording now - neutral, no rendered audio
+        // of an edit in the composite, its centre kept, and its curve the
+        // recorded pitch over the unedited base (what the refit gives an
+        // untouched note) - plays it after too: its stored curve may differ
+        // from the analysis's only by that refit, which is not an edit. The
+        // curve is checked, not the flags alone: a merge folds the merged
+        // notes' edits into the curve of a note that then looks neutral
+        // (Restore All after split, drag and glue left 0.2 semitones of edit
+        // on such a note). Restore leaves the timing (the warp layer, edited
+        // with the warp tool only), so the layout the curve is checked on is
+        // the one it plays on after.
         constexpr float kSameCentre = 0.001f;
         const bool playsRecording =
             note->isNeutralForOriginalWaveform() && !note->hasRenderedEdit() &&
@@ -305,7 +316,9 @@ namespace
             std::abs(state.originalMidiNote - before.back().originalMidiNote) <= kSameCentre &&
             state.formantShift == before.back().formantShift &&
             state.volumeDb == before.back().volumeDb &&
-            state.sibilantBalance == before.back().sibilantBalance;
+            state.sibilantBalance == before.back().sibilantBalance &&
+            std::find(offRecording.begin(), offRecording.end(), note->getStartFrame()) ==
+                offRecording.end();
         const bool curveGoes = pitch &&
             drawncurve::without(curvesBefore, note->getStartFrame(), note->getEndFrame()).size() !=
                 curvesBefore.size();
@@ -315,10 +328,8 @@ namespace
       }
     }
 
-    void undo() override { apply(before, curvesBefore); if (timing) timing->undo(); }
-    // Timing first: the restored notes are refitted to the recording on the
-    // layout they end up with, not the one the timing restore then changes.
-    void redo() override { if (timing) timing->redo(); apply(after, curvesAfter); }
+    void undo() override { apply(before, curvesBefore); }
+    void redo() override { apply(after, curvesAfter); }
     juce::String getName() const override { return name; }
 
   private:
@@ -360,7 +371,6 @@ namespace
     std::vector<DrawnCurve> curvesBefore;
     std::vector<DrawnCurve> curvesAfter;
     juce::String name;
-    std::unique_ptr<UndoableAction> timing;
   };
 }
 
@@ -4642,8 +4652,9 @@ void PianoRollComponent::resetNoteEdits(Note &note, NoteRestoreMode mode)
   if (all)
   {
     // All edits includes the note separation: put the analysed cuts back
-    // first, then restore everything on the notes those cuts give.
-    auto timing = createResetTimingAction(note);
+    // first, then restore everything on the notes those cuts give. Timing is
+    // not restored here: it belongs to the warp layer and its tool (an
+    // anchor is removed with Alt-click there).
     int first = std::numeric_limits<int>::max();
     int last = std::numeric_limits<int>::min();
     for (const auto *target : targets)
@@ -4660,7 +4671,7 @@ void PianoRollComponent::resetNoteEdits(Note &note, NoteRestoreMode mode)
             candidate.getEndFrame() > first)
           recut.push_back(&candidate);
       auto reset = std::make_unique<ResetNoteEditsAction>(
-          *project, recut, true, true, true, "Restore All Edits", std::move(timing));
+          *project, recut, true, true, true, "Restore All Edits");
       separation->undo();
       std::vector<std::unique_ptr<UndoableAction>> steps;
       steps.push_back(std::move(separation));
@@ -4670,15 +4681,14 @@ void PianoRollComponent::resetNoteEdits(Note &note, NoteRestoreMode mode)
       return;
     }
     applyRestoreAction(std::make_unique<ResetNoteEditsAction>(
-        *project, targets, true, true, true, "Restore All Edits", std::move(timing)));
+        *project, targets, true, true, true, "Restore All Edits"));
     return;
   }
   applyRestoreAction(std::make_unique<ResetNoteEditsAction>(
       *project, targets, all || mode == NoteRestoreMode::Pitch,
       all || mode == NoteRestoreMode::Formant, all,
       all ? "Restore All Edits" : mode == NoteRestoreMode::Formant
-          ? "Restore Formant" : "Restore Pitch",
-      all ? createResetTimingAction(note) : nullptr));
+          ? "Restore Formant" : "Restore Pitch"));
 }
 
 void PianoRollComponent::applyRestoreAction(std::unique_ptr<UndoableAction> action)
@@ -4733,13 +4743,12 @@ void PianoRollComponent::showResetMenu(Note &note)
   const bool pitchChanged = anyTarget(hasPitchEdits);
   const bool formantChanged = anyTarget(hasFormantEdits);
   const bool amplitudeChanged = anyTarget(hasAmplitudeEdits);
-  const bool timingChanged = anyTarget(hasTimingEdits);
   const bool separationChanged =
       noteSplitter &&
       std::any_of(targets.begin(), targets.end(), [this](const Note* n)
                   { return n && noteSplitter->canRestoreSeparation(*n); });
   const bool anyChanged = pitchChanged || formantChanged || amplitudeChanged ||
-                          timingChanged || separationChanged;
+                          separationChanged;
 
   const auto addItem = [&menu](int id, const juce::String& label, bool enabled)
   {
@@ -4753,7 +4762,6 @@ void PianoRollComponent::showResetMenu(Note &note)
   addItem(1, TR("restore.pitch"), pitchChanged);
   addItem(3, TR("restore.formant"), formantChanged);
   addItem(4, TR("restore.amplitude"), amplitudeChanged);
-  addItem(2, TR("restore.timing"), timingChanged);
   addItem(6, TR("restore.separation"), separationChanged);
   menu.addSeparator();
   addItem(5, TR("restore.all"), anyChanged);
@@ -4772,8 +4780,6 @@ void PianoRollComponent::showResetMenu(Note &note)
       return;
     if (result == 1)
       safeThis->resetNoteEdits(*notePtr);
-    else if (result == 2)
-      safeThis->resetNoteTiming(*notePtr);
     else if (result == 3)
       safeThis->resetNoteEdits(*notePtr, NoteRestoreMode::Formant);
     else if (result == 4)
@@ -4855,43 +4861,6 @@ PianoRollComponent::createRestoreSeparationAction(Note &note)
   action->undo();
   setHoveredNote(nullptr);
   return action;
-}
-
-std::unique_ptr<UndoableAction> PianoRollComponent::createResetTimingAction(Note &note)
-{
-  if (!project)
-    return {};
-
-  // Restoring timing removes the warp anchors over the notes' recorded
-  // frames, edges included; the segments around them re-stretch evenly
-  // between the anchors that remain (WarpMap::removeAnchor).
-  auto& audioData = project->getAudioData();
-  warp::fitToProject(audioData);
-  const auto before = audioData.warpMap;
-  auto after = before;
-  for (auto* target : getResetTargetNotes(note))
-  {
-    if (!target)
-      continue;
-    const double first = target->getSrcStartFrame();
-    const double last = target->getSrcEndFrame();
-    for (int index = static_cast<int>(after.anchors().size()) - 1; index >= 0;
-         --index)
-    {
-      const double source = after.anchors()[static_cast<size_t>(index)].source;
-      if (source >= first - 1.0e-6 && source <= last + 1.0e-6)
-        after.removeAnchor(index);
-    }
-  }
-  if (after == before)
-    return {};
-  return std::make_unique<WarpAction>(*project, before, after,
-                                      "Restore Timing");
-}
-
-void PianoRollComponent::resetNoteTiming(Note &note)
-{
-  applyRestoreAction(createResetTimingAction(note));
 }
 
 void PianoRollComponent::triggerPreviewForNote(Note &note)

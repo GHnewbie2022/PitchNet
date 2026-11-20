@@ -75,4 +75,6 @@ private:
   std::thread applyThread;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(IncrementalSynthesizer)
+  // The edited neighbours the last pass rendered too, for the debug recording.
+  std::vector<int> journalNeighbours;
 };

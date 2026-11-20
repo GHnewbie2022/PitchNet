@@ -8,6 +8,7 @@
 #include "../Models/ProjectSerializer.h"
 #include "../Models/ProjectTimelineOffset.h"
 #include "../UI/IMainView.h"
+#include "../UI/Components/StyledMessageBox.h"
 #include "../Utils/Localization.h"
 #include "../UI/Main/SettingsManager.h"
 #include "../Utils/Constants.h"
@@ -3183,7 +3184,8 @@ void PitchNetAudioProcessor::updateAraTrackAnalysisQueue(
 void PitchNetAudioProcessor::analyzeAraRegionForCanvas(
     const juce::String &regionKey, PitchNetAudioModification *modification,
     juce::int64 startSampleInModification, double timelineOffsetSeconds,
-    const juce::AudioBuffer<float> &buffer, double sampleRate) {
+    const juce::AudioBuffer<float> &buffer, double sampleRate,
+    const recording::Fingerprint &hostRecording) {
   if (regionKey.isEmpty() || buffer.getNumSamples() <= 0 || sampleRate <= 0.0)
     return;
 
@@ -3231,7 +3233,7 @@ void PitchNetAudioProcessor::analyzeAraRegionForCanvas(
       },
       [this, regionKey, modification, startSampleInModification,
        analysisGeneration, sampleRate, backgroundAnalysis,
-       timelineOffsetSeconds](const juce::AudioBuffer<float> &) {
+       timelineOffsetSeconds, hostRecording](const juce::AudioBuffer<float> &) {
         if (!regionCanvasController ||
             regionCanvasAnalysisGeneration.load() != analysisGeneration)
           return;
@@ -3261,6 +3263,9 @@ void PitchNetAudioProcessor::analyzeAraRegionForCanvas(
             sampleRate);
 
         attachMacroParameters(*project);
+        // The recording this analysis belongs to (spec Q11).
+        if (hostRecording.isValid())
+          project->setRecordingFingerprint(hostRecording);
 
         // Cache this region's analysis so re-selecting it is instant and its
         // edits persist across switches.
@@ -3492,7 +3497,8 @@ bool PitchNetAudioProcessor::araRegionProjectNeedsSourceHydration(
 bool PitchNetAudioProcessor::hydrateAraRegionProject(
     const juce::String &regionKey,
     const juce::AudioBuffer<float> &sourceBuffer,
-    double sourceSampleRate) {
+    double sourceSampleRate, const recording::Fingerprint &hostRecording,
+    PitchNetAudioModification *modification, bool *refused) {
   if (regionKey.isEmpty() || sourceBuffer.getNumChannels() <= 0 ||
       sourceBuffer.getNumSamples() <= 0 || sourceSampleRate <= 0.0)
     return false;
@@ -3519,6 +3525,28 @@ bool PitchNetAudioProcessor::hydrateAraRegionProject(
   if (takesEarlyOut) {
     breathsibilance::ensure(audioData);
     return true;
+  }
+
+  // Spec Q11: every edit is placed by frame, so a recording of another
+  // rate, channel count or length cannot carry them. Nothing is changed:
+  // with the edited file put back the region opens as it was.
+  const auto savedRecording = project->getRecordingFingerprint();
+  if (hostRecording.isValid() && savedRecording.isValid() &&
+      !savedRecording.sameShape(hostRecording)) {
+    ARA_DIAG("hydrateRefused key=" + regionKey + " saved=" +
+             recordingchange::describe(savedRecording) +
+             " host=" + recordingchange::describe(hostRecording));
+    if (refused != nullptr)
+      *refused = true;
+    if (mainComponent != nullptr)
+      StyledMessageBox::show(mainComponent->getComponent(), TR("dialog.open_failed"),
+                             TR("dialog.recording_other_shape") + "\n\n" +
+                                 TR("dialog.recording_shape_project") + " " +
+                                 recordingchange::describe(savedRecording) + "\n" +
+                                 TR("dialog.recording_shape_file") + " " +
+                                 recordingchange::describe(hostRecording),
+                             StyledMessageBox::WarningIcon);
+    return false;
   }
 
   // Region analysis is stored at PitchNet's working rate, which can differ
@@ -3598,6 +3626,19 @@ bool PitchNetAudioProcessor::hydrateAraRegionProject(
   // just restored, like the mel spectrogram above.
   breathsibilance::ensure(audioData);
 
+  // Spec Q11: a state from before the fingerprint learns it now; a
+  // recording edited since is analysed again where it changed.
+  if (hostRecording.isValid()) {
+    if (!savedRecording.isValid())
+      project->setRecordingFingerprint(hostRecording);
+    else if (!(savedRecording == hostRecording))
+      applyRecordingChange(
+          regionKey, *project, savedRecording, hostRecording,
+          modification != nullptr
+              ? modification
+              : (regionKey == activeRegionKey ? activeModification : nullptr));
+  }
+
   // Untouched regions and processed renders that no longer cover a
   // trimmed/extended region remain source-backed. There is intentionally no
   // per-note waveform reconstruction path: the composite render is now the
@@ -3607,6 +3648,84 @@ bool PitchNetAudioProcessor::hydrateAraRegionProject(
     regionCanvasAnalysisPending.store(false);
   }
   return true;
+}
+
+void PitchNetAudioProcessor::applyRecordingChange(
+    const juce::String &regionKey, Project &project,
+    const recording::Fingerprint &saved, const recording::Fingerprint &now,
+    PitchNetAudioModification *modification) {
+  if (!regionCanvasController)
+    regionCanvasController = makeAnalysisController();
+  auto *controller = regionCanvasController.get();
+  const auto update = recordingchange::apply(
+      project, saved, now,
+      [controller](const float *samples, int numSamples, int frames,
+                   std::vector<float> &f0, std::vector<bool> &voiced) {
+        if (controller == nullptr)
+          return false;
+        if (!controller->isSelectedPitchDetectorLoaded())
+          controller->reloadInferenceModels(false);
+        return controller->detectPitch(samples, numSamples, frames, f0, voiced);
+      });
+  ARA_DIAG("recordingChanged key=" + regionKey + " parts=" +
+           juce::String(static_cast<int>(update.audioFrames.size())) +
+           " notesToRender=" + juce::String(update.notesToRender) +
+           " detected=" + juce::String(update.detected ? 1 : 0));
+  if (update.audioFrames.empty())
+    return;
+
+  // The stored composite held the old recording; it now holds the new one
+  // where nothing is edited. Publish it at once so playback stops laying
+  // the old audio over the new, and keep the archive in step.
+  if (modification != nullptr) {
+    auto &audioData = project.getAudioData();
+    if (projectHasRegionEdits(project) && audioData.waveform.getNumSamples() > 0) {
+      const double rate = audioData.sampleRate > 0
+                              ? static_cast<double>(audioData.sampleRate)
+                              : hostSampleRate;
+      std::vector<sourceaudio::Piece> pieces;
+      double piecesRate = 0.0;
+      if (buildPlaybackPieces(regionKey, *modification, audioData,
+                              audioData.waveform, pieces, piecesRate))
+        modification->setProcessedAudio(audioData.waveform, rate, 0,
+                                        std::move(pieces), piecesRate);
+      else
+        modification->setProcessedAudio(audioData.waveform, rate, 0);
+    } else {
+      clearProcessedRegionAudio(modification);
+    }
+    modification->notifyContentChanged(
+        juce::ARAContentUpdateScopes::samplesAreAffected(), true);
+    for (auto *region : modification->getPlaybackRegions())
+      if (region != nullptr)
+        region->notifyContentChanged(
+            juce::ARAContentUpdateScopes::samplesAreAffected(), true);
+    juce::MemoryBlock projectArchive;
+    if (serializeAraRegionProject(regionKey, projectArchive))
+      modification->setProjectArchive(projectArchive.getData(),
+                                      projectArchive.getSize());
+  }
+  recordingChanges[regionKey] = update;
+}
+
+void PitchNetAudioProcessor::finishRecordingChange(const juce::String &regionKey) {
+  const auto found = recordingChanges.find(regionKey);
+  if (found == recordingChanges.end() || regionKey != activeRegionKey ||
+      !canvasShowsActiveAraRegion || mainComponent == nullptr ||
+      mainComponent->getProject() == nullptr)
+    return;
+  const auto update = found->second;
+  recordingChanges.erase(found);
+  if (update.notesToRender > 0)
+    requestPluginProjectRender(*mainComponent->getProject(), nullptr);
+  StyledMessageBox::show(
+      mainComponent->getComponent(), TR("dialog.recording_changed"),
+      TR("dialog.recording_changed_detail")
+              .replace("%1", juce::String(static_cast<int>(update.audioFrames.size())))
+              .replace("%2", juce::String(update.notesToRender)) +
+          (update.detected ? juce::String()
+                           : "\n" + TR("dialog.recording_changed_no_pitch")),
+      StyledMessageBox::InfoIcon);
 }
 
 bool PitchNetAudioProcessor::araRegionProjectAppearsToCover(

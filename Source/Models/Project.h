@@ -1,11 +1,13 @@
 #pragma once
 
+#include "DebugJournal.h"
 #include "../JuceHeader.h"
 #include "../Audio/IO/MidiReference.h"
 #include "../Audio/WarpMap.h"
 #include "Note.h"
 #include "NoteRef.h"
 #include "DrawnCurve.h"
+#include "RecordingFingerprint.h"
 #include <cstdint>
 #include <vector>
 #include <memory>
@@ -371,6 +373,24 @@ public:
     bool getTimelineSnapWarp() const { return macroParameters->timelineSnapWarp; }
     void setTimelineSnapWarp(bool enabled);
 
+    // Debug recording (DebugJournal.h): shared by copies of the project, so
+    // the render worker's copy writes into the one that is saved.
+    debugjournal::Journal &getDebugJournal() const { return *debugJournal; }
+
+    // Q11 (RecordingFingerprint.h): the recording the analysis and the edits
+    // belong to. Invalid for a project without its recording.
+    const recording::Fingerprint &getRecordingFingerprint() const { return recordingFingerprint; }
+    void setRecordingFingerprint(recording::Fingerprint fingerprint)
+    {
+        recordingFingerprint = std::move(fingerprint);
+    }
+    // The rendered edits of a project file that links its recording, kept
+    // from the load until the recording is read (recordingchange::hydrate).
+    // linksRecording: the file carried no audio of its own.
+    std::vector<recording::Piece> &getLinkedEditPieces() { return linkedEditPieces; }
+    bool linksRecording() const { return linkedRecording; }
+    void setLinksRecording(bool links) { linkedRecording = links; }
+
     std::shared_ptr<MacroParameters> getMacroParameters() const
     {
         return macroParameters;
@@ -405,4 +425,8 @@ private:
     ScaleMode preferredScaleMode = ScaleMode::Major;
     int scaleRootNote = 0; // 0 = C, 1 = C#, ..., 11 = B
     std::shared_ptr<MacroParameters> macroParameters;
+    std::shared_ptr<debugjournal::Journal> debugJournal = std::make_shared<debugjournal::Journal>();
+    recording::Fingerprint recordingFingerprint;
+    std::vector<recording::Piece> linkedEditPieces;
+    bool linkedRecording = false;
 };

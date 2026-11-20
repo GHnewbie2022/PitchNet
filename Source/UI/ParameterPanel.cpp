@@ -49,7 +49,7 @@ constexpr int kPitchCardHeight =
     ((kRowGap + 1) + kControlRowHeight) * 3 + kInnerPadY;
 constexpr int kUiCardHeight =
     kInnerPadY + kSectionLabelHeight + kSectionLabelGap +
-    kControlRowHeight * 2 + kRowGap + kInnerPadY;
+    kControlRowHeight * 3 + kRowGap * 2 + kInnerPadY;
 constexpr int kLanguageCardHeight =
     kInnerPadY + kSectionLabelHeight + kSectionLabelGap + kLanguageRowHeight + kInnerPadY;
 constexpr int kMidiReferenceCardHeight =
@@ -460,6 +460,15 @@ ParameterPanel::ParameterPanel()
             onNoiseVisibilityChanged(showBreathsAndSibilanceToggle.getToggleState());
     };
 
+    addAndMakeVisible(debugRecordingToggle);
+    debugRecordingToggle.setClickingTogglesState(true);
+    debugRecordingToggle.setToggleState(false, juce::dontSendNotification);
+    debugRecordingToggle.onClick = [this]()
+    {
+        if (onDebugRecordingChanged)
+            onDebugRecordingChanged(debugRecordingToggle.getToggleState());
+    };
+
     timelineBeatButton.setButtonText(getTimelineBeatLabel(timelineBeatNumerator, timelineBeatDenominator));
     timelineGridButton.setButtonText(getTimelineGridLabel(timelineGridDivision));
     dragSnapModeButton.setButtonText(getDragSnapModeLabel(dragSnapMode));
@@ -770,6 +779,8 @@ void ParameterPanel::resized()
     bounds.removeFromTop(kSectionLabelGap);
     showBreathsAndSibilanceToggle.setBounds(bounds.removeFromTop(kControlRowHeight));
     bounds.removeFromTop(rowGap);
+    debugRecordingToggle.setBounds(bounds.removeFromTop(kControlRowHeight));
+    bounds.removeFromTop(rowGap);
 
     auto brightnessRow = bounds.removeFromTop(kControlRowHeight);
     constexpr int minBrightnessSliderWidth = 64;
@@ -930,6 +941,9 @@ void ParameterPanel::buttonClicked(juce::Button* button)
 void ParameterPanel::setProject(Project* proj)
 {
     project = proj;
+    // The project's own debug recording state (saved with it).
+    debugRecordingToggle.setToggleState(project != nullptr && project->getDebugJournal().isEnabled(),
+                                        juce::dontSendNotification);
     refreshMidiReference();
     updateGlobalSliders();
     updateFromNote();
@@ -949,6 +963,7 @@ void ParameterPanel::refreshLocalisedText()
     brightnessLabel.setText(TR("param.brightness"), juce::dontSendNotification);
     brightnessSlider.setName(TR("param.brightness"));
     showBreathsAndSibilanceToggle.setButtonText(TR("param.show_breaths_and_sibilance"));
+    debugRecordingToggle.setButtonText(TR("param.debug_recording"));
     midiDragButton.setButtonText(TR("param.midi_drag"));
     midiDragButton.setTooltip(TR("tooltip.midi_drag"));
     midiReferenceSectionLabel.setText(TR("panel.midi"), juce::dontSendNotification);
@@ -1177,6 +1192,11 @@ void ParameterPanel::setUiBrightness(double brightnessPercent)
 void ParameterPanel::setNoiseVisibility(bool show)
 {
     showBreathsAndSibilanceToggle.setToggleState(show, juce::dontSendNotification);
+}
+
+void ParameterPanel::setDebugRecording(bool on)
+{
+    debugRecordingToggle.setToggleState(on, juce::dontSendNotification);
 }
 
 void ParameterPanel::setHostTimelineState(double bpm, int numerator, int denominator)

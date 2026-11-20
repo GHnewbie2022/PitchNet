@@ -37,6 +37,7 @@ public:
 
     void setUiBrightness(double brightnessPercent);
     void setNoiseVisibility(bool show);
+    void setDebugRecording(bool on);
     void setHostTimelineState(double bpm, int numerator, int denominator);
     void setUndoManager(PitchUndoManager* mgr) { juce::ignoreUnused(mgr); }
     void setSelectedNote(Note* note);
@@ -81,6 +82,7 @@ public:
     std::function<void(bool)> onTimelineSnapWarpChanged;
     std::function<void(double)> onUiBrightnessChanged;
     std::function<void(bool)> onNoiseVisibilityChanged;
+    std::function<void(bool)> onDebugRecordingChanged;
     std::function<void(SynthesisEngineType)> onSynthesisEngineChanged;
     std::function<void(int)> onRenderDeviceChanged;
 
@@ -195,6 +197,8 @@ private:
     FloatingZoomSliderLookAndFeel brightnessSliderLookAndFeel;
     juce::Slider brightnessSlider;
     StyledToggleButton showBreathsAndSibilanceToggle;
+    // Debug recording (DebugJournal.h): the project's journal on or off.
+    StyledToggleButton debugRecordingToggle;
 
     int selectedScaleRootNote = 0;
     ScaleMode selectedScaleMode = ScaleMode::Chromatic;

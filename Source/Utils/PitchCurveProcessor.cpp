@@ -346,7 +346,7 @@ namespace PitchCurveProcessor
     }
     } // namespace
 
-    std::vector<int> refitUntouchedCurves(Project& project, int start, int end)
+    std::vector<int> refitUntouchedCurves(Project& project, int start, int end, bool apply)
     {
         std::vector<int> changed;
         auto& audio = project.getAudioData();
@@ -407,10 +407,12 @@ namespace PitchCurveProcessor
                 }
                 if (!refit)
                     continue;
+                changed.push_back(note.getStartFrame());
+                if (!apply)
+                    continue;
                 note.setOriginalDeltaPitch(fitted);
                 if (!note.getDeltaPitch().empty())
                     note.setDeltaPitch(fitted);
-                changed.push_back(note.getStartFrame());
                 continue;
             }
             auto curve = note.getOriginalDeltaPitch();
@@ -431,12 +433,14 @@ namespace PitchCurveProcessor
             }
             if (!touched)
                 continue;
+            changed.push_back(note.getStartFrame());
+            if (!apply)
+                continue;
             note.setOriginalDeltaPitch(curve);
             if (note.getDeltaPitch().size() == curve.size())
                 note.setDeltaPitch(curve);
-            changed.push_back(note.getStartFrame());
         }
-        if (!changed.empty())
+        if (apply && !changed.empty())
             rebuildBaseFromNotes(project);
         return changed;
     }

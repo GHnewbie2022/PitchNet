@@ -365,7 +365,8 @@ static void warpedDeleteShiftedPieceResizeMergeRestoresAnalysis(PianoRollCompone
 }
 
 // Split, drag and glue, then Restore All Edits over the notes: they sing
-// the recording again, with no spike at any boundary.
+// the recording again, through the warp as it is (Restore leaves the
+// timing), with no spike at any boundary.
 static void warpedRestoreAllEditsSingsRecording(PianoRollComponent& roll) {
   Project proj;
   buildWarpedTrio(proj);
@@ -390,8 +391,12 @@ static void warpedRestoreAllEditsSingsRecording(PianoRollComponent& roll) {
     if (!n.isRest() && n.getStartFrame() >= 40)
       n.setSelected(true);
   const auto f0Edited = proj.getAudioData().f0;
+  const auto warpEdited = proj.getAudioData().warpMap;
+  CHECK(!warpEdited.anchors().empty());
   roll.resetNoteEdits(*noteAt(proj, 40), PianoRollComponent::NoteRestoreMode::All);
   const auto f0Restored = proj.getAudioData().f0;
+  // Timing belongs to the warp layer and its tool: Restore leaves it.
+  CHECK(proj.getAudioData().warpMap == warpEdited);
   history.undo();
   CHECK(maxF0ErrorSemitones(proj, f0Edited, 20, 92) < 0.02f);
   history.redo();
