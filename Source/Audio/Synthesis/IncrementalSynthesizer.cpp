@@ -1294,20 +1294,58 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                 samplesToWrite, fadeRight ? rightFadeEnd : bodyEnd);
 
             // Each splice its own shift and angle; between them they glide.
+            // The vocoder starts its own phase, so in a voice the render can
+            // sit anywhere within a pitch period of the recording: the shift
+            // is searched over half a period either way (kMaxLagSamples, about
+            // 1 ms, left a low voice's render up to half a period off, and the
+            // crossfade dipped where an edited note met an unedited one sung
+            // legato).
+            auto periodAt = [&](int centre) {
+              const int frame = (startSample + centre) / hopSize;
+              const auto &f0 = audioData.f0;
+              if (frame < 0 || frame >= static_cast<int>(f0.size()) ||
+                  !(f0[static_cast<size_t>(frame)] > 0.0f))
+                return 0.0;
+              return static_cast<double>(audioData.sampleRate) /
+                     f0[static_cast<size_t>(frame)];
+            };
+            constexpr int kMaxPeriodLag = 320; // half the period of a 70 Hz voice
+            auto maxLagAt = [&](int centre) {
+              const double period = periodAt(centre);
+              return period > 0.0
+                         ? std::clamp(static_cast<int>(std::ceil(period / 2.0)),
+                                      splicealign::kMaxLagSamples, kMaxPeriodLag)
+                         : splicealign::kMaxLagSamples;
+            };
             auto leftAlign = fadeLeft ? splicealign::find(existingSamples,
                                                           targetSegment,
                                                           renderHilbert,
-                                                          leftCenter, fadeHalf)
+                                                          leftCenter, fadeHalf,
+                                                          maxLagAt(leftCenter))
                                       : splicealign::Alignment{};
             auto rightAlign = fadeRight ? splicealign::find(existingSamples,
                                                             targetSegment,
                                                             renderHilbert,
-                                                            rightCenter, fadeHalf)
+                                                            rightCenter, fadeHalf,
+                                                            maxLagAt(rightCenter))
                                         : splicealign::Alignment{};
             if (!fadeLeft)
               leftAlign = rightAlign;
             if (!fadeRight)
               rightAlign = leftAlign;
+            // A shift of a whole period is the same in a voice: of the
+            // right splice's equivalent shifts, the one nearest the left's,
+            // so the glide between them stretches the render as little as
+            // possible (each period of glide is a pitch change).
+            if (fadeLeft && fadeRight) {
+              const double period = periodAt(rightCenter);
+              if (period > 0.0) {
+                while (rightAlign.lag - leftAlign.lag > period / 2.0)
+                  rightAlign.lag -= period;
+                while (rightAlign.lag - leftAlign.lag < -period / 2.0)
+                  rightAlign.lag += period;
+              }
+            }
             // Glide the short way round.
             constexpr double kPi = 3.14159265358979323846;
             while (rightAlign.angle - leftAlign.angle > kPi)

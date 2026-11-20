@@ -148,6 +148,23 @@ namespace
               note.getOriginalMidiNote(), note.getOriginalDeltaPitch()};
     }
 
+    // The same edit state. The scratch deltaPitch of a note with an analysed
+    // curve is left out, as in hasPitchEdits (it is empty after a fresh scan
+    // and filled when a drag starts, without the note being edited).
+    bool sameAs(const NoteEditState& other, const Note& note) const
+    {
+      return midiNote == other.midiNote && pitchOffset == other.pitchOffset &&
+             volumeDb == other.volumeDb && sibilantBalance == other.sibilantBalance &&
+             formantShift == other.formantShift && tiltLeft == other.tiltLeft &&
+             tiltRight == other.tiltRight && vibrato == other.vibrato &&
+             pitchDrift == other.pitchDrift && smoothLeftFrames == other.smoothLeftFrames &&
+             smoothRightFrames == other.smoothRightFrames && deltaScale == other.deltaScale &&
+             deltaOffset == other.deltaOffset && bakedDeltaPitch == other.bakedDeltaPitch &&
+             (note.hasOriginalDeltaPitch() || deltaPitch == other.deltaPitch) &&
+             originalMidiNote == other.originalMidiNote &&
+             originalDeltaPitch == other.originalDeltaPitch && frozenTilt == other.frozenTilt;
+    }
+
     void applyTo(Note& note) const
     {
       note.setMidiNote(midiNote);
@@ -272,6 +289,28 @@ namespace
         state.formantShift = formant ? 0.0f : before.back().formantShift;
         state.volumeDb = amplitude ? 0.0f : before.back().volumeDb;
         state.sibilantBalance = amplitude ? 0.0f : before.back().sibilantBalance;
+        // A selected note with nothing to restore is left as it is, both
+        // ways: rewriting it marked it for rendering, and rendering it as a
+        // restored note put a handover from the render to the recording on
+        // its edge - mid-voice, unaligned, next to an edited neighbour sung
+        // legato (a catch at 0:08.11 after Restore on three notes and undo).
+        // A note that plays the recording now (neutral, no rendered audio
+        // of an edit in the composite) and keeps its centre plays it after
+        // too: its stored curve may differ from the analysis's only by the
+        // refit to the base around it, which is not an edit.
+        constexpr float kSameCentre = 0.001f;
+        const bool playsRecording =
+            note->isNeutralForOriginalWaveform() && !note->hasRenderedEdit() &&
+            std::abs(state.midiNote - before.back().midiNote) <= kSameCentre &&
+            std::abs(state.originalMidiNote - before.back().originalMidiNote) <= kSameCentre &&
+            state.formantShift == before.back().formantShift &&
+            state.volumeDb == before.back().volumeDb &&
+            state.sibilantBalance == before.back().sibilantBalance;
+        const bool curveGoes = pitch &&
+            drawncurve::without(curvesBefore, note->getStartFrame(), note->getEndFrame()).size() !=
+                curvesBefore.size();
+        changes.push_back(curveGoes || note->hasRenderedEdit() ||
+                          (!playsRecording && !state.sameAs(before.back(), *note)));
         after.push_back(std::move(state));
       }
     }
@@ -292,7 +331,7 @@ namespace
       int dirtyEnd = std::numeric_limits<int>::min();
       for (size_t i = 0; i < resolved.size() && i < states.size(); ++i)
       {
-        if (!resolved[i])
+        if (!resolved[i] || !changes[i])
           continue;
         states[i].applyTo(*resolved[i]);
         dirtyStart = std::min(dirtyStart, resolved[i]->getStartFrame());
@@ -317,6 +356,7 @@ namespace
     std::vector<NoteRef> notes;
     std::vector<NoteEditState> before;
     std::vector<NoteEditState> after;
+    std::vector<bool> changes; // per note: the restore changes it
     std::vector<DrawnCurve> curvesBefore;
     std::vector<DrawnCurve> curvesAfter;
     juce::String name;

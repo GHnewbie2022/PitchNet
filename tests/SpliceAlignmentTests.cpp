@@ -17,14 +17,14 @@ constexpr double kRate = 44100.0;
 // A voice-like tone: 590 Hz with falling harmonics, each harmonic at the
 // phase `phaseOf(k)`.
 template <class Phase>
-std::vector<float> voice(int samples, Phase phaseOf)
+std::vector<float> voice(int samples, Phase phaseOf, double f0 = 590.0)
 {
   std::vector<float> out(static_cast<size_t>(samples));
   for (int i = 0; i < samples; ++i)
   {
     double v = 0.0;
     for (int k = 1; k <= 8; ++k)
-      v += std::sin(2 * kPi * 590.0 * k * i / kRate + phaseOf(k)) / k;
+      v += std::sin(2 * kPi * f0 * k * i / kRate + phaseOf(k)) / k;
     out[static_cast<size_t>(i)] = static_cast<float>(0.2 * v);
   }
   return out;
@@ -91,12 +91,39 @@ void alignedRenderMatchesInPhaseRecordingUnchanged()
   CHECK(a.lag == 0.0);
   CHECK(std::abs(a.angle) < 0.01);
 }
+// A low voice (G3, 196 Hz: a period of 225 samples) whose render sits a
+// third of a period late, as a vocoder that starts its own phase leaves it:
+// beyond kMaxLagSamples, but within the half period the splice searches.
+void lowVoiceRenderLateByAThirdOfAPeriodAligns()
+{
+  const int samples = 8192, centre = 4096, half = 512;
+  const double f0 = 196.0, period = kRate / f0;
+  const auto recording = voice(samples, [](int) { return 0.0; }, f0);
+  const double late = period / 3.0;
+  const auto render = voice(samples, [&](int k) { return -2 * kPi * f0 * k * late / kRate; }, f0);
+  const auto h = splicealign::hilbert(render);
+  const double level = minLevelDb(recording, centre - half, centre + half);
+  auto dipWith = [&](const splicealign::Alignment &a) {
+    std::vector<float> aligned(render.size());
+    for (int i = 0; i < samples; ++i)
+      aligned[static_cast<size_t>(i)] = splicealign::sample(render, h, i, a);
+    return minLevelDb(crossfade(recording, aligned, centre, half), centre - half, centre + half);
+  };
+  const auto narrow = splicealign::find(recording.data(), render, h, centre, half);
+  const auto wide = splicealign::find(recording.data(), render, h, centre, half,
+                                      static_cast<int>(std::ceil(period / 2)));
+  std::printf("  low voice: narrow lag %.0f dip %.1f dB, half-period lag %.0f dip %.1f dB (level %.1f)\n",
+              narrow.lag, dipWith(narrow), wide.lag, dipWith(wide), level);
+  CHECK(std::abs(wide.lag + late) < 2.0);
+  CHECK(dipWith(wide) > level - 0.5);
+}
 } // namespace
 
 int main()
 {
   antiPhaseSpliceDoesNotDip();
   alignedRenderMatchesInPhaseRecordingUnchanged();
+  lowVoiceRenderLateByAThirdOfAPeriodAligns();
   std::printf("SpliceAlignmentTests passed\n");
   return 0;
 }

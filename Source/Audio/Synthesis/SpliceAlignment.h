@@ -43,6 +43,16 @@ Alignment find(const float *existing, const std::vector<float> &render,
                const std::vector<float> &renderHilbert, int centre,
                int fadeHalf);
 
+/**
+ * As above, the shift searched up to maxLag either way: half a pitch period
+ * covers every phase a voiced render can sit at (a shift of a whole period
+ * changes nothing in a periodic voice), which kMaxLagSamples does not for a
+ * voice below about 550 Hz.
+ */
+Alignment find(const float *existing, const std::vector<float> &render,
+               const std::vector<float> &renderHilbert, int centre,
+               int fadeHalf, int maxLag);
+
 /** The rendered sample at `n` shifted and rotated by `alignment`. */
 float sample(const std::vector<float> &render,
              const std::vector<float> &renderHilbert, double n,

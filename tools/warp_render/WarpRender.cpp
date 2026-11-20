@@ -3113,6 +3113,99 @@ int main(int argc, char **argv)
                 output.getFullPathName().toRawUTF8());
     return 0;
   }
+  // WarpRender <in.pitchnet> <out-prefix> --reset-undo pitch|all <noteStart>...:
+  // the App's Restore on the selected notes, then undo, each rendered as the
+  // App renders after a history change (afterHistoryChange). Writes the
+  // composite before, after the restore and after the undo as float32 mono
+  // <out-prefix>_0.f32, _1.f32, _2.f32.
+  if (argc >= 6 && juce::String::fromUTF8(argv[3]) == "--reset-undo")
+  {
+    Project loaded;
+    if (!ProjectSerializer::loadFromFile(loaded, input))
+      return 1;
+    sourceaudio::attachRecording(loaded, input);
+    juce::String ortError;
+    if (!OnnxRuntime::initialise(&ortError))
+    {
+      std::fprintf(stderr, "ONNX Runtime: %s\n", ortError.toRawUTF8());
+      return 1;
+    }
+    EditorController controller(false);
+    controller.setProject(std::make_unique<Project>(loaded));
+    auto &p = *controller.getProject();
+    auto &data = p.getAudioData();
+    if (data.melSpectrogram.empty())
+    {
+      MelSpectrogram mel(data.sampleRate, N_FFT, HOP_SIZE, NUM_MELS, FMIN, FMAX);
+      data.melSpectrogram = mel.compute(data.originalWaveform.getReadPointer(0),
+                                        data.originalWaveform.getNumSamples());
+    }
+    const bool all = juce::String::fromUTF8(argv[4]) == "all";
+    PianoRollComponent roll;
+    PitchUndoManager undo;
+    roll.setSize(1400, 900);
+    roll.setProject(&p);
+    roll.setUndoManager(&undo);
+    roll.setEditMode(EditMode::Select);
+    p.deselectAllNotes();
+    Note *first = nullptr;
+    for (int k = 5; k < argc; ++k)
+      for (auto &n : p.getNotes())
+        if (!n.isRest() && n.getStartFrame() == juce::String::fromUTF8(argv[k]).getIntValue())
+        {
+          n.setSelected(true);
+          if (first == nullptr)
+            first = &n;
+        }
+    if (first == nullptr)
+      return 1;
+    // The selected notes and one note's worth around them, for the report.
+    int nearFrom = std::numeric_limits<int>::max(), nearTo = 0;
+    for (const auto &n : p.getNotes())
+      if (!n.isRest() && n.isSelected())
+      {
+        nearFrom = std::min(nearFrom, n.getStartFrame() - 100);
+        nearTo = std::max(nearTo, n.getEndFrame() + 100);
+      }
+    const auto write = [&](int step) {
+      const juce::File out(output.getFullPathName() + "_" + juce::String(step) + ".f32");
+      out.deleteFile();
+      juce::FileOutputStream stream(out);
+      stream.write(data.waveform.getReadPointer(0),
+                   static_cast<size_t>(data.waveform.getNumSamples()) * sizeof(float));
+    };
+    const auto render = [&](const char *what) {
+      for (const auto &n : p.getNotes())
+        if (!n.isRest() && n.getEndFrame() > nearFrom && n.getStartFrame() < nearTo)
+          std::printf("%s: note %d dirty %d neutral %d renderedEdit %d\n", what, n.getStartFrame(),
+                      n.isDirty() ? 1 : 0, n.isNeutralForOriginalWaveform() ? 1 : 0,
+                      n.hasRenderedEdit() ? 1 : 0);
+      std::printf("%s: f0 dirty [%d,%d)\n", what, p.getF0DirtyRange().first, p.getF0DirtyRange().second);
+      std::atomic<bool> pending{false}, done{false}, ok{false};
+      controller.resynthesizeIncrementalAsync(
+          p, nullptr, [&](bool success) { ok = success; done = true; }, pending, false);
+      const bool finished = waitFor(done, 600000);
+      std::printf("%s: render %s\n", what, finished && ok.load() ? "ok" : "failed");
+    };
+    write(0);
+    roll.onHistoryActionApplied = [&](bool needs) {
+      if (needs)
+        render("restore");
+    };
+    roll.resetNoteEdits(*first, all ? PianoRollComponent::NoteRestoreMode::All
+                                    : PianoRollComponent::NoteRestoreMode::Pitch);
+    write(1);
+    roll.cancelPitchShaperPreview();
+    if (undo.undo())
+      render("undo");
+    write(2);
+    for (const auto &n : p.getNotes())
+      if (!n.isRest() && n.getEndFrame() > nearFrom && n.getStartFrame() < nearTo)
+        std::printf("note %d-%d midi %.3f tiltR %.3f\n", n.getStartFrame(), n.getEndFrame(),
+                    n.getMidiNote(), n.getTiltRight());
+    controller.requestShutdown();
+    return 0;
+  }
   // WarpRender <project.pitchnet> <out.wav> --project: the saved project's
   // playback as the App builds it (embedded composite + the recording).
   if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--project")

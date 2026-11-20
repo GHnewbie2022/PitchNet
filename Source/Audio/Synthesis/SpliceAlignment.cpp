@@ -62,12 +62,19 @@ Alignment find(const float *existing, const std::vector<float> &render,
                const std::vector<float> &renderHilbert, int centre,
                int fadeHalf)
 {
+  return find(existing, render, renderHilbert, centre, fadeHalf, kMaxLagSamples);
+}
+
+Alignment find(const float *existing, const std::vector<float> &render,
+               const std::vector<float> &renderHilbert, int centre,
+               int fadeHalf, int maxLag)
+{
   Alignment best;
   const int count = static_cast<int>(render.size());
   const int first = centre - fadeHalf;
   const int last = centre + fadeHalf;
-  if (existing == nullptr || fadeHalf <= 0 ||
-      first - kMaxLagSamples < 0 || last + kMaxLagSamples > count)
+  if (existing == nullptr || fadeHalf <= 0 || maxLag < 0 ||
+      first - maxLag < 0 || last + maxLag > count)
     return best;
 
   double existingEnergy = 0.0, renderEnergy = 0.0;
@@ -84,7 +91,7 @@ Alignment find(const float *existing, const std::vector<float> &render,
   // a = sum w*x*e and b = sum w*h*e, x*cos + h*sin matches e best at
   // atan2(b, a), and the match there is hypot(a, b).
   double bestScore = -1.0;
-  for (int lag = -kMaxLagSamples; lag <= kMaxLagSamples; ++lag)
+  for (int lag = -maxLag; lag <= maxLag; ++lag)
   {
     double a = 0.0, b = 0.0;
     for (int i = first; i < last; ++i)
