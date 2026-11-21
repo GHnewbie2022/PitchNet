@@ -4897,8 +4897,8 @@ void PianoRollComponent::showSynthMenu(Note &note)
            std::all_of(targets.begin(), targets.end(),
                        [engine](const Note* n) { return n && n->getSynthEngine() == engine; });
   };
-  // Each entry in the colour its notes are outlined with (the vocoder, the
-  // default, has none).
+  // Each entry in the colour its notes are outlined with (the default has
+  // none).
   const auto addItem = [&menu, &all](int id, const juce::String& label,
                                      Note::SynthEngine engine)
   {
@@ -4910,8 +4910,7 @@ void PianoRollComponent::showSynthMenu(Note &note)
     item.customComponent = component.release();
     menu.addItem(std::move(item));
   };
-  addItem(1, TR("synth.vocoder"), Note::SynthEngine::Vocoder);
-  addItem(3, TR("synth.vocoderRecordedHighs"), Note::SynthEngine::VocoderRecordedHighs);
+  addItem(1, TR("synth.vocoderRecordedHighs"), Note::SynthEngine::VocoderRecordedHighs);
   addItem(2, TR("synth.rubberband"), Note::SynthEngine::RubberBand);
 
   juce::Component::SafePointer<PianoRollComponent> safeThis(this);
@@ -4927,8 +4926,7 @@ void PianoRollComponent::showSynthMenu(Note &note)
                      { return &candidate == notePtr; }))
       return;
     const auto engine = result == 2 ? Note::SynthEngine::RubberBand
-                        : result == 3 ? Note::SynthEngine::VocoderRecordedHighs
-                                      : Note::SynthEngine::Vocoder;
+                                    : Note::SynthEngine::VocoderRecordedHighs;
     auto targets = safeThis->getResetTargetNotes(*notePtr);
     if (std::all_of(targets.begin(), targets.end(),
                     [engine](const Note* n) { return !n || n->getSynthEngine() == engine; }))

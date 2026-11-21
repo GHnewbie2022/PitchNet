@@ -71,15 +71,19 @@ void takesTheRecordingAboveTheCrossover()
   CHECK(same == render);
 }
 
-// The choice is stored with the note.
-void theChoiceIsSaved()
+// It is the default: a new note has it, nothing is written for it, and a
+// note with nothing stored reads back as it. The vocoder on its own (the
+// listening-test tool's) is stored by name.
+void itIsTheDefault()
 {
   Project project;
-  Note note(10, 20, 60.0f);
-  note.setSynthEngine(Note::SynthEngine::VocoderRecordedHighs);
+  CHECK(Note(10, 20, 60.0f).getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs);
+  project.addNote(Note(10, 20, 60.0f));
+  Note note(30, 40, 62.0f);
+  note.setSynthEngine(Note::SynthEngine::Vocoder);
   project.addNote(note);
-  project.addNote(Note(30, 40, 62.0f));
   const auto json = ProjectSerializer::toJson(project);
+  CHECK(!juce::JSON::toString(json).contains("vocoderRecordedHighs"));
   Project reopened;
   CHECK(ProjectSerializer::fromJson(reopened, json));
   CHECK(reopened.getNotes().size() == 2);
@@ -95,7 +99,7 @@ int main()
 {
   juce::ScopedJuceInitialiser_GUI juce;
   takesTheRecordingAboveTheCrossover();
-  theChoiceIsSaved();
+  itIsTheDefault();
   std::printf("HighBandRestoreTests passed\n");
   return 0;
 }

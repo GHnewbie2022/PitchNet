@@ -4050,6 +4050,20 @@ int main(int argc, char **argv)
         return 1;
       }
       std::printf("resynthesized %d notes\n", marked);
+      // PITCHNET_RESYNTH_SAVE=<out.pitchnet>: the project as it stands after
+      // the render, saved as the App saves it (a whole project rendered
+      // again with the current synthesis, kept as a new file).
+      if (const char *savePath = std::getenv("PITCHNET_RESYNTH_SAVE"))
+      {
+        const juce::File saveFile(juce::String::fromUTF8(savePath));
+        if (saveFile.existsAsFile() || !ProjectSerializer::saveToFile(p, saveFile))
+        {
+          std::fprintf(stderr, "could not save %s (it must not exist yet)\n", savePath);
+          return 1;
+        }
+        std::printf("saved %s (%lld bytes)\n", savePath,
+                    static_cast<long long>(saveFile.getSize()));
+      }
       rendered = &data;
     }
     auto &audioDataOut = *rendered;

@@ -246,12 +246,14 @@ public:
     // Get F0 values based on current midiNote + deltaPitch
     std::vector<float> computeF0FromDelta() const;
 
-    // How an edited note is rendered (spec Q12): by the vocoder; by
-    // shifting the recording itself with Rubber Band's R3 engine, for a voice
-    // whose texture the vocoder does not keep; or by the vocoder below
-    // 10 kHz with the recording above it (HighBandRestore.h), which keeps
-    // the fine rasp the vocoder turns to noise up there. Chosen per note by
-    // the user; a note that plays the recording ignores it.
+    // How an edited note is rendered (spec Q12). The default is the vocoder
+    // below 10 kHz with the recording above it (HighBandRestore.h), which
+    // keeps the fine rasp the vocoder turns to noise up there. The user can
+    // set a note to Rubber Band's R3 engine instead, which shifts the
+    // recording itself: for what the vocoder breaks below 10 kHz (vocal fry).
+    // The vocoder on its own lost every listening test to the default and is
+    // not offered in the App; the listening-test tool still renders with it.
+    // A note that plays the recording ignores the choice.
     enum class SynthEngine
     {
         Vocoder,
@@ -374,7 +376,7 @@ private:
     std::vector<float> f0Values;
     std::vector<SourceSpan> analysisSpans;
     bool renderedEdit = false; // Audio for this note is present in the composite
-    SynthEngine synthEngine = SynthEngine::Vocoder;
+    SynthEngine synthEngine = SynthEngine::VocoderRecordedHighs;
     // Timeline bounds represented by the current composite waveform. These can
     // differ from both the immutable source bounds and the next pending edit.
     int renderedStartFrame = 0;

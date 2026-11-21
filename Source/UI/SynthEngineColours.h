@@ -5,16 +5,17 @@
 
 /**
  * Spec Q12: the colour that stands for a note's synthesis choice, on the
- * note's outline and on its entry in the synthesis menu. The vocoder, the
- * default, has none.
+ * note's outline and on its entry in the synthesis menu. Only Rubber Band R3
+ * has one: the default (vocoder + recorded highs) is unmarked, so a colour
+ * on screen means a note that differs from it.
  */
 namespace synthEngineColour
 {
-inline bool has(Note::SynthEngine engine) { return engine != Note::SynthEngine::Vocoder; }
+inline bool has(Note::SynthEngine engine) { return engine == Note::SynthEngine::RubberBand; }
 
 inline juce::Colour of(Note::SynthEngine engine)
 {
-  return engine == Note::SynthEngine::RubberBand ? juce::Colour(0xffffd60a)   // yellow
-                                                 : juce::Colour(0xff40c8e0);  // cyan
+  juce::ignoreUnused(engine);
+  return juce::Colour(0xffffd60a); // yellow
 }
 } // namespace synthEngineColour

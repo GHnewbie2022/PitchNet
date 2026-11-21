@@ -694,8 +694,8 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
       }
 
       // Spec Q12: a note set to render with Rubber Band R3 is outlined in
-      // bold yellow, so the choice shows without opening its menu.
-      // "Vocoder + recorded highs" takes the same outline in cyan.
+      // bold yellow, so the choice shows without opening its menu. The
+      // default has no outline.
       if (synthEngineColour::has(note.getSynthEngine()) && !bodyShape.isEmpty())
       {
         g.setColour(synthEngineColour::of(note.getSynthEngine()));
