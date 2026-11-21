@@ -246,14 +246,17 @@ public:
     // Get F0 values based on current midiNote + deltaPitch
     std::vector<float> computeF0FromDelta() const;
 
-    // How an edited note is rendered (spec Q12): by the vocoder, or by
+    // How an edited note is rendered (spec Q12): by the vocoder; by
     // shifting the recording itself with Rubber Band's R3 engine, for a voice
-    // whose texture the vocoder does not keep. Chosen per note by the user;
-    // a note that plays the recording ignores it.
+    // whose texture the vocoder does not keep; or by the vocoder below
+    // 10 kHz with the recording above it (HighBandRestore.h), which keeps
+    // the fine rasp the vocoder turns to noise up there. Chosen per note by
+    // the user; a note that plays the recording ignores it.
     enum class SynthEngine
     {
         Vocoder,
-        RubberBand
+        RubberBand,
+        VocoderRecordedHighs
     };
     SynthEngine getSynthEngine() const { return synthEngine; }
     void setSynthEngine(SynthEngine engine) { synthEngine = engine; }

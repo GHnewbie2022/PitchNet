@@ -64,6 +64,13 @@ public:
         setOpaque(false);
     }
 
+    /** The item's text in a colour of its own (the synthesis menu, spec Q12). */
+    void setTextColour(juce::Colour colour)
+    {
+        textColour = colour;
+        hasTextColour = true;
+    }
+
     void getIdealSize(int& idealWidth, int& idealHeight) override
     {
         const int textWidth = juce::GlyphArrangement::getStringWidthInt(
@@ -89,8 +96,8 @@ public:
 
         const auto* menuItem = getItem();
         const bool itemEnabled = menuItem == nullptr || menuItem->isEnabled;
-        g.setColour(itemEnabled ? APP_COLOR_TEXT_PRIMARY
-                                : APP_COLOR_TEXT_PRIMARY.withMultipliedAlpha(0.35f));
+        const auto colour = hasTextColour ? textColour : juce::Colour(APP_COLOR_TEXT_PRIMARY);
+        g.setColour(itemEnabled ? colour : colour.withMultipliedAlpha(0.35f));
         g.setFont(AppFont::getFont(14.0f));
         g.drawText(itemText, getLocalBounds().withTrimmedLeft(
                                   reservesSelectionSpace ? 22 : 12),
@@ -116,5 +123,7 @@ private:
     bool isSelected = false;
     std::function<void()> onHover;
     bool reservesSelectionSpace = true;
+    juce::Colour textColour;
+    bool hasTextColour = false;
 };
 }

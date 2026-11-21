@@ -1,4 +1,5 @@
 #include "PianoRollComponent.h"
+#include "SynthEngineColours.h"
 #include <map>
 #include "../Utils/PitchMacroScope.h"
 #include "../Utils/AppLogger.h"
@@ -4896,16 +4897,22 @@ void PianoRollComponent::showSynthMenu(Note &note)
            std::all_of(targets.begin(), targets.end(),
                        [engine](const Note* n) { return n && n->getSynthEngine() == engine; });
   };
-  const auto addItem = [&menu](int id, const juce::String& label, bool ticked)
+  // Each entry in the colour its notes are outlined with (the vocoder, the
+  // default, has none).
+  const auto addItem = [&menu, &all](int id, const juce::String& label,
+                                     Note::SynthEngine engine)
   {
     juce::PopupMenu::Item item(label);
     item.itemID = id;
-    item.customComponent = std::make_unique<pitchPopupMenu::MenuItemComponent>(
-        label, ticked).release();
+    auto component = std::make_unique<pitchPopupMenu::MenuItemComponent>(label, all(engine));
+    if (synthEngineColour::has(engine))
+      component->setTextColour(synthEngineColour::of(engine));
+    item.customComponent = component.release();
     menu.addItem(std::move(item));
   };
-  addItem(1, TR("synth.vocoder"), all(Note::SynthEngine::Vocoder));
-  addItem(2, TR("synth.rubberband"), all(Note::SynthEngine::RubberBand));
+  addItem(1, TR("synth.vocoder"), Note::SynthEngine::Vocoder);
+  addItem(3, TR("synth.vocoderRecordedHighs"), Note::SynthEngine::VocoderRecordedHighs);
+  addItem(2, TR("synth.rubberband"), Note::SynthEngine::RubberBand);
 
   juce::Component::SafePointer<PianoRollComponent> safeThis(this);
   Note* notePtr = &note;
@@ -4920,7 +4927,8 @@ void PianoRollComponent::showSynthMenu(Note &note)
                      { return &candidate == notePtr; }))
       return;
     const auto engine = result == 2 ? Note::SynthEngine::RubberBand
-                                    : Note::SynthEngine::Vocoder;
+                        : result == 3 ? Note::SynthEngine::VocoderRecordedHighs
+                                      : Note::SynthEngine::Vocoder;
     auto targets = safeThis->getResetTargetNotes(*notePtr);
     if (std::all_of(targets.begin(), targets.end(),
                     [engine](const Note* n) { return !n || n->getSynthEngine() == engine; }))

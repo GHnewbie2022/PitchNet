@@ -8,6 +8,7 @@
 #include "../WarpLayer.h"
 #include "OriginalWaveformRestore.h"
 #include "RubberBandShift.h"
+#include "HighBandRestore.h"
 #include "../../Utils/NoteGainCurve.h"
 #include "../../Utils/PitchCurveProcessor.h"
 #include "../../Utils/AppLogger.h"
@@ -859,6 +860,19 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     }
   }
 
+  // Spec Q12: notes set to "vocoder + recorded highs". Their render keeps
+  // the vocoder below 10 kHz and takes the recording above it
+  // (HighBandRestore.h). Not where the formants are moved: the recording's
+  // highs would stay where they were recorded.
+  std::vector<std::pair<int, int>> recordedHighsFrames;
+  if (!usePsola && std::abs(project->getFormantShift()) <= 0.001f)
+    for (const auto &note : project->getNotes())
+      if (!note.isRest() && note.isDirty() && !note.isNeutralForOriginalWaveform() &&
+          note.getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs &&
+          std::abs(note.getFormantShift()) <= 0.001f &&
+          note.getEndFrame() > startFrame && note.getStartFrame() < endFrame)
+        recordedHighsFrames.emplace_back(note.getStartFrame(), note.getEndFrame());
+
   // Spec Q12: notes the user chose to render with Rubber Band R3. They take
   // the recording shifted by R3 instead of the engine's render, by the same
   // ratio PSOLA would apply (target over recorded pitch, per frame).
@@ -1071,6 +1085,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
        formantShifts, formantF0, formantSampleRate, hasGlobalFormant, usePsola,
        hasDirtyNoteAnchors, f0DirtyStart, f0DirtyEnd,
        capturedNoteCount, journalDetail, commitFrameRanges = std::move(commitFrameRanges),
+       recordedHighsFrames = std::move(recordedHighsFrames),
        rubberBandFrames = std::move(rubberBandFrames),
        rubberBandRatio = std::move(rubberBandRatio),
        rubberBandFormant = rubberBandFormantPreserved,
@@ -1104,6 +1119,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                      currentJobId, onComplete, elapsedText, hasDirtyNoteAnchors,
                      f0DirtyStart, f0DirtyEnd, capturedNoteCount, journalDetail,
                      commitFrameRanges, blendMask, originalSegment,
+                     recordedHighsFrames,
                      rubberBandFrames, rubberBandRatio, rubberBandFormant,
                      rubberBandSourceHz, warpedRecording, warpedSourceAt,
                      formantShifts, formantF0, formantSampleRate, hasGlobalFormant, usePsola,
@@ -1877,6 +1893,43 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               const float blend = std::min(leftBlend, rightBlend);
               auto &mask = commitMask[static_cast<size_t>(sample)];
               mask = std::max(mask, blend);
+            }
+          }
+
+          // Spec Q12, "vocoder + recorded highs": over those notes the band
+          // above 10 kHz comes from the recording as the warp layer laid it
+          // out (with the same gain), faded in and out over 10 ms at their
+          // edges. Done last, on what is about to be written: the splice
+          // alignment moves and rotates the render where it meets the
+          // recording, and highs put back before it were carried along (the
+          // notes next to an unedited one came out 2.5 dB down above 11 kHz
+          // and unrelated to the recording there).
+          if (!recordedHighsFrames.empty()) {
+            const int total = static_cast<int>(committed.size());
+            std::vector<float> share(committed.size(), 0.0f);
+            std::vector<float> recorded(committed.size(), 0.0f);
+            for (int i = 0; i < total; ++i)
+              recorded[static_cast<size_t>(i)] =
+                  originalSegment[static_cast<size_t>(i)] * sampleGain[static_cast<size_t>(i)];
+            const int ramp = std::max(1, formantSampleRate / 100);
+            for (const auto &[from, to] : recordedHighsFrames) {
+              const int first = (from - capturedStartFrame) * hopSize;
+              const int last = (to - capturedStartFrame) * hopSize;
+              for (int i = std::max(0, first - ramp / 2); i < std::min(total, last + ramp / 2); ++i) {
+                const float in = static_cast<float>(i - (first - ramp / 2)) / ramp;
+                const float out = static_cast<float>((last + ramp / 2) - i) / ramp;
+                share[static_cast<size_t>(i)] = std::max(
+                    share[static_cast<size_t>(i)], std::clamp(std::min(in, out), 0.0f, 1.0f));
+              }
+            }
+            if (!highband::restore(committed, recorded, share, formantSampleRate,
+                                   capturedCancelFlag.get())) {
+              if (currentJobId == jobId.load()) {
+                isBusy = false;
+                if (onComplete)
+                  juce::MessageManager::callAsync([onComplete]() { onComplete(false); });
+              }
+              return;
             }
           }
 

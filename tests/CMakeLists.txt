@@ -30,6 +30,7 @@ set(PITCHNET_TEST_SOURCES
     PluginStateArchiveTests.cpp
     ProjectModificationRangeTests.cpp
     RecordingChangeTests.cpp
+    HighBandRestoreTests.cpp
     RubberBandShiftTests.cpp
     TiltPivotTests.cpp
     TimelineCoordinateTests.cpp

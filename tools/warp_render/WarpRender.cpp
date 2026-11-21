@@ -4019,14 +4019,16 @@ int main(int argc, char **argv)
               note.getStartFrame() * hop >= r3From && note.getStartFrame() * hop < r3To)
             note.setSynthEngine(juce::String(noteEngine) == "rubberband"
                                     ? Note::SynthEngine::RubberBand
-                                    : Note::SynthEngine::Vocoder);
+                                    : juce::String(noteEngine) == "highs"
+                                        ? Note::SynthEngine::VocoderRecordedHighs
+                                        : Note::SynthEngine::Vocoder);
           note.markDirty();
           note.markSynthDirty();
           if (std::getenv("PITCHNET_RESYNTH_LIST") != nullptr)
             std::printf("marked @%d-%d src %d-%d midi %.3f orig %.3f engine %s\n",
                         note.getStartFrame(), note.getEndFrame(), note.getSrcStartFrame(),
                         note.getSrcEndFrame(), note.getMidiNote(), note.getOriginalMidiNote(),
-                        note.getSynthEngine() == Note::SynthEngine::RubberBand ? "r3" : "vocoder");
+                        note.getSynthEngine() == Note::SynthEngine::RubberBand ? "r3" : note.getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs ? "highs" : "vocoder");
           ++marked;
         }
       if (shiftText != nullptr)

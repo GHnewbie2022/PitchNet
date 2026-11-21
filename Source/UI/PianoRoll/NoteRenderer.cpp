@@ -1,4 +1,5 @@
 #include "NoteRenderer.h"
+#include "../SynthEngineColours.h"
 #include <functional>
 #include "BreathSibilanceRenderer.h"
 #include "PitchToolController.h"
@@ -694,9 +695,10 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
 
       // Spec Q12: a note set to render with Rubber Band R3 is outlined in
       // bold yellow, so the choice shows without opening its menu.
-      if (note.getSynthEngine() == Note::SynthEngine::RubberBand && !bodyShape.isEmpty())
+      // "Vocoder + recorded highs" takes the same outline in cyan.
+      if (synthEngineColour::has(note.getSynthEngine()) && !bodyShape.isEmpty())
       {
-        g.setColour(juce::Colour(0xffffd60a));
+        g.setColour(synthEngineColour::of(note.getSynthEngine()));
         g.strokePath(bodyShape, juce::PathStrokeType(2.5f, juce::PathStrokeType::curved,
                                                      juce::PathStrokeType::rounded));
       }
