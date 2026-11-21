@@ -34,4 +34,24 @@ std::vector<float> shift(const std::vector<float> &source, const std::vector<flo
                          int sampleRate, const std::atomic<bool> *cancel = nullptr,
                          bool preserveFormant = false,
                          const std::vector<float> *sourceHz = nullptr);
+
+/**
+ * Spec Q12, a note on a stretched part of the track: the stretch and the
+ * pitch change in one R3 pass, straight from the recording. Shifting what
+ * Signalsmith had already stretched left a quiver from 1.33x up (the 煙幕
+ * phrase at 165.65 s, 2026-11-22; in one pass 1.5x was nearly usable).
+ * `recording` is the unstretched recording (or a slice of it);
+ * `sourceAtFrame[i]` is the position in it, in samples, heard at output
+ * sample `i * hop` (one entry per `hop` output samples, one past the end
+ * included, rising). `ratio` and `sourceHz` are per output sample, as in
+ * shift(). The result is as long as `ratio` and laid out on the output
+ * timeline (within a few ms: R3 runs in real-time mode, steered by the time
+ * ratio alone).
+ */
+std::vector<float> warpShift(const float *recording, int recordingSamples,
+                             const std::vector<double> &sourceAtFrame, int hop,
+                             const std::vector<float> &ratio, int sampleRate,
+                             const std::atomic<bool> *cancel = nullptr,
+                             bool preserveFormant = false,
+                             const std::vector<float> *sourceHz = nullptr);
 } // namespace rubberbandshift

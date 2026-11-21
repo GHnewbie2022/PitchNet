@@ -1,6 +1,7 @@
 #include "../Source/UI/PianoRollComponent.h"
 #include "../Source/UI/PianoRoll/NoteSplitter.h"
 #include "../Source/Audio/NoteTiming.h"
+#include "../Source/Audio/WarpLayer.h"
 #include "../Source/Undo/PitchUndoManager.h"
 #include "../Source/Undo/DragActions.h"
 #include "../Source/Utils/PitchCurveProcessor.h"
@@ -541,8 +542,72 @@ static void dragThenRestoreNeighbourThenUndoAll(PianoRollComponent& roll) {
   CHECK(err < 0.02f);
 }
 
+// A note edited and then stretched keeps its stored contour over its own
+// frames, a fraction of a frame off the recording as the track's map plays
+// it: target over recording then wobbles wherever the pitch moves, and
+// Rubber Band sang that as a quiver (spec Q12). Measured against the note's
+// own unedited curve laid out the same way, only the edit is left.
+static void stretchedEditedNoteLeavesOnlyTheEdit() {
+  Project proj;
+  buildWarpedTrio(proj);
+  shiftNote(proj, 40, 1.0f);
+  auto map = proj.getAudioData().warpMap;
+  map.setAnchors({{20.0, 20.0}, {38.0, 40.0}, {58.0, 75.4}, {75.0, 97.0}});
+  warp::apply(proj, map);
+  const auto* note = noteAt(proj, 40);
+  CHECK(note != nullptr);
+  if (!note)
+    return;
+  CHECK(note->getDurationFrames() != note->getSrcDurationFrames());
+  const auto& audio = proj.getAudioData();
+  const auto unedited = PitchCurveProcessor::uneditedPitchOnMovedNotes(proj, 0, 120);
+  const auto target = proj.getAdjustedF0ForRange(0, 120);
+  CHECK(unedited.size() == 120 && target.size() == 120);
+  // Clear of the base pitch's bend toward the neighbours at both ends.
+  const int from = note->getStartFrame() + 13, to = note->getEndFrame() - 13;
+  CHECK(to - from >= 6);
+  float editLow = 1.0e9f, editHigh = -1.0e9f, misfitLow = 1.0e9f, misfitHigh = -1.0e9f;
+  const int last = static_cast<int>(audio.denseF0.size()) - 1;
+  for (int t = from; t < to; ++t) {
+    CHECK(unedited[size_t(t)] > 0.0f);
+    const float sung = freqToMidi(target[size_t(t)]);
+    const float edit = sung - unedited[size_t(t)];
+    editLow = std::min(editLow, edit);
+    editHigh = std::max(editHigh, edit);
+    const double src = std::clamp(audio.warpMap.sourceAt(t + 0.5) - 0.5, 0.0,
+                                  static_cast<double>(last));
+    const int a = static_cast<int>(std::floor(src));
+    const int b = std::min(a + 1, last);
+    const float k = static_cast<float>(src - a);
+    const float recorded = freqToMidi(audio.denseF0[size_t(a)]) * (1.0f - k) +
+                           freqToMidi(audio.denseF0[size_t(b)]) * k;
+    misfitLow = std::min(misfitLow, sung - recorded);
+    misfitHigh = std::max(misfitHigh, sung - recorded);
+  }
+  if (editHigh - editLow >= 0.001f || misfitHigh - misfitLow <= 0.01f)
+    std::cerr << "edit " << editLow << ".." << editHigh << " misfit " << misfitLow
+              << ".." << misfitHigh << "\n";
+  // The edit alone: the semitone the note was moved by, on every frame.
+  CHECK(editHigh - editLow < 0.001f);
+  CHECK(std::abs(0.5f * (editHigh + editLow) - 1.0f) < 0.01f);
+  // What this guards against: against the recording the same frames differ.
+  CHECK(misfitHigh - misfitLow > 0.01f);
+  // Notes on their recorded frames are left to the recording itself.
+  Project still;
+  buildWarpedTrio(still);
+  still.getAudioData().warpMap.setAnchors({});
+  for (auto& n : still.getNotes()) {
+    n.setStartFrame(n.getSrcStartFrame());
+    n.setEndFrame(n.getSrcEndFrame());
+  }
+  PitchCurveProcessor::rebuildBaseFromNotes(still);
+  for (float value : PitchCurveProcessor::uneditedPitchOnMovedNotes(still, 0, 120))
+    CHECK(value == 0.0f);
+}
+
 int main() {
   juce::ScopedJuceInitialiser_GUI gui;
+  stretchedEditedNoteLeavesOnlyTheEdit();
   {
     PianoRollComponent scratchRoll;
     scratchRoll.setSize(800, 400);

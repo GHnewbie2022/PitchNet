@@ -114,4 +114,114 @@ std::vector<float> shift(const std::vector<float> &source, const std::vector<flo
   return std::vector<float>(output.begin() + static_cast<std::ptrdiff_t>(delay),
                             output.begin() + static_cast<std::ptrdiff_t>(delay + length));
 }
+
+std::vector<float> warpShift(const float *recording, int recordingSamples,
+                             const std::vector<double> &sourceAtFrame, int hop,
+                             const std::vector<float> &ratio, int sampleRate,
+                             const std::atomic<bool> *cancel, bool preserveFormant,
+                             const std::vector<float> *sourceHz)
+{
+  const auto length = ratio.size();
+  if (length == 0 || recording == nullptr || recordingSamples <= 0 || hop <= 0 ||
+      sampleRate <= 0 || sourceAtFrame.size() < length / static_cast<size_t>(hop) + 1 ||
+      sourceAtFrame.size() < 2)
+    return {};
+  if (sourceHz != nullptr && sourceHz->size() != length)
+    sourceHz = nullptr;
+  using Stretcher = RubberBand::RubberBandStretcher;
+  Stretcher stretcher(static_cast<size_t>(sampleRate), 1,
+                      Stretcher::OptionProcessRealTime | Stretcher::OptionEngineFiner |
+                          Stretcher::OptionPitchHighConsistency |
+                          (preserveFormant ? Stretcher::OptionFormantPreserved
+                                           : Stretcher::OptionFormantShifted));
+  constexpr size_t kBlock = 64;
+  stretcher.setMaxProcessSize(kBlock);
+
+  const int frames = static_cast<int>(sourceAtFrame.size());
+  // Output position (samples) where recording sample `s` is heard.
+  const auto outputAt = [&](double s) {
+    const auto it = std::upper_bound(sourceAtFrame.begin(), sourceAtFrame.end(), s);
+    int f = static_cast<int>(it - sourceAtFrame.begin()) - 1;
+    f = std::clamp(f, 0, frames - 2);
+    const double a = sourceAtFrame[static_cast<size_t>(f)];
+    const double b = sourceAtFrame[static_cast<size_t>(f) + 1];
+    const double span = std::max(1.0e-9, b - a);
+    return (static_cast<double>(f) + (s - a) / span) * hop;
+  };
+  const double firstSource = sourceAtFrame.front();
+  const auto timeRatioAt = [&](double s) {
+    return std::clamp((outputAt(s + kBlock) - outputAt(s)) / static_cast<double>(kBlock),
+                      0.125, 8.0);
+  };
+  stretcher.setTimeRatio(timeRatioAt(firstSource));
+  stretcher.setPitchScale(std::clamp(static_cast<double>(ratio.front()), 0.25, 4.0));
+
+  const size_t pad = stretcher.getPreferredStartPad();
+  // R3 is working on the audio one start pad behind what it was last given,
+  // and a time ratio set now applies there: the ratio is read that far back
+  // (set for the audio just fed, a stretch that begins inside the render
+  // came out 12 to 18 ms late at 1.37x, 2026-11-22).
+  const size_t delay = stretcher.getStartDelay();
+  const double behind = static_cast<double>(pad);
+  std::vector<float> output;
+  output.reserve(length + delay + 8 * kBlock);
+  std::vector<float> chunk(kBlock, 0.0f);
+  const auto collect = [&]() {
+    for (int ready = stretcher.available(); ready > 0; ready = stretcher.available())
+    {
+      const size_t start = output.size();
+      output.resize(start + static_cast<size_t>(ready));
+      float *out[1] = {output.data() + start};
+      output.resize(start + stretcher.retrieve(out, static_cast<size_t>(ready)));
+    }
+  };
+  for (size_t done = 0; done < pad;)
+  {
+    const size_t n = std::min(kBlock, pad - done);
+    std::fill(chunk.begin(), chunk.end(), 0.0f);
+    const float *in[1] = {chunk.data()};
+    stretcher.process(in, n, false);
+    collect();
+    done += n;
+  }
+  const auto hintAt = [&](size_t at) {
+    const size_t back = static_cast<size_t>(kHintBackSeconds * sampleRate);
+    const size_t ahead = static_cast<size_t>(kHintAheadSeconds * sampleRate);
+    const size_t from = at > back ? at - back : 0;
+    const size_t to = std::min(length, at + ahead);
+    float highest = 0.0f;
+    for (size_t i = from; i < to; i += 16)
+      highest = std::max(highest, (*sourceHz)[i]);
+    return static_cast<double>(highest) * kFormantMargin;
+  };
+  double source = firstSource;
+  for (int guard = 0; guard < 100000000; ++guard)
+  {
+    if (cancel != nullptr && cancel->load())
+      return {};
+    // Feed past the end until the delayed tail is out.
+    if (output.size() >= length + delay)
+      break;
+    const size_t at = static_cast<size_t>(
+        std::clamp(outputAt(source), 0.0, static_cast<double>(length - 1)));
+    stretcher.setTimeRatio(timeRatioAt(source - behind));
+    stretcher.setPitchScale(std::clamp(static_cast<double>(ratio[at]), 0.25, 4.0));
+    if (preserveFormant && sourceHz != nullptr)
+      stretcher.setFormantPitchHint(hintAt(at));
+    const auto first = static_cast<long long>(std::llround(source));
+    for (size_t i = 0; i < kBlock; ++i)
+    {
+      const long long index = first + static_cast<long long>(i);
+      chunk[i] = index >= 0 && index < recordingSamples ? recording[index] : 0.0f;
+    }
+    const float *in[1] = {chunk.data()};
+    stretcher.process(in, kBlock, false);
+    collect();
+    source += static_cast<double>(kBlock);
+  }
+  if (output.size() < length + delay)
+    output.resize(length + delay, 0.0f);
+  return std::vector<float>(output.begin() + static_cast<std::ptrdiff_t>(delay),
+                            output.begin() + static_cast<std::ptrdiff_t>(delay + length));
+}
 } // namespace rubberbandshift

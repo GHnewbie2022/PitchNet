@@ -166,10 +166,75 @@ void theChoiceIsSaved()
   CHECK(reopened.getNotes()[0].getSynthEngine() == Note::SynthEngine::RubberBand);
   CHECK(reopened.getNotes()[1].getSynthEngine() == Note::SynthEngine::Vocoder);
 }
+
+// A note on a stretched part of the track: R3 stretches and shifts the
+// recording in one pass and the result stays on the warp map. Real-time R3
+// follows the time ratio only roughly (left alone, 90 s at 1.075x drifted
+// 0.9 ms per second), so the layout is steered; this holds it to a few ms
+// over 30 s and across a change of ratio.
+void stretchesAlongTheMap()
+{
+  const int hop = 512;
+  const double seconds = 30.0, turn = 15.0, first = 1.25, second = 0.9;
+  const int samples = static_cast<int>(seconds * kRate);
+  auto source = tone(440.0, samples);
+  // A 20 ms gap every 2.5 s marks where the recording is.
+  std::vector<double> gaps;
+  for (double at = 1.25; at < seconds - 1.0; at += 2.5)
+  {
+    gaps.push_back(at);
+    for (int i = static_cast<int>(at * kRate); i < static_cast<int>((at + 0.02) * kRate); ++i)
+      source[static_cast<size_t>(i)] = 0.0f;
+  }
+  const auto outputSeconds = [&](double sourceSeconds) {
+    return sourceSeconds <= turn ? sourceSeconds * first
+                                 : turn * first + (sourceSeconds - turn) * second;
+  };
+  const int frames = static_cast<int>(outputSeconds(seconds) * kRate) / hop;
+  std::vector<double> sourceAt(static_cast<size_t>(frames) + 1);
+  for (int f = 0; f <= frames; ++f)
+  {
+    const double out = static_cast<double>(f) * hop / kRate;
+    const double in = out <= turn * first ? out / first : turn + (out - turn * first) / second;
+    sourceAt[static_cast<size_t>(f)] = in * kRate;
+  }
+  const float pitch = static_cast<float>(std::pow(2.0, -1.0 / 12.0));
+  const std::vector<float> ratio(static_cast<size_t>(frames) * hop, pitch);
+  const auto out = rubberbandshift::warpShift(source.data(), samples, sourceAt, hop, ratio, kRate);
+  CHECK(out.size() == ratio.size());
+  if (out.size() != ratio.size())
+    return;
+  const double hz = peakHz(out, kRate * 10, kRate * 10 + 8192);
+  CHECK(std::abs(hz - 440.0 * pitch) < 1.0);
+  // Each gap: the quietest 10 ms within 60 ms of where the map puts it.
+  double worst = 0.0;
+  const int window = kRate / 100;
+  for (const double gap : gaps)
+  {
+    const double want = outputSeconds(gap + 0.01);
+    double quietest = 1.0e9, found = want;
+    for (int c = static_cast<int>((want - 0.06) * kRate); c < static_cast<int>((want + 0.06) * kRate); c += 8)
+    {
+      double energy = 0.0;
+      for (int i = c - window / 2; i < c + window / 2; ++i)
+        energy += static_cast<double>(out[static_cast<size_t>(i)]) * out[static_cast<size_t>(i)];
+      if (energy < quietest)
+      {
+        quietest = energy;
+        found = static_cast<double>(c) / kRate;
+      }
+    }
+    worst = std::max(worst, std::abs(found - want));
+  }
+  std::printf("  30 s stretched 1.25x then 0.9x, down a semitone: %.1f Hz, gaps within %.1f ms\n",
+              hz, worst * 1000.0);
+  CHECK(worst < 0.010);
+}
 } // namespace
 
 int main()
 {
+  stretchesAlongTheMap();
   juce::ScopedJuceInitialiser_GUI juce;
   for (const bool preserveFormant : {false, true})
   {

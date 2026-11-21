@@ -109,7 +109,10 @@ protected:
     int m_debugLevel;
     bool m_useHardPeaks;
     int64_t m_inFrameCounter;
-    std::pair<int64_t, int64_t> m_frameCheckpoint;
+    // PitchNet change (2026-11-22): the checkpointed output frame keeps its
+    // fraction (see PITCHNET_CHANGES.md).
+    std::pair<int64_t, double> m_frameCheckpoint;
+    double exactExpectedOutFrame(int64_t inFrame, double timeRatio);
     int64_t expectedOutFrame(int64_t inFrame, double timeRatio);
     double m_outFrameCounter;
     Log m_log;

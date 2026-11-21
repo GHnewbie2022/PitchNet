@@ -2255,8 +2255,8 @@ void MainComponent::analyzeAudio()
         safeThis->pianoRoll.repaint();
 
         // Analysis may have fallen back to CPU inference and taken the
-        // synthesis engine with it. Keep the Synthesis card showing whatever
-        // is actually rendering.
+        // synthesis engine with it. Keep the panel in step with whatever is
+        // actually rendering (the device row shows only for the vocoder).
         if (safeThis->editorController != nullptr)
           safeThis->parameterPanel.setSynthesisEngine(
               safeThis->editorController->getSynthesisEngineType());

@@ -169,6 +169,10 @@ private:
     // Not ranked by quality: neither is better everywhere. The model wins on
     // large pitch moves, PSOLA returns untouched audio bit for bit. The member
     // names track the enum, the button text is what the user reads.
+    //
+    // Both are kept but no longer shown (spec Q12, 2026-11-21): PSOLA left the
+    // panel after the listening tests, and the AI button alone would choose
+    // nothing. The Rendering card now holds only the inference device row.
     RadioButton vocoderEngineToggle;
     RadioButton psolaEngineToggle;
 

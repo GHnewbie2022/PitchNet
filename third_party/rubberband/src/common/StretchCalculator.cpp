@@ -314,12 +314,23 @@ StretchCalculator::mapPeaks(std::vector<Peak> &peaks,
     }
 }    
 
+// PitchNet change (2026-11-22): the checkpoint keeps the fraction of the
+// expected output frame. Rounded at every checkpoint, a ratio that changes
+// with each frame (a pitch curve, a time map) added the same fraction of a
+// sample every frame: at a time ratio of 1.075 the output ran 0.9 ms late
+// with every second.
+double
+StretchCalculator::exactExpectedOutFrame(int64_t inFrame, double timeRatio)
+{
+    int64_t checkpointedAt = m_frameCheckpoint.first;
+    double checkpointed = m_frameCheckpoint.second;
+    return checkpointed + double(inFrame - checkpointedAt) * timeRatio;
+}
+
 int64_t
 StretchCalculator::expectedOutFrame(int64_t inFrame, double timeRatio)
 {
-    int64_t checkpointedAt = m_frameCheckpoint.first;
-    int64_t checkpointed = m_frameCheckpoint.second;
-    return int64_t(round(checkpointed + (inFrame - checkpointedAt) * timeRatio));
+    return int64_t(round(exactExpectedOutFrame(inFrame, timeRatio)));
 }
 
 int
@@ -378,10 +389,11 @@ StretchCalculator::calculateSingle(double timeRatio,
 
         m_log.log(2, "StretchCalculator: ratio changed from and to", m_prevRatio, ratio);
 
-        int64_t toCheckpoint = expectedOutFrame
+        // PitchNet change (2026-11-22): unrounded, see expectedOutFrame
+        double toCheckpoint = exactExpectedOutFrame
             (m_inFrameCounter, m_prevTimeRatio);
         m_frameCheckpoint =
-            std::pair<int64_t, int64_t>(m_inFrameCounter, toCheckpoint);
+            std::pair<int64_t, double>(m_inFrameCounter, toCheckpoint);
     }
     
     m_prevRatio = ratio;
@@ -520,7 +532,7 @@ StretchCalculator::reset()
     m_prevRatio = 1.0;
     m_prevTimeRatio = 1.0;
     m_inFrameCounter = 0;
-    m_frameCheckpoint = std::pair<int64_t, int64_t>(0, 0);
+    m_frameCheckpoint = std::pair<int64_t, double>(0, 0.0);
     m_outFrameCounter = 0.0;
     m_transientAmnesty = 0;
     m_keyFrameMap.clear();

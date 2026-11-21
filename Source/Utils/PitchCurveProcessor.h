@@ -33,6 +33,19 @@ namespace PitchCurveProcessor
     std::vector<int> refitUntouchedCurves(Project& project, int start, int end,
                                           bool apply = true);
 
+    /**
+     * For the notes the warp laid out off their recorded frames (stretched or
+     * moved), the pitch (midi, one value per frame of [start, end), 0 outside
+     * such notes) each would have with no pitch edit, laid out the way its
+     * edited curve is: the unedited base plus its analysed contour through
+     * the same note map. An edited note's curve keeps its stored contour,
+     * spread over the note's own frames (NoteTiming.h), which sits a fraction
+     * of a frame off the recording as the track's map plays it; this is the
+     * curve to measure the edit against, so that only the edit is left
+     * (spec Q12: Rubber Band's pitch ratio on a stretched note).
+     */
+    std::vector<float> uneditedPitchOnMovedNotes(Project& project, int start, int end);
+
     /** Drop every pitch edit on the note: it sings what the analysis gave it. */
     void resetNoteToUnedited(Note& note);
 

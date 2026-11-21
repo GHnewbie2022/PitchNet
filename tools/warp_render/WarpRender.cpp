@@ -3365,10 +3365,12 @@ int main(int argc, char **argv)
       // PITCHNET_RERENDER_R3=1: render the edited R3 notes again with the
       // current R3 settings, as switching them to the vocoder and back in the
       // App's synthesis menu would (SetSynthEngineAction marks them the same
-      // way). One pass per run of touching R3 notes, as selecting each run
-      // would.
-      if (const char *rerender = std::getenv("PITCHNET_RERENDER_R3");
-          rerender != nullptr && juce::String(rerender) == "1")
+      // way). =vocoder: switch them to the vocoder instead, as choosing it in
+      // that menu would. One pass per run of touching R3 notes, as selecting
+      // each run would.
+      const char *rerender = std::getenv("PITCHNET_RERENDER_R3");
+      const bool toVocoder = rerender != nullptr && juce::String(rerender) == "vocoder";
+      if (rerender != nullptr && (juce::String(rerender) == "1" || toVocoder))
       {
         std::vector<std::vector<size_t>> runs;
         auto &notes = p.getNotes();
@@ -3388,6 +3390,8 @@ int main(int argc, char **argv)
         {
           for (const size_t i : run)
           {
+            if (toVocoder)
+              notes[i].setSynthEngine(Note::SynthEngine::Vocoder);
             notes[i].markDirty();
             notes[i].markSynthDirty();
             std::printf("R3 note %zu %.3f-%.3f s\n", i, notes[i].getStartFrame() * hop,
@@ -3918,6 +3922,34 @@ int main(int argc, char **argv)
       auto &data = p.getAudioData();
       if (!touch)
         data.waveform.makeCopyOf(data.originalWaveform);
+      // PITCHNET_RESYNTH_ANCHORS=src:dst,... (seconds): warp anchors placed
+      // as the App places them, before the notes are rendered.
+      if (const char *anchorText = std::getenv("PITCHNET_RESYNTH_ANCHORS"))
+      {
+        const double framesPerSecond = static_cast<double>(SAMPLE_RATE) / HOP_SIZE;
+        warp::fitToProject(data);
+        warp::WarpMap map = data.warpMap;
+        for (const auto &pair : juce::StringArray::fromTokens(juce::String(anchorText), ",", ""))
+        {
+          if (pair.trim().isEmpty())
+            continue;
+          const double source =
+              pair.upToFirstOccurrenceOf(":", false, false).getDoubleValue() * framesPerSecond;
+          const double destination =
+              pair.fromFirstOccurrenceOf(":", false, false).getDoubleValue() * framesPerSecond;
+          const int index = map.addAnchorAtSource(source);
+          if (index < 0)
+          {
+            std::fprintf(stderr, "anchor at %.3f s refused\n", source / framesPerSecond);
+            continue;
+          }
+          const double placed = map.moveAnchor(index, destination);
+          std::printf("anchor %.3f s -> %.3f s (asked %.3f s)\n", source / framesPerSecond,
+                      placed / framesPerSecond, destination / framesPerSecond);
+        }
+        if (!map.isIdentity())
+          warp::apply(p, map);
+      }
       if (touch)
       {
         // --touch N[,M...]: notes by index. PITCHNET_TOUCH_ENGINE=rubberband
@@ -3958,9 +3990,24 @@ int main(int argc, char **argv)
         if (!note.isRest() && (shiftText != nullptr || !note.isNeutralForOriginalWaveform()) &&
             note.getEndFrame() * hop > from && note.getStartFrame() * hop < to)
         {
+          // PITCHNET_RESYNTH_RESET=1: every pitch edit on the note is dropped
+          // first (pitch tools too: PITCHNET_RESYNTH_SHIFT alone only sets
+          // the centre, and a note with a tilt stays edited).
+          if (std::getenv("PITCHNET_RESYNTH_RESET") != nullptr)
+            PitchCurveProcessor::resetNoteToUnedited(note);
+          // PITCHNET_RESYNTH_SHIFT_ONLY=from:to (seconds): only the notes
+          // starting there are moved; the others in the range are put back
+          // on the recording (an R3 note between unedited neighbours).
           if (shiftText != nullptr)
+          {
+            const char *only = std::getenv("PITCHNET_RESYNTH_SHIFT_ONLY");
+            const double onlyFrom = only ? juce::String(only).upToFirstOccurrenceOf(":", false, false).getDoubleValue() : -1.0;
+            const double onlyTo = only ? juce::String(only).fromFirstOccurrenceOf(":", false, false).getDoubleValue() : 1.0e9;
+            const bool moved = note.getStartFrame() * hop >= onlyFrom &&
+                               note.getStartFrame() * hop < onlyTo;
             note.setMidiNote(note.getOriginalMidiNote() +
-                             juce::String(shiftText).getFloatValue());
+                             (moved ? juce::String(shiftText).getFloatValue() : 0.0f));
+          }
           // PITCHNET_RESYNTH_NOTE_ENGINE=rubberband: these notes use R3 (Q12);
           // =vocoder: they follow the engine (a saved R3 choice is cleared).
           // PITCHNET_RESYNTH_R3_RANGE=from:to: only the notes starting there.
@@ -3975,6 +4022,11 @@ int main(int argc, char **argv)
                                     : Note::SynthEngine::Vocoder);
           note.markDirty();
           note.markSynthDirty();
+          if (std::getenv("PITCHNET_RESYNTH_LIST") != nullptr)
+            std::printf("marked @%d-%d src %d-%d midi %.3f orig %.3f engine %s\n",
+                        note.getStartFrame(), note.getEndFrame(), note.getSrcStartFrame(),
+                        note.getSrcEndFrame(), note.getMidiNote(), note.getOriginalMidiNote(),
+                        note.getSynthEngine() == Note::SynthEngine::RubberBand ? "r3" : "vocoder");
           ++marked;
         }
       if (shiftText != nullptr)

@@ -346,6 +346,44 @@ namespace PitchCurveProcessor
     }
     } // namespace
 
+    std::vector<float> uneditedPitchOnMovedNotes(Project& project, int start, int end)
+    {
+        std::vector<float> pitch(static_cast<size_t>(std::max(0, end - start)), 0.0f);
+        auto& audio = project.getAudioData();
+        if (pitch.empty() || audio.basePitch.empty())
+            return pitch;
+        const auto moved = [&](const Note& note) {
+            return !note.isRest() && note.getEndFrame() > start && note.getStartFrame() < end &&
+                   note.getDurationFrames() > 0 &&
+                   (note.getStartFrame() != note.getSrcStartFrame() ||
+                    note.getDurationFrames() != note.getSrcDurationFrames());
+        };
+        if (std::none_of(project.getNotes().begin(), project.getNotes().end(), moved))
+            return pitch;
+        const auto base = uneditedBase(project);
+        for (const auto& note : project.getNotes())
+        {
+            if (!moved(note))
+                continue;
+            // The analysed contour, never a baked or drawn one: those are edits.
+            const auto& stored = note.hasOriginalDeltaPitch() ? note.getOriginalDeltaPitch()
+                                                              : note.getDeltaPitch();
+            if (stored.empty())
+                continue;
+            const auto contour = notetiming::curveOnNote(audio, note, stored);
+            for (int i = 0; i < note.getDurationFrames() && i < static_cast<int>(contour.size()); ++i)
+            {
+                const int frame = note.getStartFrame() + i;
+                if (frame < start || frame >= end || frame < 0 ||
+                    static_cast<size_t>(frame) >= base.size())
+                    continue;
+                pitch[static_cast<size_t>(frame - start)] =
+                    base[static_cast<size_t>(frame)] + contour[static_cast<size_t>(i)];
+            }
+        }
+        return pitch;
+    }
+
     std::vector<int> refitUntouchedCurves(Project& project, int start, int end, bool apply)
     {
         std::vector<int> changed;

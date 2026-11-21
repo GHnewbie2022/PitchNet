@@ -9,6 +9,7 @@
 #include "OriginalWaveformRestore.h"
 #include "RubberBandShift.h"
 #include "../../Utils/NoteGainCurve.h"
+#include "../../Utils/PitchCurveProcessor.h"
 #include "../../Utils/AppLogger.h"
 #include "../../Utils/Constants.h"
 #include "../../Utils/Localization.h"
@@ -882,6 +883,17 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     const int frames = endFrame - startFrame;
     rubberBandRatio.assign(static_cast<size_t>(frames), 0.0f);
     rubberBandSourceHz.assign(static_cast<size_t>(frames), 0.0f);
+    // A note the warp stretched or moved after its pitch was edited keeps
+    // its stored contour, spread over its own frames, and that sits a
+    // fraction of a frame off the recording as the track's map plays it.
+    // Target over recording then carried that misfit wherever the pitch
+    // moves (a glide, vibrato): on the 煙幕 phrase at 165.65 s stretched
+    // 1.02x the ratio stepped 9.8 cent rms from one frame to the next,
+    // against a flat line inside each note unstretched, and R3 sang it as a
+    // quiver from 1.02x up. Such notes are measured against their own
+    // unedited curve laid out the same way, which leaves the edit alone.
+    const auto unedited =
+        PitchCurveProcessor::uneditedPitchOnMovedNotes(*project, startFrame, endFrame);
     for (int f = 0; f < frames; ++f) {
       const auto index = static_cast<size_t>(f);
       // Voicing is the recording's, where this frame reads it (the warp).
@@ -895,8 +907,11 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
       const float source = index < sourceFrames.size() && !recorded.empty()
                                ? interpolateF0(recorded, sourceFrames[index])
                                : 0.0f;
-      if (voiced && target > 0.0f && source > 0.0f)
-        rubberBandRatio[index] = target / source;
+      const float reference = index < unedited.size() && unedited[index] > 0.0f
+                                  ? midiToFreq(unedited[index])
+                                  : source;
+      if (voiced && target > 0.0f && reference > 0.0f)
+        rubberBandRatio[index] = target / reference;
       if (voiced && source > 0.0f)
         rubberBandSourceHz[index] = source;
     }
@@ -1019,6 +1034,35 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   };
 
 
+  // Spec Q12: where the warp map is not the identity, R3 reads the
+  // recording itself and does the stretch and the pitch change in one pass
+  // (rubberbandshift::warpShift): the slice of the recording this render
+  // plays, and where each of its frames reads it. Shifting what Signalsmith
+  // had already stretched left a quiver from 1.33x up.
+  std::vector<float> warpedRecording;
+  std::vector<double> warpedSourceAt;
+  if (!rubberBandFrames.empty() && !audioData.warpMap.isIdentity() &&
+      audioData.originalWaveform.getNumSamples() > 0) {
+    const auto &recording = audioData.originalWaveform;
+    const int frames = endFrame - startFrame;
+    warpedSourceAt.resize(static_cast<size_t>(frames) + 1);
+    for (int f = 0; f <= frames; ++f)
+      warpedSourceAt[static_cast<size_t>(f)] =
+          audioData.warpMap.sourceAt(static_cast<double>(startFrame + f)) * hopSize;
+    // R3 is fed past the end until its delayed tail is out: at the smallest
+    // time ratio (1/8) that is about 16000 samples more.
+    constexpr int kLead = 64, kTail = 32768;
+    const int total = recording.getNumSamples();
+    const int sliceStart = std::clamp(
+        static_cast<int>(std::floor(warpedSourceAt.front())) - kLead, 0, total);
+    const int sliceEnd = std::clamp(
+        static_cast<int>(std::ceil(warpedSourceAt.back())) + kTail, sliceStart, total);
+    warpedRecording.assign(recording.getReadPointer(0) + sliceStart,
+                           recording.getReadPointer(0) + sliceEnd);
+    for (auto &position : warpedSourceAt)
+      position -= static_cast<double>(sliceStart);
+  }
+
   // Everything past the render is engine-agnostic: both paths hand back the
   // same span of samples and share this callback verbatim.
   auto onRendered =
@@ -1031,6 +1075,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
        rubberBandRatio = std::move(rubberBandRatio),
        rubberBandFormant = rubberBandFormantPreserved,
        rubberBandSourceHz = std::move(rubberBandSourceHz),
+       warpedRecording = std::move(warpedRecording),
+       warpedSourceAt = std::move(warpedSourceAt),
        blendMask = std::move(blendMask),
        originalSegment = std::move(originalSegment)](
           std::vector<float> synthesizedAudio) {
@@ -1059,7 +1105,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                      f0DirtyStart, f0DirtyEnd, capturedNoteCount, journalDetail,
                      commitFrameRanges, blendMask, originalSegment,
                      rubberBandFrames, rubberBandRatio, rubberBandFormant,
-                     rubberBandSourceHz,
+                     rubberBandSourceHz, warpedRecording, warpedSourceAt,
                      formantShifts, formantF0, formantSampleRate, hasGlobalFormant, usePsola,
                      synthesizedAudio = std::move(synthesizedAudio)]() mutable {
           if (currentJobId != jobId.load())
@@ -1201,10 +1247,17 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               if (frame < rubberBandSourceHz.size())
                 sourceHz[i] = rubberBandSourceHz[frame];
             }
-            auto shifted = rubberbandshift::shift(originalSegment, ratio,
-                                                  formantSampleRate,
-                                                  capturedCancelFlag.get(),
-                                                  rubberBandFormant, &sourceHz);
+            auto shifted = warpedRecording.empty()
+                               ? rubberbandshift::shift(originalSegment, ratio,
+                                                        formantSampleRate,
+                                                        capturedCancelFlag.get(),
+                                                        rubberBandFormant, &sourceHz)
+                               : rubberbandshift::warpShift(
+                                     warpedRecording.data(),
+                                     static_cast<int>(warpedRecording.size()),
+                                     warpedSourceAt, hopSize, ratio,
+                                     formantSampleRate, capturedCancelFlag.get(),
+                                     rubberBandFormant, &sourceHz);
             if (shifted.empty() ||
                 !formant::process(shifted, formantShifts, formantF0, hopSize,
                                   formantSampleRate, capturedCancelFlag.get())) {
