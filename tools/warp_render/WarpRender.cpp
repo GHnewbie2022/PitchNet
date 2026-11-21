@@ -3987,7 +3987,9 @@ int main(int argc, char **argv)
       int marked = 0;
       const char *shiftText = std::getenv("PITCHNET_RESYNTH_SHIFT");
       for (auto &note : p.getNotes())
-        if (!note.isRest() && (shiftText != nullptr || !note.isNeutralForOriginalWaveform()) &&
+        if (!note.isRest() &&
+            (shiftText != nullptr || std::getenv("PITCHNET_RESYNTH_FORMANT") != nullptr ||
+             !note.isNeutralForOriginalWaveform()) &&
             note.getEndFrame() * hop > from && note.getStartFrame() * hop < to)
         {
           // PITCHNET_RESYNTH_RESET=1: every pitch edit on the note is dropped
@@ -4022,6 +4024,9 @@ int main(int argc, char **argv)
                                     : juce::String(noteEngine) == "highs"
                                         ? Note::SynthEngine::VocoderRecordedHighs
                                         : Note::SynthEngine::Vocoder);
+          // PITCHNET_RESYNTH_FORMANT=x: the notes' formant shift, in semitones.
+          if (const char *formantText = std::getenv("PITCHNET_RESYNTH_FORMANT"))
+            note.setFormantShift(juce::String(formantText).getFloatValue());
           note.markDirty();
           note.markSynthDirty();
           if (std::getenv("PITCHNET_RESYNTH_LIST") != nullptr)

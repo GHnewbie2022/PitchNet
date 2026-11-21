@@ -862,14 +862,18 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
 
   // Spec Q12: notes set to "vocoder + recorded highs". Their render keeps
   // the vocoder below 10 kHz and takes the recording above it
-  // (HighBandRestore.h). Not where the formants are moved: the recording's
-  // highs would stay where they were recorded.
+  // (HighBandRestore.h). Notes with a formant edit too: the recording's
+  // highs stay where they were recorded, and that was preferred to the
+  // vocoder's and to R3's in all 6 listening tests (formant +2 and -2
+  // semitones, unstretched, 0.90x and 1.33x). A formant shift on the whole
+  // project renders every note, the ones with no edit of their own included.
   std::vector<std::pair<int, int>> recordedHighsFrames;
-  if (!usePsola && std::abs(project->getFormantShift()) <= 0.001f)
+  if (!usePsola)
     for (const auto &note : project->getNotes())
-      if (!note.isRest() && note.isDirty() && !note.isNeutralForOriginalWaveform() &&
+      if (!note.isRest() && note.isDirty() &&
+          (std::abs(project->getFormantShift()) > 0.001f ||
+           !note.isNeutralForOriginalWaveform()) &&
           note.getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs &&
-          std::abs(note.getFormantShift()) <= 0.001f &&
           note.getEndFrame() > startFrame && note.getStartFrame() < endFrame)
         recordedHighsFrames.emplace_back(note.getStartFrame(), note.getEndFrame());
 
