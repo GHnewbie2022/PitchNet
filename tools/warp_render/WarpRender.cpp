@@ -3985,6 +3985,23 @@ int main(int argc, char **argv)
                   (int)data.f0.size());
       const double hop = static_cast<double>(HOP_SIZE) / SAMPLE_RATE;
       int marked = 0;
+      // PITCHNET_RESYNTH_DEFAULT_EXCEPT=from:to (seconds): every note goes
+      // back to the default synthesis, the ones with no edit included,
+      // except those starting in the range.
+      if (const char *except = std::getenv("PITCHNET_RESYNTH_DEFAULT_EXCEPT"))
+      {
+        const double keepFrom = juce::String(except).upToFirstOccurrenceOf(":", false, false).getDoubleValue();
+        const double keepTo = juce::String(except).fromFirstOccurrenceOf(":", false, false).getDoubleValue();
+        for (auto &note : p.getNotes())
+        {
+          const double start = note.getStartFrame() * hop;
+          if (note.getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs ||
+              (start >= keepFrom && start < keepTo))
+            continue;
+          std::printf("to default @%d (%.3f s)\n", note.getStartFrame(), start);
+          note.setSynthEngine(Note::SynthEngine::VocoderRecordedHighs);
+        }
+      }
       const char *shiftText = std::getenv("PITCHNET_RESYNTH_SHIFT");
       for (auto &note : p.getNotes())
         if (!note.isRest() &&

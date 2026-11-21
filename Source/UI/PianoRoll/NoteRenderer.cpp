@@ -693,14 +693,26 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
         g.strokePath(bodyShape, juce::PathStrokeType(1.0f));
       }
 
-      // Spec Q12: a note set to render with Rubber Band R3 is outlined in
-      // bold yellow, so the choice shows without opening its menu. The
-      // default has no outline.
+      // Spec Q12: a note rendered with Rubber Band R3 is outlined in bold
+      // yellow, so the choice shows without opening its menu. The default
+      // has no outline. A note set to R3 that still plays the recording
+      // (no edit of its own: R3 has nothing to shift) takes a thinner,
+      // dashed outline: the choice is kept for when it is edited.
       if (synthEngineColour::has(note.getSynthEngine()) && !bodyShape.isEmpty())
       {
         g.setColour(synthEngineColour::of(note.getSynthEngine()));
-        g.strokePath(bodyShape, juce::PathStrokeType(2.5f, juce::PathStrokeType::curved,
-                                                     juce::PathStrokeType::rounded));
+        if (note.isNeutralForOriginalWaveform())
+        {
+          juce::Path dashed;
+          const float dashes[] = {5.0f, 4.0f};
+          juce::PathStrokeType(1.5f, juce::PathStrokeType::curved,
+                               juce::PathStrokeType::butt)
+              .createDashedStroke(dashed, bodyShape, dashes, 2);
+          g.fillPath(dashed);
+        }
+        else
+          g.strokePath(bodyShape, juce::PathStrokeType(2.5f, juce::PathStrokeType::curved,
+                                                       juce::PathStrokeType::rounded));
       }
 
       if (showSelectionStatus && note.isSelected())
