@@ -31,9 +31,10 @@ enum class SynthesisEngineType
 SynthesisEngineType defaultSynthesisEngineType();
 
 /**
- * Apply hardware policy when restoring an engine preference. On Windows a
- * single Intel adapter takes precedence over the saved engine. Explicit engine
- * changes during the session remain available.
+ * Apply hardware policy when restoring an engine preference. A saved PSOLA
+ * choice gives way to defaultSynthesisEngineType(), since the panel no longer
+ * offers it (spec Q12). On Windows a single Intel adapter takes precedence
+ * over the saved engine.
  */
 SynthesisEngineType synthesisEngineTypeForSavedPreference(SynthesisEngineType type);
 

@@ -390,6 +390,9 @@ private:
   Note *findNoteForSplitAt(float x, float y, float *top = nullptr,
                            float *bottom = nullptr);
   juce::Rectangle<float> getResetButtonBounds(const Note &note) const;
+  // The synthesis menu (spec Q12), right of the restore button.
+  juce::Rectangle<float> getSynthButtonBounds(const Note &note) const;
+  juce::Rectangle<int> getSynthButtonLocalBounds(const Note &note) const;
   juce::Rectangle<float> getPreviewHoverBounds(const Note &note) const;
   juce::Rectangle<int> getPreviewButtonLocalBounds(const Note &note) const;
   juce::Rectangle<int> getResetButtonLocalBounds(const Note &note) const;
@@ -402,6 +405,9 @@ private:
   // onHistoryActionApplied so it is processed like undo/redo.
   void applyRestoreAction(std::unique_ptr<UndoableAction> action);
   void showResetMenu(Note &note);
+  // How the note (and the selected notes) are rendered: vocoder or Rubber
+  // Band R3 (spec Q12).
+  void showSynthMenu(Note &note);
   void setHoveredNote(Note *note);
   void updateScrollBars();
   bool nudgeSelectedNotesBySemitones(int semitoneDelta);
@@ -513,10 +519,13 @@ private:
   std::vector<BreathDragItem> breathDragItems;
   Button previewButton;
   Button resetButton;
+  Button synthButton;
   int previewButtonWidth = 28;
   int previewButtonHeight = 28;
   int resetButtonWidth = 28;
   int resetButtonHeight = 28;
+  int synthButtonWidth = 28;
+  int synthButtonHeight = 28;
   bool previewPlaybackActive = false;
   int previewPlaybackStartFrame = 0;
   int previewPlaybackEndFrame = 0;

@@ -451,6 +451,16 @@ if(APPLE)
     target_link_libraries(pitchnet_core PUBLIC "-framework Accelerate")
 endif()
 
+# Rubber Band Library (GPL v2 or later; single-file build, vDSP FFT on Apple,
+# built-in FFT elsewhere) for notes rendered with its R3 engine instead of the
+# vocoder (spec Q12, RubberBandShift.h).
+set(PITCHNET_RUBBERBAND_SINGLE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rubberband/single/RubberBandSingle.cpp")
+target_sources(pitchnet_core PRIVATE "${PITCHNET_RUBBERBAND_SINGLE}")
+set_source_files_properties("${PITCHNET_RUBBERBAND_SINGLE}" PROPERTIES COMPILE_OPTIONS "-w")
+target_include_directories(pitchnet_core PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rubberband")
+
 if(PITCHNET_SYNTH_NOTE_DIAGNOSTICS)
     target_compile_definitions(pitchnet_core PUBLIC PITCHNET_SYNTH_NOTE_DIAGNOSTICS=1)
     message(STATUS "PitchNet: per-note synthesis diagnostics ENABLED")

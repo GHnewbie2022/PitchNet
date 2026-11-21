@@ -692,6 +692,15 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
         g.strokePath(bodyShape, juce::PathStrokeType(1.0f));
       }
 
+      // Spec Q12: a note set to render with Rubber Band R3 is outlined in
+      // bold yellow, so the choice shows without opening its menu.
+      if (note.getSynthEngine() == Note::SynthEngine::RubberBand && !bodyShape.isEmpty())
+      {
+        g.setColour(juce::Colour(0xffffd60a));
+        g.strokePath(bodyShape, juce::PathStrokeType(2.5f, juce::PathStrokeType::curved,
+                                                     juce::PathStrokeType::rounded));
+      }
+
       if (showSelectionStatus && note.isSelected())
       {
         const auto outlineBounds = noteVisualBounds.expanded(1.0f);

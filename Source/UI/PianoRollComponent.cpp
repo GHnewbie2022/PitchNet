@@ -259,6 +259,48 @@ namespace
     juce::String name;
   };
 
+  // Spec Q12: how the notes are rendered (vocoder or Rubber Band R3). Edited
+  // notes are rendered again with it; a note that plays the recording keeps
+  // the choice for when it is edited.
+  class SetSynthEngineAction final : public UndoableAction
+  {
+  public:
+    SetSynthEngineAction(Project& project, std::vector<Note*> notes,
+                         Note::SynthEngine engine)
+        : project(project), notes(noteref::refs(notes)), after(engine)
+    {
+      for (const auto* note : notes)
+        before.push_back(note->getSynthEngine());
+    }
+    void undo() override { apply(false); }
+    void redo() override { apply(true); }
+    juce::String getName() const override { return "Set Synthesis Engine"; }
+
+  private:
+    void apply(bool forward)
+    {
+      const auto resolved = noteref::resolve(notes);
+      for (size_t i = 0; i < resolved.size() && i < before.size(); ++i)
+      {
+        auto* note = resolved[i];
+        if (note == nullptr)
+          continue;
+        note->setSynthEngine(forward ? after : before[i]);
+        if (!note->isNeutralForOriginalWaveform())
+        {
+          note->markDirty();
+          note->markSynthDirty();
+        }
+      }
+      project.setModified(true);
+    }
+
+    Project& project;
+    std::vector<NoteRef> notes;
+    std::vector<Note::SynthEngine> before;
+    Note::SynthEngine after;
+  };
+
   class ResetNoteEditsAction final : public UndoableAction
   {
   public:
@@ -568,6 +610,24 @@ PianoRollComponent::PianoRollComponent()
       showResetMenu(*hoveredNote);
   };
   addAndMakeVisible(resetButton);
+
+  int synthImageSize = 0;
+  if (const auto *synthImageData =
+          BinaryData::getNamedResource("synth_png", synthImageSize))
+  {
+    synthButton.setImage(
+        juce::ImageFileFormat::loadFrom(synthImageData, synthImageSize));
+    synthButtonWidth = std::max(1, synthButton.getWidth());
+    synthButtonHeight = std::max(1, synthButton.getHeight());
+  }
+  synthButton.setTooltip(TR("tooltip.synthesis"));
+  synthButton.setVisible(false);
+  synthButton.onClick = [this]()
+  {
+    if (hoveredNote)
+      showSynthMenu(*hoveredNote);
+  };
+  addAndMakeVisible(synthButton);
 
 }
 
@@ -2838,7 +2898,8 @@ void PianoRollComponent::mouseExit(const juce::MouseEvent &)
     pitchShaperHandler_->clearHover();
 
   if (previewButton.isMouseOverOrDragging() ||
-      resetButton.isMouseOverOrDragging())
+      resetButton.isMouseOverOrDragging() ||
+      synthButton.isMouseOverOrDragging())
     return;
 
   setHoveredNote(nullptr);
@@ -4499,7 +4560,8 @@ PianoRollComponent::getPreviewButtonBounds(const Note &note) const
   const float buttonWidth = static_cast<float>(previewButtonWidth);
   const float buttonHeight = static_cast<float>(previewButtonHeight);
   const float buttonGroupWidth =
-      buttonWidth + buttonGap + static_cast<float>(resetButtonWidth);
+      buttonWidth + buttonGap + static_cast<float>(resetButtonWidth) + buttonGap +
+      static_cast<float>(synthButtonWidth);
   const float buttonX = shadowBounds.getCentreX() - buttonGroupWidth * 0.5f;
   const float buttonY = shadowBounds.getBottom() + 7.0f +
       (editMode == EditMode::Select ? PitchToolHandles::buttonHeight + 10.0f : 0.0f);
@@ -4522,6 +4584,7 @@ PianoRollComponent::getPreviewHoverBounds(const Note &note) const
 
   return noteBounds.getUnion(getPreviewButtonBounds(note))
       .getUnion(getResetButtonBounds(note))
+      .getUnion(getSynthButtonBounds(note))
       .expanded(4.0f);
 }
 
@@ -4533,6 +4596,30 @@ PianoRollComponent::getResetButtonBounds(const Note &note) const
   return {bounds.getRight() + buttonGap, bounds.getY(),
           static_cast<float>(resetButtonWidth),
           static_cast<float>(resetButtonHeight)};
+}
+
+juce::Rectangle<float>
+PianoRollComponent::getSynthButtonBounds(const Note &note) const
+{
+  constexpr float buttonGap = 4.0f;
+  auto bounds = getResetButtonBounds(note);
+  return {bounds.getRight() + buttonGap, bounds.getY(),
+          static_cast<float>(synthButtonWidth),
+          static_cast<float>(synthButtonHeight)};
+}
+
+juce::Rectangle<int>
+PianoRollComponent::getSynthButtonLocalBounds(const Note &note) const
+{
+  const auto bounds =
+      getSynthButtonBounds(note)
+          .translated(static_cast<float>(pianoKeysWidth) -
+                          static_cast<float>(scrollX),
+                      static_cast<float>(headerHeight) -
+                          static_cast<float>(scrollY));
+  return {static_cast<int>(std::round(bounds.getX())),
+          static_cast<int>(std::round(bounds.getY())), synthButtonWidth,
+          synthButtonHeight};
 }
 
 juce::Rectangle<int>
@@ -4582,11 +4669,13 @@ void PianoRollComponent::updatePreviewButtonBounds()
   {
     previewButton.setVisible(false);
     resetButton.setVisible(false);
+    synthButton.setVisible(false);
     return;
   }
 
   const auto previewBounds = getPreviewButtonLocalBounds(*hoveredNote);
   const auto resetBounds = getResetButtonLocalBounds(*hoveredNote);
+  const auto synthBounds = getSynthButtonLocalBounds(*hoveredNote);
   const int horizontalScrollBarSize =
       showHorizontalScrollBar ? APP_SCROLLBAR_THICKNESS : 0;
   constexpr int verticalScrollBarSize = APP_SCROLLBAR_THICKNESS;
@@ -4600,6 +4689,8 @@ void PianoRollComponent::updatePreviewButtonBounds()
   previewButton.setVisible(previewBounds.intersects(mainArea));
   resetButton.setBounds(resetBounds);
   resetButton.setVisible(resetBounds.intersects(mainArea));
+  synthButton.setBounds(synthBounds);
+  synthButton.setVisible(synthBounds.intersects(mainArea));
 }
 
 Note *PianoRollComponent::findPreviewButtonNoteAt(float x, float y) const
@@ -4608,7 +4699,8 @@ Note *PianoRollComponent::findPreviewButtonNoteAt(float x, float y) const
     return nullptr;
 
   return (getPreviewButtonBounds(*hoveredNote).contains(x, y) ||
-          getResetButtonBounds(*hoveredNote).contains(x, y))
+          getResetButtonBounds(*hoveredNote).contains(x, y) ||
+          getSynthButtonBounds(*hoveredNote).contains(x, y))
              ? hoveredNote
              : nullptr;
 }
@@ -4728,6 +4820,7 @@ void PianoRollComponent::refreshLocalisedText()
 {
   previewButton.setTooltip(TR("tooltip.context_audition"));
   resetButton.setTooltip(TR("tooltip.restore_original"));
+  synthButton.setTooltip(TR("tooltip.synthesis"));
 }
 
 void PianoRollComponent::showResetMenu(Note &note)
@@ -4789,6 +4882,51 @@ void PianoRollComponent::showResetMenu(Note &note)
     else if (result == 6)
       safeThis->applyRestoreAction(
           safeThis->createRestoreSeparationAction(*notePtr));
+  });
+}
+
+void PianoRollComponent::showSynthMenu(Note &note)
+{
+  juce::PopupMenu menu;
+  menu.setLookAndFeel(&pitchPopupMenu::getLookAndFeel());
+  const auto targets = getResetTargetNotes(note);
+  const auto all = [&targets](Note::SynthEngine engine)
+  {
+    return !targets.empty() &&
+           std::all_of(targets.begin(), targets.end(),
+                       [engine](const Note* n) { return n && n->getSynthEngine() == engine; });
+  };
+  const auto addItem = [&menu](int id, const juce::String& label, bool ticked)
+  {
+    juce::PopupMenu::Item item(label);
+    item.itemID = id;
+    item.customComponent = std::make_unique<pitchPopupMenu::MenuItemComponent>(
+        label, ticked).release();
+    menu.addItem(std::move(item));
+  };
+  addItem(1, TR("synth.vocoder"), all(Note::SynthEngine::Vocoder));
+  addItem(2, TR("synth.rubberband"), all(Note::SynthEngine::RubberBand));
+
+  juce::Component::SafePointer<PianoRollComponent> safeThis(this);
+  Note* notePtr = &note;
+  menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&synthButton),
+                     [safeThis, notePtr](int result)
+  {
+    if (safeThis == nullptr || !safeThis->project || result == 0)
+      return;
+    auto& notes = safeThis->project->getNotes();
+    if (std::none_of(notes.begin(), notes.end(),
+                     [notePtr](const Note& candidate)
+                     { return &candidate == notePtr; }))
+      return;
+    const auto engine = result == 2 ? Note::SynthEngine::RubberBand
+                                    : Note::SynthEngine::Vocoder;
+    auto targets = safeThis->getResetTargetNotes(*notePtr);
+    if (std::all_of(targets.begin(), targets.end(),
+                    [engine](const Note* n) { return !n || n->getSynthEngine() == engine; }))
+      return;
+    safeThis->applyRestoreAction(
+        std::make_unique<SetSynthEngineAction>(*safeThis->project, targets, engine));
   });
 }
 

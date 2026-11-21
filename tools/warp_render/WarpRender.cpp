@@ -29,6 +29,7 @@
 #include "../../Source/Undo/NoteActions.h"
 #include "../../Source/Undo/PitchUndoManager.h"
 #include "../../Source/UI/PianoRollComponent.h"
+#include "../../Source/UI/ParameterPanel.h"
 #include "../../Source/UI/PianoRoll/NoteSplitter.h"
 #include "../../Source/UI/PianoRoll/PianoRollInteractionContext.h"
 
@@ -3122,9 +3123,20 @@ int main(int argc, char **argv)
     std::vector<std::vector<float>> melRange(data.melSpectrogram.begin() + start,
                                              data.melSpectrogram.begin() + end);
     auto *vocoder = controller.getVocoder();
-    // Loaded as resynthesizeIncrementalAsync loads it.
+    // Loaded as resynthesizeIncrementalAsync loads it. PITCHNET_VOCODER_MODEL
+    // loads another file instead: an .onnx with no Core ML bundle beside it
+    // runs on ONNX Runtime (CPU, float32), to compare with Core ML.
     if (vocoder != nullptr && !vocoder->isLoaded())
-      vocoder->loadModel(PlatformPaths::getVocoderModelFile());
+    {
+      const char *modelOverride = std::getenv("PITCHNET_VOCODER_MODEL");
+      const juce::File model = modelOverride != nullptr ? juce::File(modelOverride)
+                                                        : PlatformPaths::getVocoderModelFile();
+      vocoder->loadModel(model);
+      std::printf("vocoder model %s (Core ML bundle beside it: %s), device %s\n",
+                  model.getFullPathName().toRawUTF8(),
+                  model.getSiblingFile("pc_nsf_hifigan.mlmodelc").isDirectory() ? "yes" : "no",
+                  vocoder->getExecutionDevice().toRawUTF8());
+    }
     if (vocoder == nullptr || !vocoder->isLoaded())
     {
       std::fprintf(stderr, "vocoder not loaded\n");
@@ -3212,6 +3224,60 @@ int main(int argc, char **argv)
   // (the saved path, or the file given): refused if its shape differs,
   // analysed again where its content changed, and the edited notes there
   // rendered. An embedded project finds its recording and is saved linked.
+  // WarpRender <in.pitchnet> <out.png> --shot from:to [i,j,...]: the piano
+  // roll over [from, to] seconds as the App draws it, notes i, j... set to
+  // render with Rubber Band R3 (spec Q12, their outline).
+  if (argc >= 5 && juce::String::fromUTF8(argv[3]) == "--shot")
+  {
+    Project project;
+    if (!ProjectSerializer::loadFromFile(project, input))
+      return 1;
+    sourceaudio::attachRecording(project, input);
+    if (argc >= 6)
+    {
+      juce::StringArray indices;
+      indices.addTokens(juce::String::fromUTF8(argv[5]), ",", "");
+      for (const auto &index : indices)
+        project.getNotes()[static_cast<size_t>(index.getIntValue())].setSynthEngine(
+            Note::SynthEngine::RubberBand);
+    }
+    const juce::String range = juce::String::fromUTF8(argv[4]);
+    const double from = range.upToFirstOccurrenceOf(":", false, false).getDoubleValue();
+    const double to = range.fromFirstOccurrenceOf(":", false, false).getDoubleValue();
+    PianoRollComponent roll;
+    roll.setSize(1400, 700);
+    roll.setProject(&project);
+    const float pps = static_cast<float>(1200.0 / std::max(0.05, to - from));
+    roll.setPixelsPerSecond(pps);
+    roll.setScrollX(from * pps);
+    float low = 127.0f, high = 0.0f;
+    for (const auto &note : project.getNotes())
+      if (!note.isRest() && note.getEndFrame() * HOP_SIZE / double(SAMPLE_RATE) > from &&
+          note.getStartFrame() * HOP_SIZE / double(SAMPLE_RATE) < to)
+      {
+        low = std::min(low, note.getMidiNote());
+        high = std::max(high, note.getMidiNote());
+      }
+    roll.centerOnPitchRange(low - 2.0f, high + 2.0f);
+    std::printf("shot %s\n", writePng(roll, output) ? "ok" : "FAILED");
+    return 0;
+  }
+  // WarpRender - <out.png> --panel-shot [device,device,...]: the right-hand
+  // panel at its preferred height, with these inference devices offered (the
+  // Rendering card shows only when there are two or more).
+  if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--panel-shot")
+  {
+    ParameterPanel panel;
+    panel.setSynthesisEngine(SynthesisEngineType::Vocoder);
+    juce::StringArray devices;
+    if (argc >= 5)
+      devices.addTokens(juce::String::fromUTF8(argv[4]), ",", "");
+    panel.setRenderDeviceOptions(devices, 0);
+    panel.setSize(280, panel.getPreferredHeight());
+    std::printf("preferred height %d\n", panel.getPreferredHeight());
+    std::printf("shot %s\n", writePng(panel, output) ? "ok" : "FAILED");
+    return 0;
+  }
   if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--reopen")
   {
     Project loaded;
@@ -3295,6 +3361,50 @@ int main(int argc, char **argv)
         }
         std::printf("rendered in %.0f ms\n",
                     juce::Time::getMillisecondCounterHiRes() - renderStart);
+      }
+      // PITCHNET_RERENDER_R3=1: render the edited R3 notes again with the
+      // current R3 settings, as switching them to the vocoder and back in the
+      // App's synthesis menu would (SetSynthEngineAction marks them the same
+      // way). One pass per run of touching R3 notes, as selecting each run
+      // would.
+      if (const char *rerender = std::getenv("PITCHNET_RERENDER_R3");
+          rerender != nullptr && juce::String(rerender) == "1")
+      {
+        std::vector<std::vector<size_t>> runs;
+        auto &notes = p.getNotes();
+        for (size_t i = 0; i < notes.size(); ++i)
+        {
+          const auto &note = notes[i];
+          if (note.isRest() || note.getSynthEngine() != Note::SynthEngine::RubberBand ||
+              note.isNeutralForOriginalWaveform())
+            continue;
+          if (!runs.empty() && notes[runs.back().back()].getEndFrame() == note.getStartFrame())
+            runs.back().push_back(i);
+          else
+            runs.push_back({i});
+        }
+        const double hop = static_cast<double>(HOP_SIZE) / SAMPLE_RATE;
+        for (const auto &run : runs)
+        {
+          for (const size_t i : run)
+          {
+            notes[i].markDirty();
+            notes[i].markSynthDirty();
+            std::printf("R3 note %zu %.3f-%.3f s\n", i, notes[i].getStartFrame() * hop,
+                        notes[i].getEndFrame() * hop);
+          }
+          std::atomic<bool> pending{false}, done{false}, ok{false};
+          controller.resynthesizeIncrementalAsync(
+              p, nullptr, [&](bool success) { ok = success; done = true; }, pending, false);
+          if (!waitFor(done, 600000) || !ok.load())
+          {
+            std::fprintf(stderr, "resynth failed\n");
+            controller.requestShutdown();
+            return 1;
+          }
+          std::printf("rendered run of %zu notes\n", run.size());
+        }
+        p.setModified(true);
       }
     }
     else
@@ -3725,6 +3835,32 @@ int main(int argc, char **argv)
     controller.requestShutdown();
     return 0;
   }
+  // WarpRender <project.pitchnet> - --notes [from:to]: the notes (index,
+  // seconds, recorded and current pitch, offset, edited, synthesis engine),
+  // to pick one for a listening test.
+  if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--notes")
+  {
+    Project project;
+    if (!ProjectSerializer::loadFromFile(project, input))
+      return 1;
+    const juce::String range = argc >= 5 ? juce::String::fromUTF8(argv[4]) : "0:1e9";
+    const double from = range.upToFirstOccurrenceOf(":", false, false).getDoubleValue();
+    const double to = range.fromFirstOccurrenceOf(":", false, false).getDoubleValue();
+    const double hop = static_cast<double>(HOP_SIZE) / SAMPLE_RATE;
+    const auto &notes = project.getNotes();
+    for (size_t i = 0; i < notes.size(); ++i)
+    {
+      const auto &n = notes[i];
+      if (n.isRest() || n.getEndFrame() * hop <= from || n.getStartFrame() * hop >= to)
+        continue;
+      std::printf("%zu\t%.3f\t%.3f\torig %.2f\tnow %.2f\toffset %.2f\tedited %d\tengine %d\n",
+                  i, n.getStartFrame() * hop, n.getEndFrame() * hop, n.getOriginalMidiNote(),
+                  n.getAdjustedMidiNote(), n.getPitchOffset(),
+                  n.isNeutralForOriginalWaveform() ? 0 : 1,
+                  static_cast<int>(n.getSynthEngine()));
+    }
+    return 0;
+  }
   // WarpRender <project.pitchnet> <out.wav> --project: the saved project's
   // playback as the App builds it (embedded composite + the recording).
   if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--project")
@@ -3765,6 +3901,18 @@ int main(int argc, char **argv)
         return 1;
       }
       resynthController = std::make_unique<EditorController>(false);
+      // Listening tests: PITCHNET_RESYNTH_ENGINE=psola renders with PSOLA;
+      // PITCHNET_RESYNTH_SHIFT=x sets the notes rendered in the range to
+      // their analysed centre + x semitones (a tiny x renders the note again
+      // without moving it), unedited notes included; PITCHNET_R3_FORMANT=0
+      // lets the R3 notes' formants move with the pitch (the App keeps them).
+      if (const char *engineName = std::getenv("PITCHNET_RESYNTH_ENGINE"))
+        resynthController->setSynthesisEngineType(
+            juce::String(engineName) == "psola" ? SynthesisEngineType::Psola
+                                                : SynthesisEngineType::Vocoder);
+      if (const char *formantFlag = std::getenv("PITCHNET_R3_FORMANT"))
+        if (auto *synth = resynthController->getIncrementalSynth())
+          synth->setRubberBandFormantPreserved(juce::String(formantFlag) != "0");
       resynthController->setProject(std::make_unique<Project>(project));
       auto &p = *resynthController->getProject();
       auto &data = p.getAudioData();
@@ -3772,11 +3920,22 @@ int main(int argc, char **argv)
         data.waveform.makeCopyOf(data.originalWaveform);
       if (touch)
       {
-        auto &n = p.getNotes()[static_cast<size_t>(
-            juce::String::fromUTF8(argv[5]).getIntValue())];
-        n.setPitchOffset(n.getPitchOffset() + 1.0f);
-        n.markDirty();
-        n.markSynthDirty();
+        // --touch N[,M...]: notes by index. PITCHNET_TOUCH_ENGINE=rubberband
+        // switches them to R3 (spec Q12) as the App's synthesis menu does,
+        // instead of moving them a semitone.
+        const char *touchEngine = std::getenv("PITCHNET_TOUCH_ENGINE");
+        juce::StringArray indices;
+        indices.addTokens(juce::String::fromUTF8(argv[5]), ",", "");
+        for (const auto &index : indices)
+        {
+          auto &n = p.getNotes()[static_cast<size_t>(index.getIntValue())];
+          if (touchEngine != nullptr && juce::String(touchEngine) == "rubberband")
+            n.setSynthEngine(Note::SynthEngine::RubberBand);
+          else
+            n.setPitchOffset(n.getPitchOffset() + 1.0f);
+          n.markDirty();
+          n.markSynthDirty();
+        }
       }
       for (const auto &n : p.getNotes())
         if (!n.isRest() && (n.isDirty() || n.getPitchOffset() != 0.0f))
@@ -3794,14 +3953,32 @@ int main(int argc, char **argv)
                   (int)data.f0.size());
       const double hop = static_cast<double>(HOP_SIZE) / SAMPLE_RATE;
       int marked = 0;
+      const char *shiftText = std::getenv("PITCHNET_RESYNTH_SHIFT");
       for (auto &note : p.getNotes())
-        if (!note.isRest() && !note.isNeutralForOriginalWaveform() &&
+        if (!note.isRest() && (shiftText != nullptr || !note.isNeutralForOriginalWaveform()) &&
             note.getEndFrame() * hop > from && note.getStartFrame() * hop < to)
         {
+          if (shiftText != nullptr)
+            note.setMidiNote(note.getOriginalMidiNote() +
+                             juce::String(shiftText).getFloatValue());
+          // PITCHNET_RESYNTH_NOTE_ENGINE=rubberband: these notes use R3 (Q12);
+          // =vocoder: they follow the engine (a saved R3 choice is cleared).
+          // PITCHNET_RESYNTH_R3_RANGE=from:to: only the notes starting there.
+          const char *r3Range = std::getenv("PITCHNET_RESYNTH_R3_RANGE");
+          const double r3From = r3Range ? juce::String(r3Range).upToFirstOccurrenceOf(":", false, false).getDoubleValue() : -1.0;
+          const double r3To = r3Range ? juce::String(r3Range).fromFirstOccurrenceOf(":", false, false).getDoubleValue() : 1.0e9;
+          if (const char *noteEngine = std::getenv("PITCHNET_RESYNTH_NOTE_ENGINE");
+              noteEngine != nullptr &&
+              note.getStartFrame() * hop >= r3From && note.getStartFrame() * hop < r3To)
+            note.setSynthEngine(juce::String(noteEngine) == "rubberband"
+                                    ? Note::SynthEngine::RubberBand
+                                    : Note::SynthEngine::Vocoder);
           note.markDirty();
           note.markSynthDirty();
           ++marked;
         }
+      if (shiftText != nullptr)
+        PitchCurveProcessor::rebuildBaseFromNotes(p);
       std::printf("marked %d notes dirty, hasDirty %d\n", marked,
                   p.hasDirtyNotes() ? 1 : 0);
       std::atomic<bool> pending{false}, done{false}, ok{false};

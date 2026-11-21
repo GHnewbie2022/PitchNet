@@ -34,6 +34,12 @@ public:
   void setProject(Project *p) { project = p; }
   void setSynthesisEngine(SynthesisEngineType type) { synthesisEngine = type; }
   SynthesisEngineType getSynthesisEngine() const { return synthesisEngine; }
+  /// Spec Q12: whether R3 notes keep the recorded formants (Rubber Band's
+  /// OptionFormantPreserved, its envelope set by the recorded pitch). On:
+  /// the user's choice after listening, 2026-11-21 - without it a note tuned
+  /// down takes a heavier, bigger voice (heard at -0.29 semitones on 煙幕's
+  /// 地, plainly at -3). Off only for listening tests.
+  void setRubberBandFormantPreserved(bool preserved) { rubberBandFormantPreserved = preserved; }
 
   void synthesizeRegion(ProgressCallback onProgress,
                         CompleteCallback onComplete);
@@ -66,6 +72,7 @@ private:
   Vocoder *vocoder = nullptr;
   Project *project = nullptr;
   SynthesisEngineType synthesisEngine = SynthesisEngineType::Vocoder;
+  bool rubberBandFormantPreserved = true;
   PsolaSynthesizer psola;
 
   std::shared_ptr<std::atomic<bool>> cancelFlag;

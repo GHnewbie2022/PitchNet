@@ -1203,6 +1203,8 @@ juce::var ProjectSerializer::noteToJson(const Note& note,
     obj->setProperty("tiltPivot", note.getTiltPivot());
     if (!note.getFrozenTilt().empty())
         obj->setProperty("frozenTilt", floatArrayToString(note.getFrozenTilt(), 4));
+    if (note.getSynthEngine() == Note::SynthEngine::RubberBand)
+        obj->setProperty("synthEngine", "rubberband");
     obj->setProperty("vibrato", note.getVibrato());
     obj->setProperty("pitchDrift", note.getPitchDrift());
     obj->setProperty("smoothLeftFrames", note.getSmoothLeftFrames());
@@ -1297,6 +1299,9 @@ bool ProjectSerializer::noteFromJson(Note& note, const juce::var& json,
     note.setTiltPivot(static_cast<float>(json.getProperty("tiltPivot", 0.5)));
     note.setTiltLeft(static_cast<float>(json.getProperty("tiltLeft", 0.0)));
     note.setTiltRight(static_cast<float>(json.getProperty("tiltRight", 0.0)));
+    note.setSynthEngine(json.getProperty("synthEngine", "").toString() == "rubberband"
+                            ? Note::SynthEngine::RubberBand
+                            : Note::SynthEngine::Vocoder);
     note.setVibrato(static_cast<float>(json.getProperty("vibrato", 1.0)));
     note.setPitchDrift(static_cast<float>(json.getProperty("pitchDrift", 1.0)));
     note.setSmoothLeftFrames(json.getProperty("smoothLeftFrames", 0));

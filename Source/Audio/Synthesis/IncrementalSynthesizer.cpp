@@ -7,6 +7,7 @@
 #include "../ProjectGain.h"
 #include "../WarpLayer.h"
 #include "OriginalWaveformRestore.h"
+#include "RubberBandShift.h"
 #include "../../Utils/NoteGainCurve.h"
 #include "../../Utils/AppLogger.h"
 #include "../../Utils/Constants.h"
@@ -857,6 +858,64 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     }
   }
 
+  // Spec Q12: notes the user chose to render with Rubber Band R3. They take
+  // the recording shifted by R3 instead of the engine's render, by the same
+  // ratio PSOLA would apply (target over recorded pitch, per frame).
+  std::vector<std::pair<int, int>> rubberBandFrames;
+  std::vector<float> rubberBandRatio;
+  // The recorded pitch where it is voiced (0 elsewhere), per frame: R3's
+  // formant envelope is smoothed across the voice's own harmonics with it.
+  std::vector<float> rubberBandSourceHz;
+  for (const auto &note : project->getNotes())
+    if (!note.isRest() && note.isDirty() && !note.isNeutralForOriginalWaveform() &&
+        note.getSynthEngine() == Note::SynthEngine::RubberBand &&
+        note.getEndFrame() > startFrame && note.getStartFrame() < endFrame)
+      rubberBandFrames.emplace_back(note.getStartFrame(), note.getEndFrame());
+  if (!rubberBandFrames.empty()) {
+    std::sort(rubberBandFrames.begin(), rubberBandFrames.end());
+    // Target over recorded pitch where both are voiced. Unvoiced frames take
+    // the ratio across them (interpolated, held at the ends) instead of 1:
+    // a step in R3's pitch scale clicks (168.767 s, where a note's last
+    // voiced frame went from 0.973 to 1 in one step).
+    const auto sourceFrames = buildSourceFrameMap(startFrame, endFrame);
+    const auto &recorded = audioData.denseF0.empty() ? audioData.f0 : audioData.denseF0;
+    const int frames = endFrame - startFrame;
+    rubberBandRatio.assign(static_cast<size_t>(frames), 0.0f);
+    rubberBandSourceHz.assign(static_cast<size_t>(frames), 0.0f);
+    for (int f = 0; f < frames; ++f) {
+      const auto index = static_cast<size_t>(f);
+      // Voicing is the recording's, where this frame reads it (the warp).
+      const int absolute = index < sourceFrames.size()
+                               ? static_cast<int>(std::lround(sourceFrames[index]))
+                               : startFrame + f;
+      const bool voiced = absolute >= 0 &&
+                          static_cast<size_t>(absolute) < audioData.voicedMask.size() &&
+                          audioData.voicedMask[static_cast<size_t>(absolute)];
+      const float target = index < adjustedF0Range.size() ? adjustedF0Range[index] : 0.0f;
+      const float source = index < sourceFrames.size() && !recorded.empty()
+                               ? interpolateF0(recorded, sourceFrames[index])
+                               : 0.0f;
+      if (voiced && target > 0.0f && source > 0.0f)
+        rubberBandRatio[index] = target / source;
+      if (voiced && source > 0.0f)
+        rubberBandSourceHz[index] = source;
+    }
+    int previous = -1;
+    for (int f = 0; f <= frames; ++f) {
+      if (f < frames && rubberBandRatio[static_cast<size_t>(f)] <= 0.0f)
+        continue;
+      const float left = previous >= 0 ? rubberBandRatio[static_cast<size_t>(previous)]
+                         : f < frames  ? rubberBandRatio[static_cast<size_t>(f)]
+                                       : 1.0f;
+      const float right = f < frames ? rubberBandRatio[static_cast<size_t>(f)] : left;
+      for (int g = previous + 1; g < f; ++g) {
+        const float amount = static_cast<float>(g - previous) / static_cast<float>(f - previous);
+        rubberBandRatio[static_cast<size_t>(g)] = left + amount * (right - left);
+      }
+      previous = f;
+    }
+  }
+
   // PSOLA's two input curves: where each output frame reads from in the
   // original audio, and how far its pitch has to move once it gets there.
   // Built here on the message thread while the project is stable.
@@ -968,6 +1027,10 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
        formantShifts, formantF0, formantSampleRate, hasGlobalFormant, usePsola,
        hasDirtyNoteAnchors, f0DirtyStart, f0DirtyEnd,
        capturedNoteCount, journalDetail, commitFrameRanges = std::move(commitFrameRanges),
+       rubberBandFrames = std::move(rubberBandFrames),
+       rubberBandRatio = std::move(rubberBandRatio),
+       rubberBandFormant = rubberBandFormantPreserved,
+       rubberBandSourceHz = std::move(rubberBandSourceHz),
        blendMask = std::move(blendMask),
        originalSegment = std::move(originalSegment)](
           std::vector<float> synthesizedAudio) {
@@ -995,6 +1058,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                      currentJobId, onComplete, elapsedText, hasDirtyNoteAnchors,
                      f0DirtyStart, f0DirtyEnd, capturedNoteCount, journalDetail,
                      commitFrameRanges, blendMask, originalSegment,
+                     rubberBandFrames, rubberBandRatio, rubberBandFormant,
+                     rubberBandSourceHz,
                      formantShifts, formantF0, formantSampleRate, hasGlobalFormant, usePsola,
                      synthesizedAudio = std::move(synthesizedAudio)]() mutable {
           if (currentJobId != jobId.load())
@@ -1110,6 +1175,248 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
             return;
           }
 
+          // Spec Q12: the Rubber Band notes. Over each of them the recording
+          // becomes the recording shifted by R3 where the voice is (the blend
+          // mask), consonants, breaths and silence staying as recorded (R3
+          // smears a note into the silence after it). The mask is smoothed
+          // over 20 ms first: switched sample by sample with it, the two
+          // signals, whose phases do not agree, met in a step wherever the
+          // mask moved fast (a note edge sung legato, a voiced run ending): a
+          // pop (02:48.568). Past each edge the R3 audio goes on over the
+          // whole handover fade below, then back to the recording over 10 ms,
+          // where a neighbour's render covers it. The notes are then laid in
+          // like a restored span: the render is dropped there, and at their
+          // edges a neighbour's render is lined up with the R3 audio.
+          std::vector<std::pair<int, int>> rubberBandSamples;
+          if (!rubberBandFrames.empty()) {
+            const int ratioFrames = static_cast<int>(rubberBandRatio.size());
+            std::vector<float> ratio(originalSegment.size(), 1.0f);
+            for (size_t i = 0; i < ratio.size(); ++i)
+              ratio[i] = dspSynthesis::samplePitchRatio(
+                  rubberBandRatio,
+                  (static_cast<double>(i) + 0.5) / hopSize - 0.5, ratioFrames);
+            std::vector<float> sourceHz(originalSegment.size(), 0.0f);
+            for (size_t i = 0; i < sourceHz.size(); ++i) {
+              const size_t frame = i / static_cast<size_t>(hopSize);
+              if (frame < rubberBandSourceHz.size())
+                sourceHz[i] = rubberBandSourceHz[frame];
+            }
+            auto shifted = rubberbandshift::shift(originalSegment, ratio,
+                                                  formantSampleRate,
+                                                  capturedCancelFlag.get(),
+                                                  rubberBandFormant, &sourceHz);
+            if (shifted.empty() ||
+                !formant::process(shifted, formantShifts, formantF0, hopSize,
+                                  formantSampleRate, capturedCancelFlag.get())) {
+              if (currentJobId == jobId.load()) {
+                isBusy = false;
+                if (onComplete)
+                  juce::MessageManager::callAsync([onComplete]() { onComplete(false); });
+              }
+              return;
+            }
+            for (const auto &[from, to] : rubberBandFrames) {
+              const int first = std::max(0, (from - capturedStartFrame) * hopSize);
+              const int last = std::min(samplesToWrite, (to - capturedStartFrame) * hopSize);
+              if (last <= first)
+                continue;
+              if (!rubberBandSamples.empty() && rubberBandSamples.back().second == first)
+                rubberBandSamples.back().second = last;
+              else
+                rubberBandSamples.emplace_back(first, last);
+            }
+            // R3 rebuilds the phase: even where it does not shift, its output
+            // does not line up with the recording (correlation -0.6 to 0.0 at a
+            // ratio of 1). So where R3 audio meets anything else mid-voice it
+            // is lined up first, as a render is. Two kinds of edge:
+            //  - inner: a neighbour rendered in this pass. Its render is lined
+            //    up with the R3 audio by the handover below (the R3 audio goes
+            //    on over that whole fade, then back to the recording over
+            //    10 ms where the render covers it);
+            //  - outer: the commit ends there (an unedited neighbour). The R3
+            //    audio hands over to the recording where the two agree best
+            //    once lined up: candidate points from just inside the note to
+            //    93 ms into the neighbour, each with its own shift and rotation
+            //    (splicealign), scored by what is left of their difference -
+            //    in silence that is the silence (a note after a rest), sung
+            //    legato the closest match. The alignment glides in over the
+            //    46 ms before, the crossfade takes 512 samples, and the commit
+            //    is carried past it with no render up to the reach of its own
+            //    fade, so it ends where both sides are the recording. Ending
+            //    the commit at the note edge crossfaded the R3 audio into the
+            //    old render there: an uneven joint (會 into 我, 03:50.37).
+            constexpr int kReach = 256 + 128 + 64; // the handover fade's reach
+            constexpr int kOuterHalf = 256;        // half the handover crossfade
+            constexpr int kOuterSearchIn = 256;    // candidates inside the note
+            constexpr int kOuterSearchOut = 4096;  // and into the neighbour
+            constexpr int kOuterStep = 32;
+            constexpr int kOuterGlide = 2048;
+            constexpr int kCommitReach = 512 + 128; // the commit fade's reach
+            const int ramp = std::max(1, formantSampleRate / 100);
+            const int total = static_cast<int>(originalSegment.size());
+            const std::vector<float> recordedSegment = originalSegment;
+            const auto commitEdgeAt = [&](int sample, bool end) {
+              for (const auto &range : commitFrameRanges)
+                if (((end ? range.end : range.start) - capturedStartFrame) * hopSize == sample)
+                  return true;
+              return false;
+            };
+            const auto maxLagAt = [&](int centre) {
+              const int frame = capturedStartFrame + centre / hopSize;
+              const auto &f0 = audioData.f0;
+              if (frame < 0 || frame >= static_cast<int>(f0.size()) ||
+                  !(f0[static_cast<size_t>(frame)] > 0.0f))
+                return splicealign::kMaxLagSamples;
+              return std::clamp(static_cast<int>(std::ceil(
+                                    audioData.sampleRate / f0[static_cast<size_t>(frame)] / 2.0)),
+                                splicealign::kMaxLagSamples, 320);
+            };
+            const auto smooth = [](float x) {
+              x = std::clamp(x, 0.0f, 1.0f);
+              return x * x * (3.0f - 2.0f * x);
+            };
+            const auto shiftedHilbert = splicealign::hilbert(shifted);
+            // The best handover point between `from` and `to`: its alignment
+            // and its score (the lined-up difference over the energy there,
+            // the energy itself counting against loud points).
+            struct Handover {
+              int at = -1;
+              splicealign::Alignment alignment;
+            };
+            const auto bestHandover = [&](int from, int to) {
+              Handover best;
+              double bestScore = std::numeric_limits<double>::infinity();
+              double loudest = 1.0e-12;
+              for (int c = from; c <= to; c += kOuterStep)
+                if (c - kOuterHalf >= 0 && c + kOuterHalf <= total)
+                  for (int i = c - kOuterHalf; i < c + kOuterHalf; ++i)
+                    loudest = std::max(loudest, static_cast<double>(std::abs(recordedSegment[static_cast<size_t>(i)])));
+              for (int c = from; c <= to; c += kOuterStep) {
+                if (c - kOuterHalf < 0 || c + kOuterHalf > total)
+                  continue;
+                const auto alignment = splicealign::find(recordedSegment.data(), shifted,
+                                                         shiftedHilbert, c, kOuterHalf,
+                                                         maxLagAt(c));
+                double error = 0.0, energy = 1.0e-12;
+                for (int i = c - kOuterHalf; i < c + kOuterHalf; ++i) {
+                  const double w = 1.0 - std::abs(i - c) / static_cast<double>(kOuterHalf + 1);
+                  const double o = recordedSegment[static_cast<size_t>(i)];
+                  const double r = splicealign::sample(shifted, shiftedHilbert, i, alignment);
+                  error += w * (o - r) * (o - r);
+                  energy += w * (o * o + r * r);
+                }
+                // Mismatch in proportion to what is heard there.
+                const double level = std::sqrt(energy / kOuterHalf) / loudest;
+                const double score = (error / energy) * level;
+                if (score < bestScore) {
+                  bestScore = score;
+                  best = {c, alignment};
+                }
+              }
+              return best;
+            };
+            std::vector<float> aligned = shifted;
+            std::vector<float> weight(originalSegment.size(), 0.0f);
+            std::vector<std::pair<int, int>> renderless; // samples with no render
+            struct Extension {
+              int edge;     // span edge (samples)
+              bool end;     // the span's end, else its start
+              int reachTo;  // commit carried to cover this sample
+            };
+            std::vector<Extension> extensions;
+            for (const auto &[first, last] : rubberBandSamples) {
+              const bool outerLeft = commitEdgeAt(first, false) && first > 0;
+              const bool outerRight = commitEdgeAt(last, true) && last < samplesToWrite;
+              const int glide = std::max(1, std::min(kOuterGlide,
+                                                     (last - first) / (outerLeft && outerRight ? 2 : 1)));
+              Handover right, left;
+              if (outerRight)
+                right = bestHandover(std::max(first + glide / 2, last - kOuterSearchIn),
+                                     std::min(total - kOuterHalf, last + kOuterSearchOut));
+              if (outerLeft)
+                left = bestHandover(std::max(kOuterHalf, first - kOuterSearchOut),
+                                    std::min(last - glide / 2, first + kOuterSearchIn));
+              if (right.at >= 0) {
+                const int glideStart = std::max(first, right.at - kOuterHalf - glide);
+                for (int n = glideStart; n < std::min(total, right.at + kOuterHalf + 64); ++n) {
+                  const float g = n < right.at - kOuterHalf
+                                      ? smooth(static_cast<float>(n - glideStart) /
+                                               std::max(1, right.at - kOuterHalf - glideStart))
+                                      : 1.0f;
+                  aligned[static_cast<size_t>(n)] = splicealign::sample(
+                      shifted, shiftedHilbert, n, {g * right.alignment.lag, g * right.alignment.angle});
+                }
+                const int reachTo = std::min(total, right.at + kOuterHalf);
+                renderless.emplace_back(last, std::min(total, reachTo + 2 * kCommitReach + hopSize));
+                extensions.push_back({last, true, reachTo});
+              }
+              if (left.at >= 0) {
+                const int glideEnd = std::min(last, left.at + kOuterHalf + glide);
+                for (int n = std::max(0, left.at - kOuterHalf - 64); n < glideEnd; ++n) {
+                  const float g = n >= left.at + kOuterHalf
+                                      ? smooth(static_cast<float>(glideEnd - n) /
+                                               std::max(1, glideEnd - (left.at + kOuterHalf)))
+                                      : 1.0f;
+                  aligned[static_cast<size_t>(n)] = splicealign::sample(
+                      shifted, shiftedHilbert, n, {g * left.alignment.lag, g * left.alignment.angle});
+                }
+                const int reachTo = std::max(0, left.at - kOuterHalf);
+                renderless.emplace_back(std::max(0, reachTo - 2 * kCommitReach - hopSize), first);
+                extensions.push_back({first, false, reachTo});
+              }
+              // R3 over the note; past an outer edge up to its handover
+              // (crossfaded over it), past an inner edge over the handover
+              // fade's reach and then 10 ms.
+              const int from = std::max(0, left.at >= 0 ? left.at - kOuterHalf : first - kReach - ramp);
+              const int to = std::min(total, right.at >= 0 ? right.at + kOuterHalf : last + kReach + ramp);
+              for (int i = from; i < to; ++i) {
+                float w = 1.0f;
+                if (left.at >= 0 && i < left.at + kOuterHalf)
+                  w = smooth(static_cast<float>(i - (left.at - kOuterHalf)) / (2 * kOuterHalf));
+                else if (left.at < 0 && i < first - kReach)
+                  w = smooth(static_cast<float>(i - (first - kReach - ramp)) / ramp);
+                if (right.at >= 0 && i >= right.at - kOuterHalf)
+                  w = std::min(w, smooth(static_cast<float>((right.at + kOuterHalf) - i) / (2 * kOuterHalf)));
+                else if (right.at < 0 && i >= last + kReach)
+                  w = std::min(w, smooth(static_cast<float>((last + kReach + ramp) - i) / ramp));
+                weight[static_cast<size_t>(i)] = std::max(weight[static_cast<size_t>(i)], w);
+              }
+            }
+            // The voice, smoothed: a 20 ms moving average of the blend mask.
+            const int smoothing = std::max(1, formantSampleRate / 50);
+            std::vector<double> sum(originalSegment.size() + 1, 0.0);
+            for (size_t i = 0; i < originalSegment.size(); ++i)
+              sum[i + 1] = sum[i] + (i < blendMask.size() ? blendMask[i] : 0.0f);
+            for (size_t i = 0; i < originalSegment.size() && i < aligned.size(); ++i) {
+              if (weight[i] <= 0.0f)
+                continue;
+              const auto lo = static_cast<size_t>(std::max<long long>(0, static_cast<long long>(i) - smoothing / 2));
+              const auto hi = std::min(originalSegment.size(), i + static_cast<size_t>(smoothing / 2) + 1);
+              const float voice = static_cast<float>((sum[hi] - sum[lo]) / static_cast<double>(hi - lo));
+              originalSegment[i] += weight[i] * voice * (aligned[i] - originalSegment[i]);
+            }
+            // No render past an outer edge, and the commit carried over the
+            // handover with room for its own fade.
+            for (const auto &[from, to] : renderless)
+              for (int i = from; i < to && i < static_cast<int>(blendMask.size()); ++i)
+                blendMask[static_cast<size_t>(i)] = 0.0f;
+            for (const auto &extension : extensions)
+              for (auto &range : commitFrameRanges) {
+                if (extension.end &&
+                    (range.end - capturedStartFrame) * hopSize == extension.edge) {
+                  const int need = (extension.reachTo + kCommitReach + hopSize - 1) / hopSize;
+                  range.end = std::min(capturedEndFrame, capturedStartFrame + std::max(
+                      range.end - capturedStartFrame, need));
+                }
+                if (!extension.end &&
+                    (range.start - capturedStartFrame) * hopSize == extension.edge) {
+                  const int need = std::max(0, (extension.reachTo - kCommitReach) / hopSize);
+                  range.start = std::max(capturedStartFrame, capturedStartFrame + std::min(
+                      range.start - capturedStartFrame, need));
+                }
+              }
+          }
+
           // Build blended target from model/original. `keptOriginal` is the
           // part of it that is the recording (unvoiced runs, breaths and
           // sibilants, restored spans): the splice alignment below moves and
@@ -1181,6 +1488,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
           struct ResetSpan {
             int startSample;
             int endSample;
+            bool rubberBand = false; // a Rubber Band note (Q12), not a restore
           };
           std::vector<ResetSpan> resetSpans;
           if (!hasGlobalFormant) {
@@ -1235,9 +1543,19 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
             return t * t * (3.0f - 2.0f * t);
           };
 
-          for (size_t spanIndex = 0; spanIndex < resetSpans.size();
+          // The Rubber Band notes hand over like restored spans; only the
+          // restores go on to the exact restore of the recording further down.
+          std::vector<ResetSpan> handoverSpans = resetSpans;
+          for (const auto &[first, last] : rubberBandSamples)
+            handoverSpans.push_back({first, last, true});
+          std::sort(handoverSpans.begin(), handoverSpans.end(),
+                    [](const ResetSpan &a, const ResetSpan &b) {
+                      return a.startSample < b.startSample;
+                    });
+
+          for (size_t spanIndex = 0; spanIndex < handoverSpans.size();
                ++spanIndex) {
-            const auto &span = resetSpans[spanIndex];
+            const auto &span = handoverSpans[spanIndex];
             const int bodySamples = span.endSample - span.startSample;
             if (bodySamples <= 0)
               continue;
@@ -1264,9 +1582,9 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
             // A fade needs room outside the span, so keep it from reaching
             // into a neighbouring span and blending the same samples twice.
             const int previousEnd =
-                spanIndex > 0 ? resetSpans[spanIndex - 1].endSample : 0;
-            const int nextStart = spanIndex + 1 < resetSpans.size()
-                                      ? resetSpans[spanIndex + 1].startSample
+                spanIndex > 0 ? handoverSpans[spanIndex - 1].endSample : 0;
+            const int nextStart = spanIndex + 1 < handoverSpans.size()
+                                      ? handoverSpans[spanIndex + 1].startSample
                                       : samplesToWrite;
             const int firstSample = std::max(
                 {0, previousEnd,
@@ -1294,9 +1612,12 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
 
               const float blend = std::min(leftBlend, rightBlend);
               const auto index = static_cast<size_t>(sample);
+              // A Rubber Band note keeps its own gains (volume, sibilants);
+              // a restored note only the breath levels around it.
               const float restored =
-                  breathGain.empty() ? originalSegment[index]
-                                     : originalSegment[index] * breathGain[index];
+                  span.rubberBand ? originalSegment[index] * sampleGain[index]
+                  : breathGain.empty() ? originalSegment[index]
+                                       : originalSegment[index] * breathGain[index];
               targetSegment[index] += blend * (restored - targetSegment[index]);
               keptOriginal[index] += blend * (restored - keptOriginal[index]);
               renderShare[index] *= 1.0f - blend;

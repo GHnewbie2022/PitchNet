@@ -246,6 +246,18 @@ public:
     // Get F0 values based on current midiNote + deltaPitch
     std::vector<float> computeF0FromDelta() const;
 
+    // How an edited note is rendered (spec Q12): by the vocoder, or by
+    // shifting the recording itself with Rubber Band's R3 engine, for a voice
+    // whose texture the vocoder does not keep. Chosen per note by the user;
+    // a note that plays the recording ignores it.
+    enum class SynthEngine
+    {
+        Vocoder,
+        RubberBand
+    };
+    SynthEngine getSynthEngine() const { return synthEngine; }
+    void setSynthEngine(SynthEngine engine) { synthEngine = engine; }
+
     // True after this note has contributed to the rendered composite waveform.
     // This lightweight state replaces the former per-note audio cache and lets
     // incremental synthesis refresh connected edited-note clusters.
@@ -359,6 +371,7 @@ private:
     std::vector<float> f0Values;
     std::vector<SourceSpan> analysisSpans;
     bool renderedEdit = false; // Audio for this note is present in the composite
+    SynthEngine synthEngine = SynthEngine::Vocoder;
     // Timeline bounds represented by the current composite waveform. These can
     // differ from both the immutable source bounds and the next pending edit.
     int renderedStartFrame = 0;

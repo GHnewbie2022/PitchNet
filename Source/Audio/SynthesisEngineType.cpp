@@ -140,6 +140,12 @@ SynthesisEngineType defaultSynthesisEngineType()
 
 SynthesisEngineType synthesisEngineTypeForSavedPreference(SynthesisEngineType type)
 {
+  // Classic (PSOLA) is no longer offered in the panel (spec Q12, 2026-11-21):
+  // a saved choice of it gives way to the machine's default, so nobody is
+  // left on an engine they can no longer switch off. The defaults and the
+  // automatic fallbacks below and in EditorController still use it.
+  if (type == SynthesisEngineType::Psola)
+    type = defaultSynthesisEngineType();
 #ifdef _WIN32
   if (getWindowsGpuCapabilities().singleIntelAdapter)
     return SynthesisEngineType::Psola;

@@ -34,12 +34,12 @@ constexpr int kLanguageRowHeight = 26;          // language selector row
 constexpr int kMidiButtonHeight = 28;
 constexpr int kMidiExportRowGap = kRowGap + 1;
 
+// The Rendering card holds only the inference device row: the engine choice
+// (AI resynthesis or classic PSOLA) left the panel when PSOLA did (spec Q12,
+// 2026-11-21). So the card, and the gap after it, are there only while that
+// row is.
 constexpr int kSynthesisCardHeight =
-    kInnerPadY + kSectionLabelHeight + kSectionLabelGap + kRadioRowHeight + kInnerPadY;
-
-// The inference device row is optional: it adds itself, leading gap included,
-// only while it is showing.
-constexpr int kRenderDeviceRowExtraHeight = (kRowGap + 1) + kControlRowHeight;
+    kInnerPadY + kSectionLabelHeight + kSectionLabelGap + kControlRowHeight + kInnerPadY;
 constexpr int kTimeCardHeight =
     kInnerPadY + kSectionLabelHeight + kSectionLabelGap + kTimelineModeRowHeight +
     (kRowGap + 1) + kControlRowHeight + kRowGap + kControlRowHeight +
@@ -56,9 +56,10 @@ constexpr int kMidiReferenceCardHeight =
     kInnerPadY * 2 + kSectionLabelHeight + kSectionLabelGap +
     kMidiButtonHeight * 2 + kControlRowHeight + kMidiExportRowGap + kRowGap;
 
-// Six cards with a gap between each.
+// The five cards always present, with a gap between each (the Rendering
+// card adds itself and its gap while it shows).
 constexpr int kPreferredPanelHeight =
-    kCardPadY * 2 + kCardGap * 5 + kSynthesisCardHeight + kLanguageCardHeight +
+    kCardPadY * 2 + kCardGap * 4 + kLanguageCardHeight +
     kTimeCardHeight + kPitchCardHeight + kMidiReferenceCardHeight + kUiCardHeight;
 
 // "System default" sits above the real languages in the picker.
@@ -279,7 +280,8 @@ ParameterPanel::ParameterPanel()
     addAndMakeVisible(timeSectionLabel);
     timeSectionLabel.setColour(juce::Label::textColourId, juce::Colour(0xFF9B9B9Bu));
     timeSectionLabel.setFont(AppFont::getBoldFont(16.0f));
-    addAndMakeVisible(synthesisSectionLabel);
+    // Shown with the inference device row, the only row its card has left.
+    addChildComponent(synthesisSectionLabel);
     synthesisSectionLabel.setColour(juce::Label::textColourId, juce::Colour(0xFF9B9B9Bu));
     synthesisSectionLabel.setFont(AppFont::getBoldFont(16.0f));
     addAndMakeVisible(uiSectionLabel);
@@ -339,10 +341,21 @@ ParameterPanel::ParameterPanel()
     }
 
     for (auto* radio : { &chromaticToggle, &scaleToggle,
-                         &beatsTimelineToggle, &timeTimelineToggle,
-                         &vocoderEngineToggle, &psolaEngineToggle })
+                         &beatsTimelineToggle, &timeTimelineToggle })
     {
         addAndMakeVisible(radio);
+        radio->setClickingTogglesState(true);
+        radio->addListener(this);
+    }
+
+    // The engine choice is kept but no longer shown (spec Q12): classic PSOLA
+    // left the panel after the listening test of 2026-11-21, and the AI
+    // resynthesis button alone would choose nothing. The engine still follows
+    // the saved preference, the machine's default and the automatic
+    // fallbacks to PSOLA (EditorController).
+    for (auto* radio : { &vocoderEngineToggle, &psolaEngineToggle })
+    {
+        addChildComponent(radio);
         radio->setClickingTogglesState(true);
         radio->addListener(this);
     }
@@ -581,64 +594,35 @@ void ParameterPanel::resized()
     // =========================================================================
     // SYNTHESIS CARD
     // =========================================================================
+    // Only while the inference device row shows; otherwise the language card
+    // starts at the top.
     const int synthesisCardStart = cardArea.getY();
+    int synthesisCardBottom = synthesisCardStart - cardGap;
+    synthesisCardBounds = {};
     auto bounds = juce::Rectangle<int>(cardArea.getX() + innerPadX,
                                        synthesisCardStart + innerPadY,
                                        cardArea.getWidth() - innerPadX * 2,
                                        cardArea.getBottom() - synthesisCardStart - innerPadY * 2);
-
-    synthesisSectionLabel.setBounds(bounds.removeFromTop(kSectionLabelHeight));
-    bounds.removeFromTop(kSectionLabelGap);
-
-    // Both options stay on one row, sharing it in proportion to how wide each
-    // label actually is rather than in half. Measured with GlyphArrangement
-    // against the real typeface at the real size, so this holds through a font
-    // change, DPI scaling or translation - an estimate would not.
-    //
-    // Splitting the space left after the two radio circles, rather than the
-    // row itself, is what makes the proportion work: each label then gets the
-    // same fraction of what it needs, so if the pair cannot fit at full size
-    // they shrink together instead of the long one being squashed while the
-    // short one keeps its size. RadioButton paints through drawFittedText,
-    // which only ever shrinks, so any slack simply renders at full size.
-    auto engineRow = bounds.removeFromTop(kRadioRowHeight);
-    const auto engineFont = AppFont::getFont(15.0f);
-    constexpr int radioInset = 30; // circle plus gap, as paintButton trims
-
-    const int vocoderTextWidth = juce::GlyphArrangement::getStringWidthInt(
-        engineFont, vocoderEngineToggle.getButtonText());
-    const int psolaTextWidth = juce::GlyphArrangement::getStringWidthInt(
-        engineFont, psolaEngineToggle.getButtonText());
-    const int totalTextWidth = juce::jmax(1, vocoderTextWidth + psolaTextWidth);
-
-    const int sharedTextWidth =
-        juce::jmax(0, engineRow.getWidth() - columnGap - 2 * radioInset);
-    const int vocoderWidth =
-        radioInset + (sharedTextWidth * vocoderTextWidth) / totalTextWidth;
-
-    auto vocoderArea = engineRow.removeFromLeft(vocoderWidth);
-    engineRow.removeFromLeft(columnGap);
-    vocoderEngineToggle.setBounds(vocoderArea);
-    psolaEngineToggle.setBounds(engineRow);
-
     if (renderDeviceRowVisible)
     {
-        bounds.removeFromTop(rowGap + 1);
+        synthesisSectionLabel.setBounds(bounds.removeFromTop(kSectionLabelHeight));
+        bounds.removeFromTop(kSectionLabelGap);
         auto deviceRow = bounds.removeFromTop(kControlRowHeight);
         renderDeviceLabel.setBounds(deviceRow.removeFromLeft(52));
         renderDeviceButton.setBounds(deviceRow.reduced(0, 2));
-    }
 
-    const int synthesisCardBottom = bounds.getY() + innerPadY;
-    synthesisCardBounds = juce::Rectangle<int>(
-        cardArea.getX(), synthesisCardStart, cardArea.getWidth(),
-        synthesisCardBottom - synthesisCardStart);
+        synthesisCardBottom = bounds.getY() + innerPadY;
+        synthesisCardBounds = juce::Rectangle<int>(
+            cardArea.getX(), synthesisCardStart, cardArea.getWidth(),
+            synthesisCardBottom - synthesisCardStart);
+    }
 
     // =========================================================================
     // LANGUAGE CARD
     //
-    // Sits directly below Rendering and is always present, so its height is
-    // part of kPreferredPanelHeight.
+    // Sits directly below Rendering (or at the top when that card is not
+    // shown) and is always present, so its height is part of
+    // kPreferredPanelHeight.
     // =========================================================================
     const int languageCardStart = synthesisCardBottom + cardGap;
     bounds = juce::Rectangle<int>(cardArea.getX() + innerPadX,
@@ -811,7 +795,7 @@ void ParameterPanel::resized()
 int ParameterPanel::getPreferredHeight() const
 {
     return kPreferredPanelHeight +
-           (renderDeviceRowVisible ? kRenderDeviceRowExtraHeight : 0);
+           (renderDeviceRowVisible ? kSynthesisCardHeight + kCardGap : 0);
 }
 
 void ParameterPanel::buttonClicked(juce::Button* button)
@@ -1352,13 +1336,14 @@ void ParameterPanel::refreshRenderDeviceRow()
     }
 
     renderDeviceRowVisible = shouldShow;
+    synthesisSectionLabel.setVisible(shouldShow);
     renderDeviceLabel.setVisible(shouldShow);
     renderDeviceButton.setVisible(shouldShow);
 
     resized();
     repaint();
 
-    // The Rendering card just grew or shrank, and the hosting panel caches the
+    // The Rendering card just appeared or went, and the hosting panel caches the
     // stack height to decide when to scroll.
     if (onPreferredHeightChanged)
         onPreferredHeightChanged();
