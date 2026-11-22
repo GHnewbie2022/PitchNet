@@ -542,11 +542,13 @@ static void dragThenRestoreNeighbourThenUndoAll(PianoRollComponent& roll) {
   CHECK(err < 0.02f);
 }
 
-// A note edited and then stretched keeps its stored contour over its own
+// A note edited and then stretched kept its stored contour over its own
 // frames, a fraction of a frame off the recording as the track's map plays
-// it: target over recording then wobbles wherever the pitch moves, and
-// Rubber Band sang that as a quiver (spec Q12). Measured against the note's
-// own unedited curve laid out the same way, only the edit is left.
+// it: target over recording then wobbled wherever the pitch moved, and
+// Rubber Band sang that as a quiver (spec Q12). Its analysed contour is now
+// fitted to the recording through the new map (warp::apply), so only the
+// edit is left, measured against the note's own unedited curve and against
+// the recording alike.
 static void stretchedEditedNoteLeavesOnlyTheEdit() {
   Project proj;
   buildWarpedTrio(proj);
@@ -584,14 +586,15 @@ static void stretchedEditedNoteLeavesOnlyTheEdit() {
     misfitLow = std::min(misfitLow, sung - recorded);
     misfitHigh = std::max(misfitHigh, sung - recorded);
   }
-  if (editHigh - editLow >= 0.001f || misfitHigh - misfitLow <= 0.01f)
+  if (editHigh - editLow >= 0.001f || misfitHigh - misfitLow >= 0.001f)
     std::cerr << "edit " << editLow << ".." << editHigh << " misfit " << misfitLow
               << ".." << misfitHigh << "\n";
   // The edit alone: the semitone the note was moved by, on every frame.
   CHECK(editHigh - editLow < 0.001f);
   CHECK(std::abs(0.5f * (editHigh + editLow) - 1.0f) < 0.01f);
-  // What this guards against: against the recording the same frames differ.
-  CHECK(misfitHigh - misfitLow > 0.01f);
+  // Against the recording as the warp plays it too.
+  CHECK(misfitHigh - misfitLow < 0.001f);
+  CHECK(std::abs(0.5f * (misfitHigh + misfitLow) - 1.0f) < 0.01f);
   // Notes on their recorded frames are left to the recording itself.
   Project still;
   buildWarpedTrio(still);
@@ -605,9 +608,107 @@ static void stretchedEditedNoteLeavesOnlyTheEdit() {
     CHECK(value == 0.0f);
 }
 
+// An edited note shortened next to a note read far lower (fry at the end of
+// a phrase, read an octave down while the voice holds its pitch into it).
+// The first note's contour ends in a rise that cancels the base's bend toward
+// the low note, frame for frame. Spread over the shorter note that rise came
+// early or late against the bend, which stays a fixed number of frames long:
+// moved up a semitone and shortened to 0.80x, the note's last frames sang
+// under the recording and then above the semitone, and stepped down where the
+// next note played the recording. Fitted through the new map, the edit runs
+// from the semitone down toward the neighbour and nowhere outside it.
+static void editedNoteShortenedNextToLowNoteFollowsRecording() {
+  Project proj;
+  auto& audio = proj.getAudioData();
+  audio.sampleRate = SAMPLE_RATE;
+  audio.melSpectrogram.resize(120);
+  audio.denseF0.assign(120, midiToFreq(62.0f));
+  for (int i = 63; i < 120; ++i)
+    audio.denseF0[static_cast<size_t>(i)] = midiToFreq(48.0f);
+  audio.f0 = audio.denseF0;
+  audio.voicedMask.assign(120, true);
+  audio.warpMap.setLength(120.0);
+  Note held(20, 60, 62.0f);
+  held.setSrcStartFrame(20);
+  held.setSrcEndFrame(60);
+  Note low(60, 100, 48.0f);
+  low.setSrcStartFrame(60);
+  low.setSrcEndFrame(100);
+  proj.addNote(held);
+  proj.addNote(low);
+  PitchCurveProcessor::rebuildBaseFromNotes(proj);
+  initWarpedOriginalDelta(proj);
+  PitchCurveProcessor::rebuildBaseFromNotes(proj);
+  PitchCurveProcessor::refitUntouchedCurves(proj, 0, 120); // as a loaded project is
+  shiftNote(proj, 20, 1.0f);
+
+  auto map = audio.warpMap;
+  map.setAnchors({{20.0, 20.0}, {100.0, 84.0}});
+  // What the note sings is the recording as the warp plays it, plus what the
+  // edit adds to the base: the semitone, bending away toward the neighbour.
+  const auto worstMisfit = [](Project& laidOut) {
+    const auto& data = laidOut.getAudioData();
+    const auto sung = laidOut.getAdjustedF0ForRange(0, 120);
+    const auto edited = data.basePitch;
+    Project plain = laidOut;
+    for (auto& n : plain.getNotes())
+      n.setMidiNote(n.getOriginalMidiNote());
+    PitchCurveProcessor::rebuildBaseFromNotes(plain);
+    const auto& unedited = plain.getAudioData().basePitch;
+    const auto* note = noteAt(laidOut, 20);
+    float worst = 0.0f;
+    for (int t = note->getStartFrame(); t < note->getEndFrame(); ++t) {
+      const double src = std::clamp(data.warpMap.sourceAt(t + 0.5) - 0.5, 0.0, 119.0);
+      const int a = static_cast<int>(std::floor(src));
+      const int b = std::min(a + 1, 119);
+      const float k = static_cast<float>(src - a);
+      const float recorded = freqToMidi(data.denseF0[size_t(a)]) * (1.0f - k) +
+                             freqToMidi(data.denseF0[size_t(b)]) * k;
+      worst = std::max(worst, std::abs(freqToMidi(sung[size_t(t)]) -
+                                       (recorded + edited[size_t(t)] - unedited[size_t(t)])));
+    }
+    return worst;
+  };
+  // What this guards against: the layout as it was, the stored contour spread
+  // over the shorter note. Two frames from its end the note sang 62.43 where
+  // the recording plus the edit is 62.90.
+  Project spread = proj;
+  spread.getAudioData().warpMap = map;
+  warp::syncNotes(spread);
+  PitchCurveProcessor::rebuildBaseFromNotes(spread);
+  PitchCurveProcessor::refitUntouchedCurves(spread, 0, 120);
+  CHECK(noteAt(spread, 20) != nullptr);
+  CHECK(worstMisfit(spread) > 0.3f);
+
+  warp::apply(proj, map);
+  const auto* note = noteAt(proj, 20);
+  CHECK(note != nullptr);
+  if (!note)
+    return;
+  CHECK(note->getEndFrame() == 52 && note->getSrcEndFrame() == 60);
+  const float fitted = worstMisfit(proj);
+  if (fitted >= 0.001f)
+    std::cerr << "misfit after the warp " << fitted << "\n";
+  CHECK(fitted < 0.001f);
+
+  // The stretch taken back: the note is on its recorded frames again and its
+  // contour, written at the shorter length, is fitted there too.
+  auto back = audio.warpMap;
+  back.setAnchors({});
+  warp::apply(proj, back);
+  note = noteAt(proj, 20);
+  CHECK(note != nullptr);
+  if (!note)
+    return;
+  CHECK(note->getEndFrame() == 60);
+  CHECK(static_cast<int>(note->getOriginalDeltaPitch().size()) == 40);
+  CHECK(worstMisfit(proj) < 0.001f);
+}
+
 int main() {
   juce::ScopedJuceInitialiser_GUI gui;
   stretchedEditedNoteLeavesOnlyTheEdit();
+  editedNoteShortenedNextToLowNoteFollowsRecording();
   {
     PianoRollComponent scratchRoll;
     scratchRoll.setSize(800, 400);

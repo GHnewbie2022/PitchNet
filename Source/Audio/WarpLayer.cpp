@@ -69,9 +69,11 @@ void apply(Project &project, const WarpMap &map)
   if (!soundChanges)
     return;
   PitchCurveProcessor::rebuildBaseFromNotes(project);
-  // Unedited stretched notes keep their curve per timeline frame: fit them to
-  // the recording through the new map, or their contour slides.
-  PitchCurveProcessor::refitUntouchedCurves(project, 0, audioData.getNumFrames());
+  // Stretched notes keep their curve per timeline frame: fit them to the
+  // recording through the new map, or their contour slides. Edited notes
+  // too: the contour their edits sit on is the recorded one.
+  PitchCurveProcessor::refitUntouchedCurves(project, 0, audioData.getNumFrames(),
+                                            true, true);
   audioData.warpLayoutPending = true;
 }
 

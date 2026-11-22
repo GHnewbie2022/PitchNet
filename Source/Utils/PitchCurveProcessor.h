@@ -29,9 +29,14 @@ namespace PitchCurveProcessor
      * the curves of such notes reaching into [start, end), rebuild, and
      * return the start frames of the notes changed. With apply false nothing
      * is changed: the notes whose curve is not the fit are only reported.
+     * With warpChanged (the warp map has just changed, warp::apply) the
+     * analysed contour of edited notes the warp lays out is fitted too, and
+     * that of notes it has put back on their recorded frames: their edits
+     * stay on top of a contour that follows the recording as it now plays.
+     * Notes with a baked or drawn contour keep it.
      */
     std::vector<int> refitUntouchedCurves(Project& project, int start, int end,
-                                          bool apply = true);
+                                          bool apply = true, bool warpChanged = false);
 
     /**
      * For the notes the warp laid out off their recorded frames (stretched or

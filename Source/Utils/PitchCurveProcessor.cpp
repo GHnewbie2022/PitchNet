@@ -393,7 +393,8 @@ namespace PitchCurveProcessor
         return pitch;
     }
 
-    std::vector<int> refitUntouchedCurves(Project& project, int start, int end, bool apply)
+    std::vector<int> refitUntouchedCurves(Project& project, int start, int end, bool apply,
+                                          bool warpChanged)
     {
         std::vector<int> changed;
         auto& audio = project.getAudioData();
@@ -406,11 +407,31 @@ namespace PitchCurveProcessor
         const auto base = uneditedBase(project);
         for (auto& note : project.getNotes())
         {
-            if (note.isRest() || note.getEndFrame() <= start || note.getStartFrame() >= end ||
-                !note.isPitchUntouched())
+            if (note.isRest() || note.getEndFrame() <= start || note.getStartFrame() >= end)
                 continue;
-            if (note.getStartFrame() != note.getSrcStartFrame() ||
-                note.getDurationFrames() != note.getSrcDurationFrames())
+            const bool untouched = note.isPitchUntouched();
+            const bool moved = note.getStartFrame() != note.getSrcStartFrame() ||
+                               note.getDurationFrames() != note.getSrcDurationFrames();
+            // The warp has just changed. An edited note's analysed contour is
+            // what was recorded too, and it is written per timeline frame
+            // against a base whose bend toward the next note is a fixed number
+            // of frames long. Spread over the note's new length instead
+            // (NoteTiming.h), the part of the contour that cancelled that bend
+            // no longer met it: a note shortened to 0.80x next to one read 14
+            // semitones lower sang 305, 281, 281, 307 Hz over its last frames
+            // where the recording falls 288 to 283 Hz, and stepped down where
+            // it met the recording. So it is fitted to the recording through
+            // the new map as an untouched note is, and its edits stay on top.
+            // A baked or drawn contour is an edit itself and keeps its shape.
+            // A contour written under a layout the note has since left (the
+            // stretch taken back) is fitted the same way.
+            const bool laidOutAnew =
+                warpChanged && !note.hasBakedDeltaPitch() && note.hasOriginalDeltaPitch() &&
+                (moved || static_cast<int>(note.getOriginalDeltaPitch().size()) !=
+                              note.getDurationFrames());
+            if (!untouched && !laidOutAnew)
+                continue;
+            if (moved || laidOutAnew)
             {
                 // Stretched: fit each frame on the timeline to the recorded
                 // pitch the warp plays there, so the note sings the recording
@@ -457,8 +478,13 @@ namespace PitchCurveProcessor
                 changed.push_back(note.getStartFrame());
                 if (!apply)
                     continue;
+                // An edited note's deltaPitch may be a capture of its edited
+                // curve (a drag takes one): it follows only where it was the
+                // analysed contour.
+                const bool follows = untouched ? !note.getDeltaPitch().empty()
+                                               : note.getDeltaPitch() == stored;
                 note.setOriginalDeltaPitch(fitted);
-                if (!note.getDeltaPitch().empty())
+                if (follows)
                     note.setDeltaPitch(fitted);
                 continue;
             }
