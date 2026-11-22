@@ -2,6 +2,7 @@
 #include "BasePitchCurve.h"
 #include "PitchToolOperations.h"
 #include "../Audio/NoteTiming.h"
+#include "FryDetector.h"
 #include "../Utils/Constants.h"
 #include <algorithm>
 #include <cmath>
@@ -78,10 +79,14 @@ namespace
         return ctx;
     }
 
-    std::vector<BasePitchCurve::NoteSegment> collectNoteSegments(const std::vector<Note>& notes)
+    std::vector<BasePitchCurve::NoteSegment> collectNoteSegments(const Project& project)
     {
+        const auto& notes = project.getNotes();
         std::vector<BasePitchCurve::NoteSegment> segments;
         segments.reserve(notes.size());
+        // Runs on every drag step: the detection is kept between calls.
+        thread_local fry::Cache fryCache;
+        const auto& fryRanges = fryCache.of(project.getAudioData());
 
         for (const auto& note : notes)
         {
@@ -94,6 +99,10 @@ namespace
             // Base pitch already includes per-note offset
             seg.midiNote = note.getMidiNote() + note.getPitchOffset()
                          - note.getTiltMean();
+            // A note kept whole as recorded (FryDetector.h) plays its
+            // recorded pitch: its neighbours bend toward that one.
+            if (fry::keepsWhole(note, fryRanges))
+                seg.midiNote = note.getOriginalMidiNote();
             segments.push_back(seg);
         }
 
@@ -205,7 +214,7 @@ namespace PitchCurveProcessor
             denseSource = interpolateWithUvMask(sourcePitchHz, audioData.voicedMask);
         }
 
-        auto segments = collectNoteSegments(project.getNotes());
+        auto segments = collectNoteSegments(project);
         if (!segments.empty())
         {
             audioData.basePitch = BasePitchCurve::generateForNotes(segments, totalFrames);
@@ -489,7 +498,7 @@ namespace PitchCurveProcessor
         const int totalFrames = audioData.getNumFrames();
         ensureSizes(audioData, totalFrames);
 
-        auto segments = collectNoteSegments(project.getNotes());
+        auto segments = collectNoteSegments(project);
         if (!segments.empty())
         {
             audioData.basePitch = BasePitchCurve::generateForNotes(segments, totalFrames);
@@ -584,7 +593,7 @@ namespace PitchCurveProcessor
         ensureSizes(audioData, totalFrames);
 
         // 1. Regenerate basePitch from ALL notes (needed for correct pitch display)
-        auto segments = collectNoteSegments(project.getNotes());
+        auto segments = collectNoteSegments(project);
         if (!segments.empty())
         {
             audioData.basePitch = BasePitchCurve::generateForNotes(segments, totalFrames);

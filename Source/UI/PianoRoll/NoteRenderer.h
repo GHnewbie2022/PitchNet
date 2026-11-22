@@ -4,6 +4,7 @@
 
 #include "../../JuceHeader.h"
 #include "../../Models/Project.h"
+#include "../../Utils/FryDetector.h"
 #include "CoordinateMapper.h"
 
 // Forward declarations to avoid header cycles. Implementations include the
@@ -67,6 +68,7 @@ public:
   juce::Colour bodyColour(const Note &note) const;
 
 private:
+  // What a note on Auto is rendered with (spec Q12), for its outline.
   CoordinateMapper *coordMapper = nullptr;
   Project *project = nullptr;
   SelectHandler *selectHandler = nullptr;

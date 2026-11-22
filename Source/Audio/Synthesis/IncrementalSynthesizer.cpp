@@ -9,6 +9,7 @@
 #include "OriginalWaveformRestore.h"
 #include "RubberBandShift.h"
 #include "HighBandRestore.h"
+#include "../../Utils/FryDetector.h"
 #include "../../Utils/NoteGainCurve.h"
 #include "../../Utils/PitchCurveProcessor.h"
 #include "../../Utils/AppLogger.h"
@@ -88,6 +89,17 @@ float interpolateF0(const std::vector<float> &f0, double frame) {
 
   const float amount = static_cast<float>(frame - left);
   return leftValue * (1.0f - amount) + rightValue * amount;
+}
+
+// A note with no edit, or one on Auto kept whole as recorded for the vocal
+// fry it holds (FryDetector.h): either plays the recording, and a pass that
+// finds it dirty puts the recording back. Called per note on the message
+// thread and on the synthesis thread: each keeps its own detection.
+bool neutralForRender(const Note &note, const AudioData &audioData) {
+  if (note.isNeutralForOriginalWaveform())
+    return true;
+  thread_local fry::Cache fryCache;
+  return fry::playsRecording(note, fryCache.of(audioData));
 }
 
 // The waveform a pass commits: the edited notes. Timing is not a note edit
@@ -266,7 +278,7 @@ selectConnectedEditedNotes(const Project &project, bool hasDirtyNoteAnchors,
     if (isF0Anchor(note))
       return true;
     return note.isDirty() && (std::abs(project.getFormantShift()) > 0.001f ||
-                              !note.isNeutralForOriginalWaveform());
+                              !neutralForRender(note, project.getAudioData()));
   };
   auto isEditedClusterCandidate = [&](const Note &note) {
     if (note.isRest())
@@ -275,13 +287,13 @@ selectConnectedEditedNotes(const Project &project, bool hasDirtyNoteAnchors,
     // A dirty neutral note is being reset. It must split the edited cluster
     // instead of pulling its neighbours into the new pass.
     if (std::abs(project.getFormantShift()) <= 0.001f &&
-        note.isDirty() && note.isNeutralForOriginalWaveform() &&
+        note.isDirty() && neutralForRender(note, project.getAudioData()) &&
         !isF0Anchor(note))
       return false;
 
     return std::abs(project.getFormantShift()) > 0.001f ||
            isF0Anchor(note) || note.hasRenderedEdit() ||
-           !note.isNeutralForOriginalWaveform();
+           !neutralForRender(note, project.getAudioData());
   };
   auto areAdjacent = [&](size_t leftIndex, size_t rightIndex) {
     const auto &left = notes[leftIndex];
@@ -659,7 +671,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
       for (auto &other : notes) {
         if (other.isRest() || other.isDirty() || &other == &changed)
           continue;
-        if (other.isNeutralForOriginalWaveform() && !other.hasRenderedEdit())
+        if (neutralForRender(other, project->getAudioData()) && !other.hasRenderedEdit())
           continue; // plays the recording (refitted to it)
         if (other.getStartFrame() < changed.getEndFrame() + kBoundaryReach &&
             other.getEndFrame() > changed.getStartFrame() - kBoundaryReach)
@@ -789,7 +801,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
           juce::String(note.getRenderedEndFrame()) + ")" +
           "  hasRenderedEdit=" + (note.hasRenderedEdit() ? "yes" : "no") +
           "  neutral=" +
-          (note.isNeutralForOriginalWaveform() ? "yes" : "no"));
+          (neutralForRender(note, project->getAudioData()) ? "yes" : "no"));
     }
 #endif
   }
@@ -867,15 +879,42 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   // vocoder's and to R3's in all 6 listening tests (formant +2 and -2
   // semitones, unstretched, 0.90x and 1.33x). A formant shift on the whole
   // project renders every note, the ones with no edit of their own included.
+  // A note on Auto is one of these (fry::resolved()); the fry it holds at
+  // the end of a phrase stays the recording (generateBlendMask).
   std::vector<std::pair<int, int>> recordedHighsFrames;
   if (!usePsola)
     for (const auto &note : project->getNotes())
       if (!note.isRest() && note.isDirty() &&
           (std::abs(project->getFormantShift()) > 0.001f ||
-           !note.isNeutralForOriginalWaveform()) &&
-          note.getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs &&
+           !neutralForRender(note, project->getAudioData())) &&
+          fry::resolved(note) == Note::SynthEngine::VocoderRecordedHighs &&
           note.getEndFrame() > startFrame && note.getStartFrame() < endFrame)
         recordedHighsFrames.emplace_back(note.getStartFrame(), note.getEndFrame());
+
+  // Vocal fry at the end of a phrase stays the recording in notes left on
+  // Auto (FryDetector.h): no engine tried kept its pulses. Timeline frames
+  // of this range that play it; they hand over as a restored note does
+  // (lined up with the render next to them, then crossfaded where the two
+  // agree best). Kept through the blend mask with a 6 ms fade, the voice
+  // crossfaded with itself out of phase, which was heard as less smooth.
+  std::vector<std::pair<int, int>> fryKeptFrames;
+  {
+    const auto fryKept = fry::kept(project->getNotes(), audioData.rawF0,
+                                   fry::detect(audioData));
+    if (!fryKept.empty())
+      for (int frame = std::max(0, startFrame); frame < endFrame; ++frame) {
+        const int source = warp::sourceFrameAt(audioData, frame);
+        bool kept = false;
+        for (const auto &[from, to] : fryKept)
+          kept = kept || (source >= from && source < to);
+        if (!kept)
+          continue;
+        if (!fryKeptFrames.empty() && fryKeptFrames.back().second == frame)
+          fryKeptFrames.back().second = frame + 1;
+        else
+          fryKeptFrames.emplace_back(frame, frame + 1);
+      }
+  }
 
   // Spec Q12: notes the user chose to render with Rubber Band R3. They take
   // the recording shifted by R3 instead of the engine's render, by the same
@@ -886,8 +925,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   // formant envelope is smoothed across the voice's own harmonics with it.
   std::vector<float> rubberBandSourceHz;
   for (const auto &note : project->getNotes())
-    if (!note.isRest() && note.isDirty() && !note.isNeutralForOriginalWaveform() &&
-        note.getSynthEngine() == Note::SynthEngine::RubberBand &&
+    if (!note.isRest() && note.isDirty() && !neutralForRender(note, project->getAudioData()) &&
+        fry::resolved(note) == Note::SynthEngine::RubberBand &&
         note.getEndFrame() > startFrame && note.getStartFrame() < endFrame)
       rubberBandFrames.emplace_back(note.getStartFrame(), note.getEndFrame());
   if (!rubberBandFrames.empty()) {
@@ -1090,6 +1129,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
        hasDirtyNoteAnchors, f0DirtyStart, f0DirtyEnd,
        capturedNoteCount, journalDetail, commitFrameRanges = std::move(commitFrameRanges),
        recordedHighsFrames = std::move(recordedHighsFrames),
+       fryKeptFrames = std::move(fryKeptFrames),
        rubberBandFrames = std::move(rubberBandFrames),
        rubberBandRatio = std::move(rubberBandRatio),
        rubberBandFormant = rubberBandFormantPreserved,
@@ -1123,7 +1163,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                      currentJobId, onComplete, elapsedText, hasDirtyNoteAnchors,
                      f0DirtyStart, f0DirtyEnd, capturedNoteCount, journalDetail,
                      commitFrameRanges, blendMask, originalSegment,
-                     recordedHighsFrames,
+                     recordedHighsFrames, fryKeptFrames,
                      rubberBandFrames, rubberBandRatio, rubberBandFormant,
                      rubberBandSourceHz, warpedRecording, warpedSourceAt,
                      formantShifts, formantF0, formantSampleRate, hasGlobalFormant, usePsola,
@@ -1561,7 +1601,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
           struct ResetSpan {
             int startSample;
             int endSample;
-            bool rubberBand = false; // a Rubber Band note (Q12), not a restore
+            bool rubberBand = false; // a Rubber Band note (Q12) or kept fry, not a restore
           };
           std::vector<ResetSpan> resetSpans;
           if (!hasGlobalFormant) {
@@ -1570,7 +1610,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
             std::vector<std::pair<int, int>> neutralFrameRanges;
             for (const auto &note : capturedProject->getNotes()) {
               if (note.isRest() || !note.isDirty() ||
-                  !note.isNeutralForOriginalWaveform())
+                  !neutralForRender(note, capturedProject->getAudioData()))
                 continue;
               neutralFrameRanges.emplace_back(note.getStartFrame(),
                                               note.getEndFrame());
@@ -1621,6 +1661,16 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
           std::vector<ResetSpan> handoverSpans = resetSpans;
           for (const auto &[first, last] : rubberBandSamples)
             handoverSpans.push_back({first, last, true});
+          // Vocal fry kept as recorded hands over the same way, with the
+          // note's own gains like a Rubber Band note.
+          for (const auto &[from, to] : fryKeptFrames) {
+            const int first =
+                std::max(0, (from - capturedStartFrame) * hopSize);
+            const int last =
+                std::min(samplesToWrite, (to - capturedStartFrame) * hopSize);
+            if (last > first)
+              handoverSpans.push_back({first, last, true});
+          }
           std::sort(handoverSpans.begin(), handoverSpans.end(),
                     [](const ResetSpan &a, const ResetSpan &b) {
                       return a.startSample < b.startSample;
@@ -2009,7 +2059,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                 for (const auto &note : allNotes) {
                   if (note.isRest())
                     continue;
-                  const bool neutral = note.isNeutralForOriginalWaveform();
+                  const bool neutral = neutralForRender(note, capturedProject->getAudioData());
                   if (note.isDirty() && neutral)
                     continue;
                   if (neutral && !note.hasRenderedEdit())
@@ -2130,7 +2180,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               continue;
 
             const bool isNeutralReset =
-                !hasGlobalFormant && note.isDirty() && note.isNeutralForOriginalWaveform() &&
+                !hasGlobalFormant && note.isDirty() && neutralForRender(note, capturedProject->getAudioData()) &&
                 !isF0Anchor;
             note.setRenderedEdit(!isNeutralReset);
             note.setSynthDirty(false);

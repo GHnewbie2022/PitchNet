@@ -1203,9 +1203,11 @@ juce::var ProjectSerializer::noteToJson(const Note& note,
     obj->setProperty("tiltPivot", note.getTiltPivot());
     if (!note.getFrozenTilt().empty())
         obj->setProperty("frozenTilt", floatArrayToString(note.getFrozenTilt(), 4));
-    // The default (vocoder + recorded highs) is not written.
+    // The default (Auto) is not written.
     if (note.getSynthEngine() == Note::SynthEngine::RubberBand)
         obj->setProperty("synthEngine", "rubberband");
+    else if (note.getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs)
+        obj->setProperty("synthEngine", "vocoderRecordedHighs");
     else if (note.getSynthEngine() == Note::SynthEngine::Vocoder)
         obj->setProperty("synthEngine", "vocoder");
     obj->setProperty("vibrato", note.getVibrato());
@@ -1304,13 +1306,14 @@ bool ProjectSerializer::noteFromJson(Note& note, const juce::var& json,
     note.setTiltRight(static_cast<float>(json.getProperty("tiltRight", 0.0)));
     {
         const auto engineName = json.getProperty("synthEngine", "").toString();
-        // A note with nothing stored takes the default. Projects saved while
-        // the vocoder on its own was the default stored nothing for it
-        // either, so their notes move to the default with everyone else's.
+        // A note with nothing stored is on Auto. Projects saved while the
+        // vocoder on its own was the default stored nothing for it either,
+        // so their notes move to Auto with everyone else's.
         note.setSynthEngine(engineName == "rubberband" ? Note::SynthEngine::RubberBand
-                            : engineName == "vocoder"
-                                ? Note::SynthEngine::Vocoder
-                                : Note::SynthEngine::VocoderRecordedHighs);
+                            : engineName == "vocoderRecordedHighs"
+                                ? Note::SynthEngine::VocoderRecordedHighs
+                                : engineName == "vocoder" ? Note::SynthEngine::Vocoder
+                                                          : Note::SynthEngine::Auto);
     }
     note.setVibrato(static_cast<float>(json.getProperty("vibrato", 1.0)));
     note.setPitchDrift(static_cast<float>(json.getProperty("pitchDrift", 1.0)));

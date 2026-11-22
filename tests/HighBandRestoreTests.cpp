@@ -71,26 +71,29 @@ void takesTheRecordingAboveTheCrossover()
   CHECK(same == render);
 }
 
-// It is the default: a new note has it, nothing is written for it, and a
-// note with nothing stored reads back as it. The vocoder on its own (the
-// listening-test tool's) is stored by name.
-void itIsTheDefault()
+// The choice is stored with the note. A new note is on Auto, nothing is
+// written for that, and a note with nothing stored reads back as Auto.
+void theChoiceIsSaved()
 {
   Project project;
-  CHECK(Note(10, 20, 60.0f).getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs);
-  project.addNote(Note(10, 20, 60.0f));
+  CHECK(Note(10, 20, 60.0f).getSynthEngine() == Note::SynthEngine::Auto);
+  Note chosen(10, 20, 60.0f);
+  chosen.setSynthEngine(Note::SynthEngine::VocoderRecordedHighs);
+  project.addNote(chosen);
   Note note(30, 40, 62.0f);
   note.setSynthEngine(Note::SynthEngine::Vocoder);
   project.addNote(note);
+  project.addNote(Note(50, 60, 64.0f));
   const auto json = ProjectSerializer::toJson(project);
-  CHECK(!juce::JSON::toString(json).contains("vocoderRecordedHighs"));
+  CHECK(!juce::JSON::toString(json).containsIgnoreCase("auto"));
   Project reopened;
   CHECK(ProjectSerializer::fromJson(reopened, json));
-  CHECK(reopened.getNotes().size() == 2);
-  if (reopened.getNotes().size() == 2)
+  CHECK(reopened.getNotes().size() == 3);
+  if (reopened.getNotes().size() == 3)
   {
     CHECK(reopened.getNotes()[0].getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs);
     CHECK(reopened.getNotes()[1].getSynthEngine() == Note::SynthEngine::Vocoder);
+    CHECK(reopened.getNotes()[2].getSynthEngine() == Note::SynthEngine::Auto);
   }
 }
 } // namespace
@@ -99,7 +102,7 @@ int main()
 {
   juce::ScopedJuceInitialiser_GUI juce;
   takesTheRecordingAboveTheCrossover();
-  itIsTheDefault();
+  theChoiceIsSaved();
   std::printf("HighBandRestoreTests passed\n");
   return 0;
 }

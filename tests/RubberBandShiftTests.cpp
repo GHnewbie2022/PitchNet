@@ -164,7 +164,7 @@ void theChoiceIsSaved()
                                                   ProjectSerializer::toJson(project)))));
   CHECK(reopened.getNotes().size() == 2);
   CHECK(reopened.getNotes()[0].getSynthEngine() == Note::SynthEngine::RubberBand);
-  CHECK(reopened.getNotes()[1].getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs);
+  CHECK(reopened.getNotes()[1].getSynthEngine() == Note::SynthEngine::Auto);
 }
 
 // A note on a stretched part of the track: R3 stretches and shifts the

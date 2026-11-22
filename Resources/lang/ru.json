@@ -340,6 +340,7 @@
   "synth.vocoder": "Neural Vocoder",
   "synth.vocoderRecordedHighs": "Neural Vocoder + Orig 10kHz",
   "synth.rubberband": "Rubber Band R3",
+  "synth.auto": "Auto",
   "tooltip.select_tool": "Основной инструмент (клавиша: 1)",
   "tooltip.split_tool": "Инструмент разделения нот (клавиша: 2)",
   "tooltip.timing_tool": "Инструмент тайминга (клавиша: 4)",

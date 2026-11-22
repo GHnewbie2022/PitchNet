@@ -343,6 +343,7 @@
   "synth.vocoder": "Neural Vocoder",
   "synth.vocoderRecordedHighs": "Neural Vocoder + Orig 10kHz",
   "synth.rubberband": "Rubber Band R3",
+  "synth.auto": "Auto",
   "tooltip.select_tool": "Main Tool (Shortcut: 1)",
   "tooltip.split_tool": "Note Separation Tool (Shortcut: 2)",
   "tooltip.timing_tool": "Timing Tool (Shortcut: 4)",

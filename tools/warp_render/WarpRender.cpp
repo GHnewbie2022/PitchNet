@@ -13,6 +13,7 @@
 // --snapshot draws the piano roll in the Warp and Timing tools to
 // <prefix>_*.png, with a drag of the first anchor pushed past its limit.
 #include "../../Source/Audio/SourceAudio.h"
+#include "../../Source/Utils/FryDetector.h"
 #include "../../Source/Audio/RecordingChange.h"
 #include "../../Source/Audio/PitchEnsemble.h"
 #include "../../Source/Audio/EditorController.h"
@@ -3920,8 +3921,13 @@ int main(int argc, char **argv)
       resynthController->setProject(std::make_unique<Project>(project));
       auto &p = *resynthController->getProject();
       auto &data = p.getAudioData();
+      // The composite starts from the recording as the warp layer lays it
+      // out. (It was reset to the unstretched recording, which a project
+      // saved with anchors then showed through around each rendered note:
+      // the phrase at 45.96 s of the speech project began 50 ms early for
+      // 30 ms. A project with no anchors is the same either way.)
       if (!touch)
-        data.waveform.makeCopyOf(data.originalWaveform);
+        data.waveform.makeCopyOf(warp::reference(data));
       // PITCHNET_RESYNTH_ANCHORS=src:dst,... (seconds): warp anchors placed
       // as the App places them, before the notes are rendered.
       if (const char *anchorText = std::getenv("PITCHNET_RESYNTH_ANCHORS"))
@@ -3995,11 +4001,11 @@ int main(int argc, char **argv)
         for (auto &note : p.getNotes())
         {
           const double start = note.getStartFrame() * hop;
-          if (note.getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs ||
+          if (note.getSynthEngine() == Note::SynthEngine::Auto ||
               (start >= keepFrom && start < keepTo))
             continue;
           std::printf("to default @%d (%.3f s)\n", note.getStartFrame(), start);
-          note.setSynthEngine(Note::SynthEngine::VocoderRecordedHighs);
+          note.setSynthEngine(Note::SynthEngine::Auto);
         }
       }
       const char *shiftText = std::getenv("PITCHNET_RESYNTH_SHIFT");
@@ -4040,7 +4046,9 @@ int main(int argc, char **argv)
                                     ? Note::SynthEngine::RubberBand
                                     : juce::String(noteEngine) == "highs"
                                         ? Note::SynthEngine::VocoderRecordedHighs
-                                        : Note::SynthEngine::Vocoder);
+                                        : juce::String(noteEngine) == "auto"
+                                            ? Note::SynthEngine::Auto
+                                            : Note::SynthEngine::Vocoder);
           // PITCHNET_RESYNTH_FORMANT=x: the notes' formant shift, in semitones.
           if (const char *formantText = std::getenv("PITCHNET_RESYNTH_FORMANT"))
             note.setFormantShift(juce::String(formantText).getFloatValue());
@@ -4050,7 +4058,15 @@ int main(int argc, char **argv)
             std::printf("marked @%d-%d src %d-%d midi %.3f orig %.3f engine %s\n",
                         note.getStartFrame(), note.getEndFrame(), note.getSrcStartFrame(),
                         note.getSrcEndFrame(), note.getMidiNote(), note.getOriginalMidiNote(),
-                        note.getSynthEngine() == Note::SynthEngine::RubberBand ? "r3" : note.getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs ? "highs" : "vocoder");
+                        [&] {
+                          const auto engine = fry::resolved(note);
+                          const bool isAuto = note.getSynthEngine() == Note::SynthEngine::Auto;
+                          return engine == Note::SynthEngine::RubberBand
+                                     ? (isAuto ? "r3 (auto)" : "r3")
+                                     : engine == Note::SynthEngine::VocoderRecordedHighs
+                                           ? (isAuto ? "highs (auto)" : "highs")
+                                           : "vocoder";
+                        }());
           ++marked;
         }
       if (shiftText != nullptr)

@@ -301,6 +301,7 @@
   "synth.vocoder": "Neural Vocoder",
   "synth.vocoderRecordedHighs": "Neural Vocoder + Orig 10kHz",
   "synth.rubberband": "Rubber Band R3",
+  "synth.auto": "Auto",
   "tooltip.select_tool": "主工具（快速鍵：1）",
   "tooltip.split_tool": "音符分割工具（快速鍵：2）",
   "tooltip.timing_tool": "時值工具（快速鍵：4）",

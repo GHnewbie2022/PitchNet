@@ -31,6 +31,7 @@ set(PITCHNET_TEST_SOURCES
     ProjectModificationRangeTests.cpp
     RecordingChangeTests.cpp
     HighBandRestoreTests.cpp
+    FryDetectorTests.cpp
     RubberBandShiftTests.cpp
     TiltPivotTests.cpp
     TimelineCoordinateTests.cpp

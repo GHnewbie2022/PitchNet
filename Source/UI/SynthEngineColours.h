@@ -6,8 +6,9 @@
 /**
  * Spec Q12: the colour that stands for a note's synthesis choice, on the
  * note's outline and on its entry in the synthesis menu. Only Rubber Band R3
- * has one: the default (vocoder + recorded highs) is unmarked, so a colour
- * on screen means a note that differs from it.
+ * has one: vocoder + recorded highs, what most notes are rendered with, is
+ * unmarked, so a colour on screen means a note that differs from it. Pass
+ * what the note is rendered with (fry::resolved), not a stored Auto.
  */
 namespace synthEngineColour
 {

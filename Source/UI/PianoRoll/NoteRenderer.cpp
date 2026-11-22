@@ -1,5 +1,6 @@
 #include "NoteRenderer.h"
 #include "../SynthEngineColours.h"
+#include "../../Utils/FryDetector.h"
 #include <functional>
 #include "BreathSibilanceRenderer.h"
 #include "PitchToolController.h"
@@ -331,6 +332,8 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
   // Calculate visible time range for culling
   const double visibleStartTime = scrollX / pixelsPerSecond;
   const double visibleEndTime = (scrollX + componentWidth) / pixelsPerSecond;
+
+  // What a note on Auto is rendered with (spec Q12), for its outline.
 
   for (auto &note : project->getNotes())
   {
@@ -698,9 +701,10 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
       // has no outline. A note set to R3 that still plays the recording
       // (no edit of its own: R3 has nothing to shift) takes a thinner,
       // dashed outline: the choice is kept for when it is edited.
-      if (synthEngineColour::has(note.getSynthEngine()) && !bodyShape.isEmpty())
+      const auto synthEngine = fry::resolved(note);
+      if (synthEngineColour::has(synthEngine) && !bodyShape.isEmpty())
       {
-        g.setColour(synthEngineColour::of(note.getSynthEngine()));
+        g.setColour(synthEngineColour::of(synthEngine));
         if (note.isNeutralForOriginalWaveform())
         {
           juce::Path dashed;
