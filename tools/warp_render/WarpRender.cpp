@@ -17,6 +17,7 @@
 #include "../../Source/Audio/RecordingChange.h"
 #include "../../Source/Audio/PitchEnsemble.h"
 #include "../../Source/Audio/EditorController.h"
+#include "../../Source/Audio/Synthesis/WarpedSource.h"
 #include "../../Source/Audio/WarpLayer.h"
 #include "../../Source/Utils/Constants.h"
 #include "../../Source/Utils/MelSpectrogram.h"
@@ -1446,6 +1447,12 @@ int main(int argc, char **argv)
       juce::String::fromUTF8(argv[1]));
   const juce::File output = juce::File::getCurrentWorkingDirectory().getChildFile(
       juce::String::fromUTF8(argv[2]));
+  // PITCHNET_WARP_STRETCH=legacy: stretched audio as before the stretch went
+  // by kind (WarpedSource.h) - signalsmith's default for voice, breath and
+  // fry alike - and a project stretched that way is opened as it was saved,
+  // not laid out again. Read before any project is.
+  if (const char *stretch = std::getenv("PITCHNET_WARP_STRETCH"))
+    warp::setLegacyStretch(juce::String(stretch) == "legacy");
   // WarpRender <in.pitchnet> <out.pitchnet> --app-op split|merge|delete
   // <noteStart> [splitFrame]: the App's own note edit, saved without
   // synthesis, as the reference an agent's direct JSON edit is checked against.
@@ -3899,7 +3906,36 @@ int main(int argc, char **argv)
     // loaded flags).
     const bool touch =
         argc >= 6 && juce::String::fromUTF8(argv[4]) == "--touch";
-    if (argc >= 6 && (juce::String::fromUTF8(argv[4]) == "--resynth" || touch))
+    const bool resynthAsked =
+        argc >= 6 && (juce::String::fromUTF8(argv[4]) == "--resynth" || touch);
+    // As the App does on open (MainComponent::layOutProjectStretchedTheOldWay):
+    // a project stretched before format 9 is laid out again, the recording
+    // stretched by kind and every edit rendered onto it. (--resynth renders
+    // below, and that render lays it out first.)
+    std::unique_ptr<EditorController> layoutController;
+    if (audioData.warpLayoutPending && !resynthAsked)
+    {
+      juce::String ortError;
+      if (!OnnxRuntime::initialise(&ortError))
+      {
+        std::fprintf(stderr, "ONNX Runtime: %s\n", ortError.toRawUTF8());
+        return 1;
+      }
+      layoutController = std::make_unique<EditorController>(false);
+      layoutController->setProject(std::make_unique<Project>(project));
+      auto &p = *layoutController->getProject();
+      std::atomic<bool> pending{false}, done{false}, ok{false};
+      layoutController->resynthesizeIncrementalAsync(
+          p, nullptr, [&](bool success) { ok = success; done = true; }, pending, false);
+      if (!waitFor(done, 600000) || !ok.load())
+      {
+        std::fprintf(stderr, "layout failed\n");
+        return 1;
+      }
+      std::printf("laid out again: stretched before format 9\n");
+      rendered = &p.getAudioData();
+    }
+    if (resynthAsked)
     {
       const juce::String range = touch ? juce::String("0:0")
                                        : juce::String::fromUTF8(argv[5]);
@@ -4182,6 +4218,8 @@ int main(int argc, char **argv)
     }
     if (resynthController)
       resynthController->requestShutdown();
+    if (layoutController)
+      layoutController->requestShutdown();
     std::printf("wrote %s (%d ch, %d Hz)\n", output.getFullPathName().toRawUTF8(),
                 heard.audio.getNumChannels(), heard.sampleRate);
     return 0;
