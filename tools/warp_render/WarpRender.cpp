@@ -3160,13 +3160,19 @@ int main(int argc, char **argv)
     Project project;
     if (!ProjectSerializer::loadFromFile(project, input))
       return 1;
+    // A project that links its recording has no audio to label until the
+    // recording is attached, as the App does on open.
+    sourceaudio::attachRecording(project, input);
+    breathsibilance::ensure(project.getAudioData());
     const auto &a = project.getAudioData();
     const int start = juce::String::fromUTF8(argv[4]).getIntValue();
     const int end = juce::String::fromUTF8(argv[5]).getIntValue();
     for (int f = start; f < end; ++f)
-      std::printf("%d\tvoiced %d\tlabel %d\n", f,
+      std::printf("%d\tvoiced %d\tlabel %d\traw %.1f\tdense %.1f\n", f,
                   f < (int)a.voicedMask.size() && a.voicedMask[(size_t)f] ? 1 : 0,
-                  f < (int)a.breathSibilance.size() ? (int)a.breathSibilance[(size_t)f] : -1);
+                  f < (int)a.breathSibilance.size() ? (int)a.breathSibilance[(size_t)f] : -1,
+                  f < (int)a.rawF0.size() ? a.rawF0[(size_t)f] : -1.0f,
+                  f < (int)a.denseF0.size() ? a.denseF0[(size_t)f] : -1.0f);
     return 0;
   }
   // WarpRender <in.pitchnet> <out.pitchnet> --rebuild: the pitch curves
@@ -3923,6 +3929,11 @@ int main(int argc, char **argv)
       if (const char *onePass = std::getenv("PITCHNET_R3_ONE_PASS"))
         if (auto *synth = resynthController->getIncrementalSynth())
           synth->setRubberBandOnePass(juce::String(onePass) != "0");
+      // PITCHNET_VOICE_TAIL=0: what an edited vowel leaves under the sibilant
+      // after it stays (the render before that was taken out).
+      if (const char *voiceTail = std::getenv("PITCHNET_VOICE_TAIL"))
+        if (auto *synth = resynthController->getIncrementalSynth())
+          synth->setVoiceTailRemoved(juce::String(voiceTail) != "0");
       resynthController->setProject(std::make_unique<Project>(project));
       auto &p = *resynthController->getProject();
       auto &data = p.getAudioData();
@@ -4089,6 +4100,21 @@ int main(int argc, char **argv)
         }
       if (shiftText != nullptr || std::getenv("PITCHNET_RESYNTH_UNEDIT_RANGE") != nullptr)
         PitchCurveProcessor::rebuildBaseFromNotes(p);
+      // PITCHNET_RESYNTH_VOICED_NOT_NOISE=1 (listening tests): frames the
+      // pitch detector called voiced lose their breath / sibilance label, so
+      // the render sings them instead of keeping the recording there.
+      if (std::getenv("PITCHNET_RESYNTH_VOICED_NOT_NOISE") != nullptr)
+      {
+        breathsibilance::ensure(data);
+        int cleared = 0;
+        for (size_t f = 0; f < data.breathSibilance.size() && f < data.voicedMask.size(); ++f)
+          if (data.voicedMask[f] && breathsibilance::isNoise(data.breathSibilance[f]))
+          {
+            data.breathSibilance[f] = breathsibilance::None;
+            ++cleared;
+          }
+        std::printf("voiced frames no longer noise: %d\n", cleared);
+      }
       // PITCHNET_FRY_LIST=1: the vocal fry found in the recording (frames
       // and seconds of the recording), and what of it the notes left on Auto
       // keep as recorded. PITCHNET_FRY_LIST=only stops after the list.
