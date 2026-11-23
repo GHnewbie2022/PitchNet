@@ -2341,6 +2341,20 @@ void MainComponent::fitAnalyzedPitchRangeToView(Project &project)
   }
 }
 
+// What an export is named after, and the folder it is first offered in: the
+// project's own file once there is one, its recording until then. It used
+// to be the recording first - a project named for its edit ("v18 + fixes")
+// exported under the recording's name, and a WAV export was offered over
+// the recording itself.
+static juce::File exportNamedAfter(const Project &project)
+{
+  if (project.getProjectFilePath().existsAsFile())
+    return project.getProjectFilePath();
+  if (project.getFilePath().existsAsFile())
+    return project.getFilePath();
+  return {};
+}
+
 void MainComponent::exportFile()
 {
   if (!juce::MessageManager::getInstance()->isThisTheMessageThread())
@@ -2481,10 +2495,7 @@ void MainComponent::exportFile()
         {
           if (auto *activeProject = safeThis->getProject())
           {
-            if (activeProject->getFilePath().existsAsFile())
-              defaultFile = activeProject->getFilePath();
-            else if (activeProject->getProjectFilePath().existsAsFile())
-              defaultFile = activeProject->getProjectFilePath();
+            defaultFile = exportNamedAfter(*activeProject);
 
             // Save dialogs need a full file path to initialise both the folder
             // and filename consistently across native platform backends.
@@ -2544,16 +2555,10 @@ void MainComponent::exportMidiFile()
     return;
   }
 
-  // Suggest filename based on project or audio file
-  juce::File defaultFile;
-  if (project->getFilePath().existsAsFile())
-  {
-    defaultFile = project->getFilePath().withFileExtension("mid");
-  }
-  else if (project->getProjectFilePath().existsAsFile())
-  {
-    defaultFile = project->getProjectFilePath().withFileExtension("mid");
-  }
+  // Suggest the project's name (the recording's until it is saved).
+  juce::File defaultFile = exportNamedAfter(*project);
+  if (defaultFile != juce::File{})
+    defaultFile = defaultFile.withFileExtension("mid");
 
 #if JUCE_WINDOWS && JUCE_MODAL_LOOPS_PERMITTED
   juce::FileChooser chooser(TR("dialog.export_midi"), defaultFile,
@@ -2660,10 +2665,12 @@ juce::File MainComponent::createMidiDragFile()
   if (project == nullptr || !MidiExporter::hasExportableNotes(project->getNotes()))
     return {};
 
-  // Name the clip after the source so it reads sensibly in the DAW.
-  juce::String baseName = project->getFilePath().getFileNameWithoutExtension();
+  // Name the clip as an export is named (exportNamedAfter), so it reads
+  // sensibly in the DAW: the project, or its recording where there is no
+  // project file (the plug-in).
+  juce::String baseName = exportNamedAfter(*project).getFileNameWithoutExtension();
   if (baseName.isEmpty())
-    baseName = project->getProjectFilePath().getFileNameWithoutExtension();
+    baseName = project->getFilePath().getFileNameWithoutExtension();
   if (baseName.isEmpty())
     baseName = project->getName();
   baseName = juce::File::createLegalFileName(baseName.trim());
