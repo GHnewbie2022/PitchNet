@@ -2064,12 +2064,18 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                     continue;
                   if (neutral && !note.hasRenderedEdit())
                     continue;
-                  const int first = std::min(
-                      {note.getStartFrame(), note.getSrcStartFrame(),
-                       note.getRenderedStartFrame()});
-                  const int last = std::max(
-                      {note.getEndFrame(), note.getSrcEndFrame(),
-                       note.getRenderedEndFrame()});
+                  // Where the note plays and where its render was written:
+                  // timeline frames. Its frames in the recording are not a
+                  // place in the composite (WarpLayer.h); counted here, a
+                  // note the warp had moved reached notes it does not
+                  // touch, the copy below then stopped 1024 samples short
+                  // of a restored note's end, and what the pass had left
+                  // there met it with a step (煙幕 at 229.9 s stretched
+                  // 0.80x: 0.059 between two samples, heard as a click).
+                  const int first = std::min(note.getStartFrame(),
+                                             note.getRenderedStartFrame());
+                  const int last = std::max(note.getEndFrame(),
+                                            note.getRenderedEndFrame());
                   const int footprintStart =
                       first * hopSize - kExactRestoreReachSamples;
                   const int footprintEnd =
