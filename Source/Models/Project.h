@@ -85,6 +85,11 @@ struct AudioData
     // sourceAudio laid out by warpMap at its own rate; empty while the map is
     // the identity. Rebuilt together with warpedOriginal.
     juce::AudioBuffer<float> warpedSourceAudio;
+    // What each frame was stretched as in warpedSourceAudio (SourceKinds.h).
+    // Derived, not saved. The plug-in's copy of the host's audio holds no
+    // analysis: it is given the project's, and keeps it here to tell when
+    // the stretch has to be made again.
+    std::vector<std::uint8_t> stretchKinds;
     // Where the project does not hold the recording (the plug-in, whose
     // sourceAudio is empty): the audio the analysis copy was converted from,
     // at its own rate - channel 0 of the host's audio. Kept only when that

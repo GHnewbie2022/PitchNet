@@ -3,6 +3,8 @@
 #include "BreathSibilanceDetector.h"
 #include "ProjectGain.h"
 #include "RecordingChange.h"
+#include "BreathSibilanceAnalysis.h"
+#include "Synthesis/SourceKinds.h"
 #include "Synthesis/WarpedSource.h"
 #include "SourceAudio.h"
 #include "../Utils/AudioResampler.h"
@@ -91,8 +93,14 @@ const juce::AudioBuffer<float> &reference(const AudioData &audioData)
 void rebuildReference(AudioData &audioData)
 {
   fitToProject(audioData);
+  // What each frame is stretched as (SourceKinds.h), the same for every
+  // stretch below. The labels it reads are not saved with a project: made
+  // here if no load path has yet, or a reference built before them would be
+  // another stretch than the one built after.
+  breathsibilance::ensure(audioData);
+  const auto kinds = sourceKinds(audioData);
   // The same layout at the recording's own rate, for playback (spec Q5 C).
-  sourceaudio::rebuildWarped(audioData);
+  sourceaudio::rebuildWarped(audioData, kinds);
   const auto &original = audioData.originalWaveform;
   if (audioData.warpMap.isIdentity() || original.getNumSamples() <= 0 ||
       original.getNumChannels() <= 0)
@@ -143,6 +151,7 @@ void rebuildReference(AudioData &audioData)
     WarpedSourceSettings atSourceRate;
     atSourceRate.sampleRate = rate;
     atSourceRate.hopSize = static_cast<double>(HOP_SIZE) * rate / SAMPLE_RATE;
+    atSourceRate.kinds = &kinds;
     juce::AudioBuffer<float> stretched(1, source.getNumSamples());
     renderWarpedSource(source.getReadPointer(0), source.getNumSamples(),
                        audioData.warpMap, stretched.getWritePointer(0),
@@ -168,6 +177,7 @@ void rebuildReference(AudioData &audioData)
   settings.sampleRate =
       audioData.sampleRate > 0 ? audioData.sampleRate : SAMPLE_RATE;
   settings.hopSize = HOP_SIZE;
+  settings.kinds = &kinds;
   const int samples = original.getNumSamples();
   audioData.warpedOriginal.setSize(original.getNumChannels(), samples, false,
                                    true, false);

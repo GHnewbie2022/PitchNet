@@ -1851,8 +1851,10 @@ void PitchNetDocumentController::requestRegionCanvasAnalysis(
         processor->restoreAraRegionProject(liveKey, archive.getData(),
                                            archive.getSize());
         if (!processor->araRegionProjectNeedsSourceHydration(liveKey) &&
-            processor->showAraRegionProjectIfActive(liveKey))
+            processor->showAraRegionProjectIfActive(liveKey)) {
+          processor->finishRecordingChange(liveKey);
           return;
+        }
       }
     }
   }

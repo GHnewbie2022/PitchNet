@@ -271,7 +271,8 @@ public:
                                PitchNetAudioModification *modification = nullptr,
                                bool *refused = nullptr);
   // A region analysed again on hydration, now on the canvas: render its
-  // queued notes and tell the user.
+  // queued notes and tell the user. Also where a region stretched before
+  // format 9 is laid out again (the stretch by kind, WarpedSource.h).
   void finishRecordingChange(const juce::String &regionKey);
   bool araRegionProjectAppearsToCover(const juce::String &regionKey,
                                       double regionStart,

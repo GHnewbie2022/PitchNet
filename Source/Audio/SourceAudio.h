@@ -53,8 +53,12 @@ bool load(AudioData &audioData, const juce::File &file);
 bool attachRecording(Project &project, const juce::File &projectFile,
                      const juce::File &chosen = {});
 
-/** Rebuilds warpedSourceAudio from sourceAudio and warpMap. */
-void rebuildWarped(AudioData &audioData);
+/**
+ * Rebuilds warpedSourceAudio from sourceAudio and warpMap, each frame
+ * stretched as `kinds` says (warp::sourceKinds of the project the recording
+ * belongs to; kept in stretchKinds).
+ */
+void rebuildWarped(AudioData &audioData, const std::vector<std::uint8_t> &kinds);
 
 struct Playback
 {

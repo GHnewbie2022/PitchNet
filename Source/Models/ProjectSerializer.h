@@ -27,7 +27,15 @@ public:
     // reference they do not meet, so it refuses the file. Versions 6 and 7
     // still open: stretched, they keep their own reference until the warp
     // is next laid out.
-    static constexpr int FORMAT_VERSION = 8;
+    // 9: stretched audio is stretched by what it holds - voice, breath and
+    // fry each their own way ("stretch": 2 in "warp", WarpedSource.h).
+    // A build before it stretches everything with one setting and would
+    // lay the saved edits over a reference they do not meet, so it refuses
+    // the file. Versions 6 to 8 still open: stretched, they are laid out
+    // again as they are opened (warpLayoutPending), which stretches the
+    // recording the new way and renders every edit anew.
+    static constexpr int FORMAT_VERSION = 9;
+    static constexpr int STRETCH_BY_KIND = 2;
     static constexpr int FIRST_WARP_FORMAT_VERSION = 6;
 
     /** True when the last fromJson()/fromBinaryArchive() call refused a

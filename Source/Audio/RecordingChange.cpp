@@ -298,6 +298,7 @@ bool hydrate(Project &project)
   auto &audioData = project.getAudioData();
   if (audioData.sourceAudio.getNumSamples() <= 0 || audioData.sourceSampleRate <= 0)
     return false;
+  const bool stretchedTheOldWay = audioData.warpLayoutPending;
   audioData.sampleRate = SAMPLE_RATE;
   audioData.originalWaveform = analysisCopy(audioData.sourceAudio, audioData.sourceSampleRate);
   if (audioData.originalWaveform.getNumSamples() <= 0)
@@ -320,7 +321,11 @@ bool hydrate(Project &project)
   }
   pieces.clear();
   pieces.shrink_to_fit();
-  audioData.warpLayoutPending = false;
+  // The composite is laid out for the map - unless the file was stretched
+  // before the stretch went by kind (ProjectSerializer, format 9): its
+  // pieces were rendered onto the old stretch, and the project is laid out
+  // again as it is opened.
+  audioData.warpLayoutPending = stretchedTheOldWay;
 
   for (auto &note : project.getNotes())
     NoteAmplitude::update(note, audioData);

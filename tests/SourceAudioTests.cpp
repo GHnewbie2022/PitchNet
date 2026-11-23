@@ -4,6 +4,7 @@
 
 #include "../Source/Audio/RecordingChange.h"
 #include "../Source/Audio/SourceAudio.h"
+#include "../Source/Audio/Synthesis/SourceKinds.h"
 #include "../Source/Audio/Synthesis/WarpedSource.h"
 #include "../Source/Audio/WarpLayer.h"
 #include "../Source/Audio/WarpMap.h"
@@ -300,12 +301,28 @@ void olderStretchedProjectsKeepTheirReference()
   Project project;
   project.getAudioData() = audio;
   auto json = ProjectSerializer::toJson(project);
-  CHECK(static_cast<int>(json.getProperty("formatVersion", 0)) == 8);
+  CHECK(static_cast<int>(json.getProperty("formatVersion", 0)) == 9);
   CHECK(!static_cast<bool>(json.getProperty("warp", juce::var())
                                .getProperty("referenceFromRecording", true)));
+  CHECK(static_cast<int>(json.getProperty("warp", juce::var()).getProperty("stretch", 0)) == 2);
   Project reopened;
   CHECK(ProjectSerializer::fromJson(reopened, json));
   CHECK(!reopened.getAudioData().warpReferenceFromRecording);
+  CHECK(!reopened.getAudioData().warpLayoutPending);
+
+  // A format 8 file was stretched with one setting for everything: stretched,
+  // it is laid out again as it is opened (the stretch by kind, WarpedSource.h),
+  // unless a listening test asks for the old stretch.
+  json.getDynamicObject()->setProperty("formatVersion", 8);
+  json.getProperty("warp", juce::var()).getDynamicObject()->removeProperty("stretch");
+  Project eight;
+  CHECK(ProjectSerializer::fromJson(eight, json));
+  CHECK(eight.getAudioData().warpLayoutPending);
+  warp::setLegacyStretch(true);
+  Project eightAsItWas;
+  CHECK(ProjectSerializer::fromJson(eightAsItWas, json));
+  CHECK(!eightAsItWas.getAudioData().warpLayoutPending);
+  warp::setLegacyStretch(false);
 
   // A format 7 file has no such word: stretched, it was rendered onto the
   // separate stretch; unstretched, its first layout is the one stretch.
@@ -320,6 +337,7 @@ void olderStretchedProjectsKeepTheirReference()
   Project plainReopened;
   CHECK(ProjectSerializer::fromJson(plainReopened, plainJson));
   CHECK(plainReopened.getAudioData().warpReferenceFromRecording);
+  CHECK(!plainReopened.getAudioData().warpLayoutPending); // nothing stretched
 
   // Laid out again, the project is on the one stretch.
   warp::layOut(project);
@@ -359,9 +377,30 @@ void thePluginsReferenceIsTheHostsStretch()
   map.moveAnchor(anchor, 50.0);
   edit.warpMap = map;
   recording.warpMap = map;
+  // The project's analysis, which the host's audio does not carry: a breath
+  // and a fry onset inside the stretch. Each is stretched its own way
+  // (SourceKinds.h), and the plug-in hands the same kinds to both.
+  edit.breathSibilance.assign(static_cast<size_t>(frames), breathsibilance::None);
+  for (int frame = 18; frame < 30; ++frame)
+    edit.breathSibilance[static_cast<size_t>(frame)] = breathsibilance::Breath;
+  edit.rawF0.assign(static_cast<size_t>(frames), 0.0f);
+  for (int frame = 54; frame < 58; ++frame)
+    edit.rawF0[static_cast<size_t>(frame)] = 100.0f;
+  for (int frame = 58; frame < 78; ++frame)
+    edit.rawF0[static_cast<size_t>(frame)] = 230.0f;
+  const auto kinds = warp::sourceKinds(edit);
+  CHECK(!kinds.empty());
 
   warp::rebuildReference(edit);
-  sourceaudio::rebuildWarped(recording);
+  sourceaudio::rebuildWarped(recording, {});
+  juce::AudioBuffer<float> allVoice;
+  allVoice.makeCopyOf(recording.warpedSourceAudio);
+  sourceaudio::rebuildWarped(recording, kinds);
+  CHECK(recording.stretchKinds == kinds);
+  bool kindsHeard = false;
+  for (int i = 0; i < allVoice.getNumSamples() && !kindsHeard; ++i)
+    kindsHeard = allVoice.getSample(0, i) != recording.warpedSourceAudio.getSample(0, i);
+  CHECK(kindsHeard);
   CHECK(edit.warpedSourceAudio.getNumSamples() == 0);
   CHECK(edit.warpedOriginal.getNumSamples() == edit.originalWaveform.getNumSamples());
 

@@ -2,6 +2,7 @@
 #include "ProjectSerializer.h"
 #include "../Audio/BreathSibilanceAnalysis.h"
 #include "../Audio/RecordingChange.h"
+#include "../Audio/Synthesis/WarpedSource.h"
 #include "../Utils/Constants.h"
 #include "../Utils/MelSpectrogram.h"
 #include "../Utils/PitchCurveProcessor.h"
@@ -325,6 +326,7 @@ juce::var ProjectSerializer::toJson(const Project& project,
         warpObject->setProperty("anchors", anchors);
         warpObject->setProperty("referenceFromRecording",
                                 project.getAudioData().warpReferenceFromRecording);
+        warpObject->setProperty("stretch", STRETCH_BY_KIND);
         obj->setProperty("warp", juce::var(warpObject));
     }
 
@@ -566,9 +568,16 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
             formatVersion >= 8
                 ? static_cast<bool>(warpVar.getProperty("referenceFromRecording", true))
                 : map.isIdentity();
+        // Stretched before the stretch went by kind (format 9): the saved
+        // composite holds the old stretch and every edit is blended onto
+        // it, so the project is laid out again as it is opened. (Not while a
+        // listening test asks for the old stretch.)
+        const bool stretchedTheOldWay =
+            !map.isIdentity() &&
+            static_cast<int>(warpVar.getProperty("stretch", 1)) < STRETCH_BY_KIND;
         audioData.warpMap = std::move(map);
         audioData.warpedOriginal.setSize(0, 0);
-        audioData.warpLayoutPending = false;
+        audioData.warpLayoutPending = stretchedTheOldWay && !warp::legacyStretch();
     }
 
     project.getDrawnCurves().clear();

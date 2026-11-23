@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "../Audio/SourceAudio.h"
+#include "../Audio/Synthesis/SourceKinds.h"
 #include "../Utils/AudioResampler.h"
 #include "../Audio/BreathSibilanceAnalysis.h"
 #include "../Audio/EditorController.h"
@@ -1993,10 +1994,14 @@ bool PitchNetAudioProcessor::buildPlaybackPieces(
     fresh->sourceSampleRate = rate;
     recording = std::move(fresh);
   }
-  // Spec Q5 C: the recording laid out by this edit's warp map, at its rate.
-  if (!(recording->warpMap == edit.warpMap)) {
+  // Spec Q5 C: the recording laid out by this edit's warp map, at its rate,
+  // each frame stretched as the project's analysis says (SourceKinds.h) - the
+  // host's audio here holds none, and the reference the edit is blended onto
+  // is stretched with the same (warp::rebuildReference).
+  const auto kinds = warp::sourceKinds(edit);
+  if (!(recording->warpMap == edit.warpMap) || recording->stretchKinds != kinds) {
     recording->warpMap = edit.warpMap;
-    sourceaudio::rebuildWarped(*recording);
+    sourceaudio::rebuildWarped(*recording, kinds);
   }
 
   const auto playback = sourceaudio::build(edit, composite, *recording);
@@ -3743,14 +3748,24 @@ void PitchNetAudioProcessor::applyRecordingChange(
 }
 
 void PitchNetAudioProcessor::finishRecordingChange(const juce::String &regionKey) {
-  const auto found = recordingChanges.find(regionKey);
-  if (found == recordingChanges.end() || regionKey != activeRegionKey ||
-      !canvasShowsActiveAraRegion || mainComponent == nullptr ||
-      mainComponent->getProject() == nullptr)
+  if (regionKey != activeRegionKey || !canvasShowsActiveAraRegion ||
+      mainComponent == nullptr || mainComponent->getProject() == nullptr)
     return;
+  // A region stretched before the stretch went by kind (WarpedSource.h,
+  // format 9) is restored with its warp to be laid out again
+  // (ProjectSerializer); the render does that first. Until the region is
+  // shown it plays as it was saved.
+  const bool stretchedTheOldWay =
+      mainComponent->getProject()->getAudioData().warpLayoutPending;
+  const auto found = recordingChanges.find(regionKey);
+  if (found == recordingChanges.end()) {
+    if (stretchedTheOldWay)
+      requestPluginProjectRender(*mainComponent->getProject(), nullptr);
+    return;
+  }
   const auto update = found->second;
   recordingChanges.erase(found);
-  if (update.notesToRender > 0)
+  if (update.notesToRender > 0 || stretchedTheOldWay)
     requestPluginProjectRender(*mainComponent->getProject(), nullptr);
   StyledMessageBox::show(
       mainComponent->getComponent(), TR("dialog.recording_changed"),

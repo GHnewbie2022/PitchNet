@@ -361,6 +361,9 @@ private:
   void clearProjectForNewLoad(std::optional<MidiReference::State> reference = std::nullopt);
   void openProjectFile(const juce::File &file);
   void openLoadedProject(const juce::File &file, std::shared_ptr<Project> loadedProject);
+  // After a project is shown: one stretched before the stretch went by kind
+  // (format 9) is laid out again and its edits rendered anew.
+  void layOutProjectStretchedTheOldWay();
   // Shows an opened project (copied into the editor); findRecording looks
   // for the recording of an embedded project (spec Q5).
   void showOpenedProject(const juce::File &file, const Project &openedProject,

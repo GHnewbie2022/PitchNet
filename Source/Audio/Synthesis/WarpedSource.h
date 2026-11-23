@@ -2,6 +2,7 @@
 
 #include "../WarpMap.h"
 
+#include <cstdint>
 #include <vector>
 
 /**
@@ -9,7 +10,32 @@
  * other kind of processing is blended onto (spec Q1):
  *
  *   not stretched  the recording itself, moved to where the map puts it
- *   stretched      signalsmith-stretch, reading the recording through the map
+ *   stretched      by what the recording holds there (SourceKinds.h):
+ *                    voice   signalsmith-stretch, window 35 ms, hop 9 ms
+ *                    noise   breath and unvoiced sibilance: the noise made
+ *                            again (NoiseStretch.h)
+ *                    fry     its own waveform, overlapped (OverlapStretch.h)
+ *
+ * One stretch for everything - signalsmith's default, a 120 ms window - was
+ * heard as a haze over the voice at every ratio and as phasiness at 1.33x:
+ * a window that long smears each moment over 60 ms either way (the gaps
+ * between words fill in, the ripple of a vibrato in the harmonics blurs).
+ * At 35 ms the voice stays as clear as the recording, but a breath turns
+ * phasey and fry, whose pulses come further apart than the window can tell,
+ * turns into a buzz; each of the two has a stretch that does not. Chosen by
+ * ear on 4 sung phrases and 2 spoken ones at 0.80x, 1.10x and 1.33x.
+ *
+ * A run is signalsmith throughout; inside its stretched segments the noise
+ * and the fry are then laid over it, each across 20 ms. Noise meets noise
+ * with no phase to match, and two unrelated noises add in power: every
+ * crossfade is raised by how unlike its two sides are, up to 3 dB halfway.
+ * A breath that an anchor cuts in two starts its own noise a window before
+ * the anchor (or ends it a window after), where signalsmith's rendering is
+ * still the recording; next to the anchor it is not. Fry meets the voice
+ * next to it in phase where it
+ * starts (its first window is placed against signalsmith's rendering) and,
+ * where it ends, at the place within 40 ms past it where the two differ
+ * least.
  *
  * Neighbouring stretched segments are processed as one continuous run whose
  * rate changes at the anchors, so an anchor between two stretched segments
@@ -40,7 +66,28 @@ struct WarpedSourceSettings
   double handOverSeconds = 0.3;
   double fadeSeconds = 0.010;
   long seed = 20261115L;
+  // What each frame of the recording is (SourceKind, one per map frame; a
+  // frame sits on its centre, as the labels do in the blend mask). Null, or
+  // past its end: voice.
+  const std::vector<std::uint8_t> *kinds = nullptr;
+  double kindFadeSeconds = 0.020;
+  // How far past the end of fry its hand-over to the voice may go.
+  double kindReachSeconds = 0.040;
 };
+
+enum class SourceKind : std::uint8_t
+{
+  Voice = 0,
+  Noise = 1,  // breath, unvoiced sibilance
+  Pulses = 2, // vocal fry
+};
+
+/**
+ * Listening tests only (WarpRender): true stretches everything with
+ * signalsmith's default as before the kinds, so the two can be told apart.
+ */
+void setLegacyStretch(bool legacy);
+bool legacyStretch();
 
 struct StretchedRun
 {

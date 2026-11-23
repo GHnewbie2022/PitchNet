@@ -1,6 +1,8 @@
 #include "SourceAudio.h"
 
+#include "BreathSibilanceAnalysis.h"
 #include "RecordingChange.h"
+#include "Synthesis/SourceKinds.h"
 #include "Synthesis/WarpedSource.h"
 #include "WarpLayer.h"
 #include "../Utils/AudioResampler.h"
@@ -59,7 +61,9 @@ bool load(AudioData &audioData, const juce::File &file)
     return false;
   }
   audioData.sourceSampleRate = static_cast<int>(std::lround(reader->sampleRate));
-  rebuildWarped(audioData);
+  // As warp::rebuildReference does: the same kinds, from the same labels.
+  breathsibilance::ensure(audioData);
+  rebuildWarped(audioData, warp::sourceKinds(audioData));
   return true;
 }
 
@@ -140,8 +144,9 @@ bool attachRecording(Project &project, const juce::File &projectFile,
   return false;
 }
 
-void rebuildWarped(AudioData &audioData)
+void rebuildWarped(AudioData &audioData, const std::vector<std::uint8_t> &kinds)
 {
+  audioData.stretchKinds = kinds;
   const auto &source = audioData.sourceAudio;
   const int rate = audioData.sourceSampleRate;
   if (audioData.warpMap.isIdentity() || source.getNumSamples() <= 0 || rate <= 0)
@@ -153,6 +158,7 @@ void rebuildWarped(AudioData &audioData)
   warp::WarpedSourceSettings settings;
   settings.sampleRate = rate;
   settings.hopSize = static_cast<double>(HOP_SIZE) * rate / SAMPLE_RATE;
+  settings.kinds = &audioData.stretchKinds;
   const int samples = source.getNumSamples();
   audioData.warpedSourceAudio.setSize(source.getNumChannels(), samples, false,
                                       true, false);

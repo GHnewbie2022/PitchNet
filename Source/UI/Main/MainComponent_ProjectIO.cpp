@@ -79,6 +79,7 @@ void MainComponent::openLoadedProject(const juce::File &file,
   // as saved, even if the original audio file has moved or changed.
   if (loadedProject->getAudioData().waveform.getNumSamples() > 0) {
     showOpenedProject(file, *loadedProject, true);
+    layOutProjectStretchedTheOldWay();
     return;
   }
 
@@ -516,6 +517,7 @@ void MainComponent::openLinkedProject(const juce::File &file,
       safeThis->showOpenedProject(file, *loadedProject, false);
       if (!opened.changed) {
         safeThis->isLoadingAudio = false;
+        safeThis->layOutProjectStretchedTheOldWay();
         return;
       }
       // Changed outside: the project now differs from the file (new pitch
@@ -528,7 +530,10 @@ void MainComponent::openLinkedProject(const juce::File &file,
                           (opened.update.detected ? juce::String()
                                                   : "\n" + TR("dialog.recording_changed_no_pitch"));
       auto *project = safeThis->getProject();
-      if (project == nullptr || opened.update.notesToRender == 0) {
+      // Nothing to render - unless the project is laid out again for the
+      // stretch by kind, which the render below does first.
+      if (project == nullptr || (opened.update.notesToRender == 0 &&
+                                 !project->getAudioData().warpLayoutPending)) {
         safeThis->isLoadingAudio = false;
         StyledMessageBox::show(safeThis.getComponent(), TR("dialog.recording_changed"),
                                report, StyledMessageBox::InfoIcon);
@@ -558,6 +563,16 @@ void MainComponent::openLinkedProject(const juce::File &file,
           safeThis->pendingIncrementalResynth, safeThis->isPluginMode());
     });
   });
+}
+
+void MainComponent::layOutProjectStretchedTheOldWay() {
+  // A project stretched before the stretch went by kind (WarpedSource.h,
+  // format 9) is opened with its warp to be laid out again
+  // (ProjectSerializer): the recording stretched the new way and every edit
+  // rendered onto it. The render every edit asks for does both.
+  auto *project = getProject();
+  if (project != nullptr && project->getAudioData().warpLayoutPending)
+    resynthesizeIncremental();
 }
 
 bool MainComponent::attachProjectRecording(Project &project,
