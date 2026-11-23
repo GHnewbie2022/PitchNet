@@ -1105,7 +1105,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   // had already stretched left a quiver from 1.33x up.
   std::vector<float> warpedRecording;
   std::vector<double> warpedSourceAt;
-  if (!rubberBandFrames.empty() && !audioData.warpMap.isIdentity() &&
+  if (rubberBandOnePass && !rubberBandFrames.empty() && !audioData.warpMap.isIdentity() &&
       audioData.originalWaveform.getNumSamples() > 0) {
     const auto &recording = audioData.originalWaveform;
     const int frames = endFrame - startFrame;

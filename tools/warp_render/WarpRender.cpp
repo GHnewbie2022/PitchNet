@@ -3918,6 +3918,11 @@ int main(int argc, char **argv)
       if (const char *formantFlag = std::getenv("PITCHNET_R3_FORMANT"))
         if (auto *synth = resynthController->getIncrementalSynth())
           synth->setRubberBandFormantPreserved(juce::String(formantFlag) != "0");
+      // PITCHNET_R3_ONE_PASS=0: on a stretched part R3 shifts the stretched
+      // recording (two passes) instead of reading the recording itself.
+      if (const char *onePass = std::getenv("PITCHNET_R3_ONE_PASS"))
+        if (auto *synth = resynthController->getIncrementalSynth())
+          synth->setRubberBandOnePass(juce::String(onePass) != "0");
       resynthController->setProject(std::make_unique<Project>(project));
       auto &p = *resynthController->getProject();
       auto &data = p.getAudioData();
@@ -4020,6 +4025,19 @@ int main(int argc, char **argv)
           // the centre, and a note with a tilt stays edited).
           if (std::getenv("PITCHNET_RESYNTH_RESET") != nullptr)
             PitchCurveProcessor::resetNoteToUnedited(note);
+          // PITCHNET_RESYNTH_UNEDIT_RANGE=from:to (seconds): the notes starting
+          // there go back to the recording (no pitch edit, default synthesis),
+          // the others keeping what the project has.
+          if (const char *unedit = std::getenv("PITCHNET_RESYNTH_UNEDIT_RANGE"))
+          {
+            const double uneditFrom = juce::String(unedit).upToFirstOccurrenceOf(":", false, false).getDoubleValue();
+            const double uneditTo = juce::String(unedit).fromFirstOccurrenceOf(":", false, false).getDoubleValue();
+            if (note.getStartFrame() * hop >= uneditFrom && note.getStartFrame() * hop < uneditTo)
+            {
+              PitchCurveProcessor::resetNoteToUnedited(note);
+              note.setSynthEngine(Note::SynthEngine::Auto);
+            }
+          }
           // PITCHNET_RESYNTH_SHIFT_ONLY=from:to (seconds): only the notes
           // starting there are moved; the others in the range are put back
           // on the recording (an R3 note between unedited neighbours).
@@ -4069,8 +4087,28 @@ int main(int argc, char **argv)
                         }());
           ++marked;
         }
-      if (shiftText != nullptr)
+      if (shiftText != nullptr || std::getenv("PITCHNET_RESYNTH_UNEDIT_RANGE") != nullptr)
         PitchCurveProcessor::rebuildBaseFromNotes(p);
+      // PITCHNET_FRY_LIST=1: the vocal fry found in the recording (frames
+      // and seconds of the recording), and what of it the notes left on Auto
+      // keep as recorded. PITCHNET_FRY_LIST=only stops after the list.
+      if (const char *fryList = std::getenv("PITCHNET_FRY_LIST"))
+      {
+        const auto list = [hop](const char *label, const fry::Ranges &ranges)
+        {
+          for (const auto &[first, last] : ranges)
+            std::printf("fry %s src %d-%d (%.3f-%.3f s)\n", label, first, last,
+                        first * hop, last * hop);
+        };
+        const auto ends = fry::detect(data);
+        const auto starts = fry::onsets(data.rawF0);
+        list("end", ends);
+        list("end kept", fry::kept(p.getNotes(), data.rawF0, ends));
+        list("onset", starts);
+        list("onset kept", fry::keptOnsets(p.getNotes(), starts));
+        if (juce::String(fryList) == "only")
+          return 0;
+      }
       std::printf("marked %d notes dirty, hasDirty %d\n", marked,
                   p.hasDirtyNotes() ? 1 : 0);
       std::atomic<bool> pending{false}, done{false}, ok{false};

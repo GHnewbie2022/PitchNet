@@ -40,6 +40,9 @@ public:
   /// down takes a heavier, bigger voice (heard at -0.29 semitones on 煙幕's
   /// 地, plainly at -3). Off only for listening tests.
   void setRubberBandFormantPreserved(bool preserved) { rubberBandFormantPreserved = preserved; }
+  // Listening tests only: false puts R3 back on the stretched recording (the
+  // two passes the one-pass render replaced), to tell the two apart by ear.
+  void setRubberBandOnePass(bool onePass) { rubberBandOnePass = onePass; }
 
   void synthesizeRegion(ProgressCallback onProgress,
                         CompleteCallback onComplete);
@@ -73,6 +76,7 @@ private:
   Project *project = nullptr;
   SynthesisEngineType synthesisEngine = SynthesisEngineType::Vocoder;
   bool rubberBandFormantPreserved = true;
+  bool rubberBandOnePass = true;
   PsolaSynthesizer psola;
 
   std::shared_ptr<std::atomic<bool>> cancelFlag;
