@@ -8,9 +8,10 @@
 #include <vector>
 
 /**
- * Spec Q7 / Q12: vocal fry at the end of a phrase, found in the detector's
- * own pitch curve (AudioData::rawF0, one value per analysis frame, 0 where
- * unvoiced, in the recording's time).
+ * Spec Q7 / Q12: vocal fry at the end of a phrase, and as a word starts
+ * (onsets() below), found in the detector's own pitch curve
+ * (AudioData::rawF0, one value per analysis frame, 0 where unvoiced, in the
+ * recording's time).
  *
  * Fry there reads as a short voiced run about an octave under the voice it
  * follows, after which the voice does not come back. The vocoder turns it
@@ -58,49 +59,17 @@ constexpr float kAfterPeriodicity = 0.4f;
 
 using Ranges = std::vector<std::pair<int, int>>; // [first, last) frames
 
-/** Rules 1-3: the runs the pitch curve alone points to. */
-inline Ranges candidates(const std::vector<float>& rawF0)
+/** Rule 1: the curve in semitones and its voiced runs, a frame part-way
+ *  between two of them left out. */
+struct Runs
 {
-    const int total = static_cast<int>(rawF0.size());
-    std::vector<float> semitones(rawF0.size(), 0.0f);
-    for (int i = 0; i < total; ++i)
-        if (rawF0[static_cast<size_t>(i)] > 0.0f)
-            semitones[static_cast<size_t>(i)] = 12.0f * std::log2(rawF0[static_cast<size_t>(i)]);
-    const auto voiced = [&rawF0](int i) { return rawF0[static_cast<size_t>(i)] > 0.0f; };
-    const auto at = [&semitones](int i) { return semitones[static_cast<size_t>(i)]; };
-
+    std::vector<float> semitones; // 12 log2(Hz), 0 where unvoiced
+    std::vector<char> voicedFrames;
     Ranges runs;
-    int start = 0;
-    for (int i = 1; i <= total; ++i)
-    {
-        const bool cut = i == total || voiced(i) != voiced(i - 1) ||
-                         (voiced(i) && std::abs(at(i) - at(i - 1)) >= kStep);
-        if (!cut)
-            continue;
-        if (voiced(start))
-            runs.emplace_back(start, i);
-        start = i;
-    }
 
-    // The curve is resampled to the App's frames, and a jump leaves one
-    // frame part-way between the two pitches. Such a frame is not a run of
-    // its own: it would stand between the fry and the voice it follows.
-    Ranges kept;
-    for (size_t j = 0; j < runs.size(); ++j)
-    {
-        const auto [a, b] = runs[j];
-        if (b - a == 1 && j > 0 && j + 1 < runs.size() && runs[j - 1].second == a &&
-            runs[j + 1].first == b)
-        {
-            const float low = std::min(at(a - 1), at(b));
-            const float high = std::max(at(a - 1), at(b));
-            if (at(a) >= low && at(a) <= high)
-                continue;
-        }
-        kept.push_back(runs[j]);
-    }
-
-    const auto median = [&at](int from, int to)
+    bool voiced(int i) const { return voicedFrames[static_cast<size_t>(i)] != 0; }
+    float at(int i) const { return semitones[static_cast<size_t>(i)]; }
+    float median(int from, int to) const
     {
         std::vector<float> values;
         for (int i = from; i < to; ++i)
@@ -108,7 +77,60 @@ inline Ranges candidates(const std::vector<float>& rawF0)
         std::sort(values.begin(), values.end());
         const size_t n = values.size();
         return n % 2 == 1 ? values[n / 2] : 0.5f * (values[n / 2 - 1] + values[n / 2]);
-    };
+    }
+};
+
+inline Runs runsOf(const std::vector<float>& rawF0)
+{
+    Runs curve;
+    const int total = static_cast<int>(rawF0.size());
+    curve.semitones.assign(rawF0.size(), 0.0f);
+    curve.voicedFrames.assign(rawF0.size(), 0);
+    for (int i = 0; i < total; ++i)
+        if (rawF0[static_cast<size_t>(i)] > 0.0f)
+        {
+            curve.semitones[static_cast<size_t>(i)] = 12.0f * std::log2(rawF0[static_cast<size_t>(i)]);
+            curve.voicedFrames[static_cast<size_t>(i)] = 1;
+        }
+
+    Ranges runs;
+    int start = 0;
+    for (int i = 1; i <= total; ++i)
+    {
+        const bool cut = i == total || curve.voiced(i) != curve.voiced(i - 1) ||
+                         (curve.voiced(i) && std::abs(curve.at(i) - curve.at(i - 1)) >= kStep);
+        if (!cut)
+            continue;
+        if (curve.voiced(start))
+            runs.emplace_back(start, i);
+        start = i;
+    }
+
+    // The curve is resampled to the App's frames, and a jump leaves one
+    // frame part-way between the two pitches. Such a frame is not a run of
+    // its own: it would stand between the fry and the voice next to it.
+    for (size_t j = 0; j < runs.size(); ++j)
+    {
+        const auto [a, b] = runs[j];
+        if (b - a == 1 && j > 0 && j + 1 < runs.size() && runs[j - 1].second == a &&
+            runs[j + 1].first == b)
+        {
+            const float low = std::min(curve.at(a - 1), curve.at(b));
+            const float high = std::max(curve.at(a - 1), curve.at(b));
+            if (curve.at(a) >= low && curve.at(a) <= high)
+                continue;
+        }
+        curve.runs.push_back(runs[j]);
+    }
+    return curve;
+}
+
+/** Rules 1-3: the runs the pitch curve alone points to. */
+inline Ranges candidates(const std::vector<float>& rawF0)
+{
+    const int total = static_cast<int>(rawF0.size());
+    const auto curve = runsOf(rawF0);
+    const auto& kept = curve.runs;
 
     Ranges found;
     for (size_t j = 1; j < kept.size(); ++j)
@@ -118,14 +140,81 @@ inline Ranges candidates(const std::vector<float>& rawF0)
         if (b - a > kMaxRun || a - previousEnd > kGap || previousEnd - previousStart <= b - a)
             continue;
         const float reference =
-            median(std::max(previousStart, previousEnd - kReference), previousEnd);
-        if (reference - median(a, b) < kDrop)
+            curve.median(std::max(previousStart, previousEnd - kReference), previousEnd);
+        if (reference - curve.median(a, b) < kDrop)
             continue;
         bool comesBack = false;
         for (int i = b; i < std::min(total, b + kTail) && !comesBack; ++i)
-            comesBack = voiced(i) && std::abs(at(i) - reference) <= kStep;
+            comesBack = curve.voiced(i) && std::abs(curve.at(i) - reference) <= kStep;
         if (!comesBack)
             found.emplace_back(a, b);
+    }
+    return found;
+}
+
+/**
+ * Vocal fry as a word starts (spec Q12), read in the same curve: the mirror
+ * image of rules 1 and 2. A voiced run of at most kOnsetMaxRun frames whose
+ * median sits kDrop semitones or more under the start of the run after it
+ * (no more than kGap frames apart, and longer than this one). Rule 3 is
+ * left out: 6 of the 9 below have a voiced frame at the voice's own pitch
+ * in the 100 ms before, in 4 of them a single frame as the voice catches
+ * after a consonant. Rule 4 has no counterpart yet: nothing was found that
+ * it would have had to turn down.
+ *
+ * Found in 煙幕 (sung, 249 s) 6 times and in the speech the rule above was
+ * tuned on (120 s) 3 times, and all 9 were heard as fry starting a word.
+ * What it misses is not known: fry the detector calls unvoiced leaves no
+ * low run to find. The runs were 1 to 5 frames long; nothing between 6 and
+ * kMaxRun frames turned up in either recording, so kOnsetMaxRun is set from
+ * what a sung pickup note under a leap of a fifth can be mistaken for, not
+ * from a case heard.
+ *
+ * The vocoder turns such an onset into an artefact as it does the end of a
+ * phrase (the word at 230.3 s of 煙幕, stretched 1.10x: the recording kept
+ * was heard as best, R3 as acceptable, the vocoder as worst), so notes left
+ * on Auto keep the recording there: from the low run up to the voice after
+ * it, and back from it over what leads into it, kOnsetLead frames at most
+ * - unvoiced frames, frames as low as the run, and a voiced frame right
+ * after an unvoiced one. The voice's own band (70 to 900 Hz) rises in the
+ * recording 1 to 5 frames before the low run in the 6 sung ones, while the
+ * detector still calls it unvoiced, and a run of unvoiced frames that short
+ * is rendered like the voice (generateBlendMask). The walk back stops at
+ * the voice before: fry between two words keeps that voice rendered.
+ */
+constexpr int kOnsetMaxRun = 9; // 100 ms
+constexpr int kOnsetLead = 6;   // 70 ms
+constexpr int kArriveWithin = 2;
+
+/** Each onset as [first, last) frames to keep: its lead, the low run, and
+ *  the frames up to the voice after it. */
+inline Ranges onsets(const std::vector<float>& rawF0)
+{
+    const auto curve = runsOf(rawF0);
+    const auto& kept = curve.runs;
+
+    Ranges found;
+    for (size_t j = 0; j + 1 < kept.size(); ++j)
+    {
+        const auto [a, b] = kept[j];
+        const auto [nextStart, nextEnd] = kept[j + 1];
+        if (b - a > kOnsetMaxRun || nextStart - b > kGap || nextEnd - nextStart <= b - a)
+            continue;
+        const float reference =
+            curve.median(nextStart, std::min(nextEnd, nextStart + kReference));
+        if (reference - curve.median(a, b) < kDrop)
+            continue;
+        int start = a;
+        while (start > 0 && a - start < kOnsetLead)
+        {
+            const int i = start - 1;
+            const bool low = curve.voiced(i) && reference - curve.at(i) >= kDrop;
+            const bool voiceCatching = curve.voiced(i) && (i == 0 || !curve.voiced(i - 1));
+            if (curve.voiced(i) && !low && !voiceCatching)
+                break;
+            start = i;
+        }
+        found.emplace_back(start, nextStart);
     }
     return found;
 }
@@ -334,6 +423,78 @@ inline Ranges kept(const Notes& notes, const std::vector<float>& rawF0, const Ra
                rawF0[static_cast<size_t>(end)] <= 0.0f)
             ++end;
         found.emplace_back(start, end);
+    }
+    return found;
+}
+
+/**
+ * Where the voice has arrived after an onset whose kept frames end at `end`.
+ * The vocoder sings the detector's smoothed curve (denseF0), and across the
+ * jump up from the fry that curve can reach the voice a frame after the
+ * detector's own (rawF0): 337 against 424 Hz at 230.4 s of 煙幕, in 3 of
+ * the 9 onsets. The first frame from `end` on where the two are within a
+ * semitone, kArriveWithin frames on at most. Up to there the vocoder is
+ * given the voice's pitch (IncrementalSynthesizer.cpp), so that it is not
+ * still singing the fry where the recording hands over to it: heard at
+ * 0.80x to 1.50x on 3 onsets, 11 of 12 accepted and the twelfth marked for
+ * another word. Keeping one frame more of the recording instead was
+ * accepted on one onset and not on another stretched 1.33x and 1.50x,
+ * where the later crossfade dipped 5 to 7 dB; a 1.5 ms switch at the
+ * quietest point and a crossfade moved up to 50 ms on were each turned
+ * down somewhere (stretched, and moved 2 semitones).
+ */
+inline int voiceArrivesAt(const std::vector<float>& rawF0,
+                          const std::vector<float>& denseF0, int end)
+{
+    int arrived = end;
+    for (int k = 0; k < kArriveWithin; ++k)
+    {
+        const auto at = static_cast<size_t>(std::max(0, arrived));
+        if (at >= rawF0.size() || at >= denseF0.size() || !(rawF0[at] > 0.0f) ||
+            !(denseF0[at] > 0.0f) || 12.0f * std::log2(rawF0[at] / denseF0[at]) <= 1.0f)
+            break;
+        ++arrived;
+    }
+    return arrived;
+}
+
+/** The frames of the recording that notes on Auto keep as recorded for the
+ *  fry a word starts with (onsets()): each onset a note on Auto reaches
+ *  into, less the frames of notes with a choice of their own, which are
+ *  rendered whole with it. */
+template <typename Notes>
+inline Ranges keptOnsets(const Notes& notes, const Ranges& ranges)
+{
+    Ranges found;
+    for (const auto& [a, b] : ranges)
+    {
+        bool onAuto = false;
+        Ranges pieces{{a, b}};
+        for (const auto& note : notes)
+        {
+            if (note.isRest())
+                continue;
+            const int from = std::max(a, note.getSrcStartFrame());
+            const int to = std::min(b, note.getSrcEndFrame());
+            if (to <= from)
+                continue;
+            if (note.getSynthEngine() == Note::SynthEngine::Auto)
+            {
+                onAuto = true;
+                continue;
+            }
+            Ranges left;
+            for (const auto& [first, last] : pieces)
+            {
+                if (first < from)
+                    left.emplace_back(first, std::min(last, from));
+                if (last > to)
+                    left.emplace_back(std::max(first, to), last);
+            }
+            pieces = std::move(left);
+        }
+        if (onAuto)
+            found.insert(found.end(), pieces.begin(), pieces.end());
     }
     return found;
 }

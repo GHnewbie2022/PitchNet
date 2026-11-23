@@ -880,7 +880,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   // semitones, unstretched, 0.90x and 1.33x). A formant shift on the whole
   // project renders every note, the ones with no edit of their own included.
   // A note on Auto is one of these (fry::resolved()); the fry it holds at
-  // the end of a phrase stays the recording (generateBlendMask).
+  // the end of a phrase or as a word starts stays the recording
+  // (fryKeptFrames below).
   std::vector<std::pair<int, int>> recordedHighsFrames;
   if (!usePsola)
     for (const auto &note : project->getNotes())
@@ -891,16 +892,22 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
           note.getEndFrame() > startFrame && note.getStartFrame() < endFrame)
         recordedHighsFrames.emplace_back(note.getStartFrame(), note.getEndFrame());
 
-  // Vocal fry at the end of a phrase stays the recording in notes left on
-  // Auto (FryDetector.h): no engine tried kept its pulses. Timeline frames
-  // of this range that play it; they hand over as a restored note does
-  // (lined up with the render next to them, then crossfaded where the two
-  // agree best). Kept through the blend mask with a 6 ms fade, the voice
-  // crossfaded with itself out of phase, which was heard as less smooth.
+  // Vocal fry at the end of a phrase, and as a word starts, stays the
+  // recording in notes left on Auto (FryDetector.h): no engine tried kept
+  // its pulses. Timeline frames of this range that play it; they hand over
+  // as a restored note does (lined up with the render next to them, then
+  // crossfaded where the two agree best). Kept through the blend mask with
+  // a 6 ms fade, the voice crossfaded with itself out of phase, which was
+  // heard as less smooth.
   std::vector<std::pair<int, int>> fryKeptFrames;
+  fry::Ranges onsetHeld; // the onsets kept, for what the vocoder sings under them
   {
-    const auto fryKept = fry::kept(project->getNotes(), audioData.rawF0,
-                                   fry::detect(audioData));
+    auto fryKept = fry::kept(project->getNotes(), audioData.rawF0,
+                             fry::detect(audioData));
+    const auto onsetKept =
+        fry::keptOnsets(project->getNotes(), fry::onsets(audioData.rawF0));
+    fryKept.insert(fryKept.end(), onsetKept.begin(), onsetKept.end());
+    onsetHeld = onsetKept;
     if (!fryKept.empty())
       for (int frame = std::max(0, startFrame); frame < endFrame; ++frame) {
         const int source = warp::sourceFrameAt(audioData, frame);
@@ -2201,6 +2208,42 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               });
         }).detach();
       };
+
+  // Under vocal fry kept as a word starts (FryDetector.h) the vocoder is
+  // given the pitch of the voice after it, not the fry's own low one, up to
+  // where the curve it sings has arrived at that voice. What it renders
+  // there is not heard - the recording plays - but it reached the handover
+  // still singing the fry: a low period or two past the kept frames, and the
+  // tail of its own, louder fry under the crossfade. At 70 to 300 Hz that
+  // was 5 to 14 dB over the recording around the handover (煙幕 at 230.4 s
+  // stretched 1.10x), as strong as one pulse of the fry, and it was heard
+  // as one grain more. Given the voice's pitch it meets the handover already
+  // singing the voice. Unvoiced frames stay unvoiced.
+  if (!usePsola && !onsetHeld.empty()) {
+    for (const auto &[from, to] : onsetHeld) {
+      const int arrived = fry::voiceArrivesAt(audioData.rawF0, audioData.denseF0, to);
+      int firstAfter = -1;
+      for (int frame = std::max(0, startFrame); frame < endFrame; ++frame) {
+        const int source = warp::sourceFrameAt(audioData, frame);
+        if (source < arrived)
+          continue;
+        if (source < arrived + 3 &&
+            adjustedF0Range[static_cast<size_t>(frame - startFrame)] > 0.0f)
+          firstAfter = frame;
+        if (firstAfter >= 0 || source >= arrived + 3)
+          break;
+      }
+      if (firstAfter < 0)
+        continue;
+      const float pitch = adjustedF0Range[static_cast<size_t>(firstAfter - startFrame)];
+      for (int frame = std::max(0, startFrame); frame < firstAfter; ++frame) {
+        const int source = warp::sourceFrameAt(audioData, frame);
+        auto &value = adjustedF0Range[static_cast<size_t>(frame - startFrame)];
+        if (source >= from && source < arrived && value > 0.0f)
+          value = pitch;
+      }
+    }
+  }
 
   if (usePsola) {
     psola.renderAsync(std::move(dspRequest), std::move(onRendered),

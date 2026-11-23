@@ -250,9 +250,10 @@ public:
     // vocoder below 10 kHz with the recording above it (HighBandRestore.h),
     // which keeps the fine rasp the vocoder turns to noise up there; and
     // Rubber Band's R3 engine, which shifts the recording itself, for what
-    // the vocoder breaks below 10 kHz (vocal fry). The default, Auto, picks
-    // between them: R3 for a note that holds fry at the end of a phrase
-    // (FryDetector.h), the vocoder with recorded highs for the rest. The
+    // the vocoder breaks below 10 kHz (vocal fry). The default, Auto, is
+    // the vocoder with recorded highs, and keeps the recording itself where
+    // the note holds fry at the end of a phrase or as a word starts
+    // (FryDetector.h). The
     // vocoder on its own lost every listening test and is not offered in the
     // App; the listening-test tool still renders with it. A note that plays
     // the recording ignores the choice.

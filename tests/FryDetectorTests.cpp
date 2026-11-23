@@ -1,4 +1,5 @@
-// Spec Q7 / Q12: vocal fry at the end of a phrase (FryDetector.h).
+// Spec Q7 / Q12: vocal fry at the end of a phrase and as a word starts
+// (FryDetector.h).
 #include "TestAssert.h"
 
 #include "../Source/Utils/FryDetector.h"
@@ -184,6 +185,133 @@ void autoPicksByTheNote()
   CHECK(fry::kept(notes, curve, ranges).empty());
   CHECK(fry::resolved(notes[1]) == Note::SynthEngine::RubberBand);
 }
+
+// A word starting in fry: a short run an octave under the voice after it.
+// What is kept runs from the low run to that voice, the frame part-way
+// between them included, and back over the unvoiced frames before it, 6 at
+// most.
+void theStartOfAWordIsFound()
+{
+  std::vector<float> curve;
+  add(curve, 20, 0.0f);
+  add(curve, 2, 100.0f);
+  add(curve, 1, 140.0f);
+  add(curve, 40, 200.0f);
+  const auto found = fry::onsets(curve);
+  CHECK(found.size() == 1);
+  CHECK(found[0].first == 14 && found[0].second == 23);
+  CHECK(fry::candidates(curve).empty());
+}
+
+// As it reads in most of the sung ones (煙幕 at 31.57 s: 254 Hz, 6 unvoiced
+// frames, 223, 110, 144, 215 Hz): the voice catches for one frame before it
+// drops. That frame and the unvoiced ones before it are kept too; the walk
+// back stops at the voice before.
+void theVoiceCatchingFirstIsKept()
+{
+  std::vector<float> curve;
+  add(curve, 30, 254.0f);
+  add(curve, 4, 0.0f);
+  add(curve, 1, 223.0f);
+  add(curve, 1, 110.0f);
+  add(curve, 1, 144.0f);
+  add(curve, 30, 215.0f);
+  const auto found = fry::onsets(curve);
+  CHECK(found.size() == 1);
+  CHECK(found[0].first == 30 && found[0].second == 37);
+}
+
+// Fry between two words with no break (the speech at 53.81 s: 268 Hz, five
+// frames near 134 Hz, 258 Hz): the voice before it stays rendered. A low
+// run before the unvoiced frames that lead in is part of the same creak
+// (59.30 s: 197, 117, 97, 97, 96 Hz, 3 unvoiced, five frames at 105 Hz).
+void fryBetweenTwoWords()
+{
+  std::vector<float> joined;
+  add(joined, 30, 268.0f);
+  add(joined, 5, 134.0f);
+  add(joined, 30, 258.0f);
+  const auto found = fry::onsets(joined);
+  CHECK(found.size() == 1);
+  CHECK(found[0].first == 30 && found[0].second == 35);
+
+  std::vector<float> creak;
+  add(creak, 30, 197.0f);
+  add(creak, 4, 97.0f);
+  add(creak, 3, 0.0f);
+  add(creak, 5, 105.0f);
+  add(creak, 30, 206.0f);
+  const auto both = fry::onsets(creak);
+  CHECK(both.size() == 1);
+  CHECK(both[0].first == 31 && both[0].second == 42); // 6 frames back from 37
+}
+
+// A sung note under a leap is longer than 9 frames; a drop of less than 7
+// semitones is a step of the melody; and the voice after has to be longer
+// than the low run.
+void aLeapUpIsNot()
+{
+  std::vector<float> longLow;
+  add(longLow, 20, 0.0f);
+  add(longLow, 10, 100.0f);
+  add(longLow, 40, 200.0f);
+  CHECK(fry::onsets(longLow).empty());
+
+  std::vector<float> small;
+  add(small, 20, 0.0f);
+  add(small, 4, 140.0f); // 6.2 semitones
+  add(small, 40, 200.0f);
+  CHECK(fry::onsets(small).empty());
+
+  std::vector<float> shortVoice;
+  add(shortVoice, 20, 0.0f);
+  add(shortVoice, 5, 100.0f);
+  add(shortVoice, 4, 200.0f);
+  add(shortVoice, 20, 0.0f);
+  CHECK(fry::onsets(shortVoice).empty());
+}
+
+// Notes on Auto keep an onset they reach into; the frames of a note with a
+// choice of its own are rendered with it; with no note on Auto there,
+// nothing is kept.
+void autoKeepsTheOnset()
+{
+  const fry::Ranges ranges{{34, 43}};
+  std::vector<Note> notes{Note(10, 38, 55.0f), Note(38, 70, 55.0f)};
+  auto kept = fry::keptOnsets(notes, ranges);
+  CHECK(kept.size() == 1);
+  CHECK(kept[0].first == 34 && kept[0].second == 43);
+
+  notes[0].setSynthEngine(Note::SynthEngine::RubberBand);
+  kept = fry::keptOnsets(notes, ranges);
+  CHECK(kept.size() == 1);
+  CHECK(kept[0].first == 38 && kept[0].second == 43);
+
+  notes[1].setSynthEngine(Note::SynthEngine::VocoderRecordedHighs);
+  CHECK(fry::keptOnsets(notes, ranges).empty());
+
+  std::vector<Note> elsewhere{Note(50, 70, 55.0f)};
+  CHECK(fry::keptOnsets(elsewhere, ranges).empty());
+}
+
+// The curve the vocoder sings can reach the voice a frame after the
+// detector's own (煙幕 at 230.4 s: 337 against 424 Hz). Up to where it has
+// arrived, 2 frames on at most, the vocoder is given the voice's pitch.
+void theVoiceArrivesWithTheSungCurve()
+{
+  std::vector<float> raw{0.0f, 189.0f, 253.0f, 424.0f, 421.0f, 415.0f};
+  std::vector<float> dense{0.0f, 189.0f, 253.0f, 337.0f, 421.0f, 415.0f};
+  CHECK(fry::voiceArrivesAt(raw, dense, 3) == 4);
+  CHECK(fry::voiceArrivesAt(raw, raw, 3) == 3); // arrives with the detector's
+
+  // Never more than 2 frames on, nor past the curves or into unvoiced frames.
+  std::vector<float> slow{0.0f, 189.0f, 253.0f, 300.0f, 310.0f, 320.0f, 424.0f};
+  std::vector<float> high(slow.size(), 424.0f);
+  CHECK(fry::voiceArrivesAt(high, slow, 3) == 5);
+  CHECK(fry::voiceArrivesAt(raw, dense, 6) == 6);
+  std::vector<float> unvoiced{0.0f, 189.0f, 253.0f, 0.0f, 421.0f};
+  CHECK(fry::voiceArrivesAt(unvoiced, dense, 3) == 3);
+}
 } // namespace
 
 int main()
@@ -194,6 +322,12 @@ int main()
   aLeapDownIsNot();
   whatFollowsDecides();
   autoPicksByTheNote();
+  theStartOfAWordIsFound();
+  theVoiceCatchingFirstIsKept();
+  fryBetweenTwoWords();
+  aLeapUpIsNot();
+  autoKeepsTheOnset();
+  theVoiceArrivesWithTheSungCurve();
   std::printf("FryDetectorTests passed\n");
   return 0;
 }

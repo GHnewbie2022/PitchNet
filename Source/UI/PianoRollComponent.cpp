@@ -4912,7 +4912,7 @@ void PianoRollComponent::showSynthMenu(Note &note)
     menu.addItem(std::move(item));
   };
   // Auto: the vocoder with the recording's highs, and vocal fry at the end
-  // of a phrase kept as recorded (FryDetector.h).
+  // of a phrase or as a word starts kept as recorded (FryDetector.h).
   addItem(3, TR("synth.auto"), Note::SynthEngine::Auto, Note::SynthEngine::Auto);
   addItem(1, TR("synth.vocoderRecordedHighs"), Note::SynthEngine::VocoderRecordedHighs,
           Note::SynthEngine::VocoderRecordedHighs);
