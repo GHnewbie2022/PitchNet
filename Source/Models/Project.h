@@ -85,6 +85,21 @@ struct AudioData
     // sourceAudio laid out by warpMap at its own rate; empty while the map is
     // the identity. Rebuilt together with warpedOriginal.
     juce::AudioBuffer<float> warpedSourceAudio;
+    // Where the project does not hold the recording (the plug-in, whose
+    // sourceAudio is empty): the audio the analysis copy was converted from,
+    // at its own rate - channel 0 of the host's audio. Kept only when that
+    // rate is not the analysis rate. Derived, not saved. The stretched
+    // reference is then this audio stretched at its own rate and converted,
+    // which is what playback stretches too (WarpLayer.h, rebuildReference).
+    std::shared_ptr<const juce::AudioBuffer<float>> analysisSource;
+    int analysisSourceRate = 0;
+    // Where the recording is held at its own rate, warpedOriginal is that
+    // stretch converted to the analysis rate: one stretch (WarpLayer.h,
+    // rebuildReference). False for a stretched project saved before format
+    // 8: its rendered edits are blended onto the analysis copy stretched on
+    // its own, and the reference stays that one until the composite is laid
+    // out again (warp::layOut), which renders every edit anew.
+    bool warpReferenceFromRecording = true;
     // The warp map changed and the composite has not been laid out again yet.
     bool warpLayoutPending = false;
     // The map the composite (waveform) is laid out for. It trails warpMap

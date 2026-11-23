@@ -2,14 +2,18 @@
 // only the edited ranges replaced (SourceAudio.h).
 #include "TestAssert.h"
 
+#include "../Source/Audio/RecordingChange.h"
 #include "../Source/Audio/SourceAudio.h"
 #include "../Source/Audio/Synthesis/WarpedSource.h"
+#include "../Source/Audio/WarpLayer.h"
 #include "../Source/Audio/WarpMap.h"
+#include "../Source/Models/ProjectSerializer.h"
 #include "../Source/Utils/AudioResampler.h"
 #include "../Source/Utils/Constants.h"
 
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <vector>
 
 namespace
@@ -199,6 +203,202 @@ void piecesOverTheRecordingAreThePlayback()
                                      untouched.sourceAudio, 100)
             .empty());
 }
+
+// One stretch, not two: with the recording held at its own rate, the
+// reference every edit is blended onto is that stretch converted as the
+// analysis copy was made, sample for sample. Stretched on its own from the
+// analysis copy it sat at another phase, and the crossfade from an edit back
+// to the recording dipped. Without the recording (the plug-in's project) the
+// analysis copy is stretched as before.
+void theReferenceIsThePlaybackStretch()
+{
+  auto audio = makeRecording(3.0);
+  const int frames = audio.originalWaveform.getNumSamples() / HOP_SIZE;
+  warp::WarpMap map(static_cast<double>(frames));
+  const int anchor = map.addAnchorAtDestination(40.0);
+  map.addAnchorAtDestination(80.0);
+  map.moveAnchor(anchor, 50.0);
+  audio.warpMap = map;
+
+  warp::rebuildReference(audio);
+  CHECK(audio.warpedSourceAudio.getNumSamples() == audio.sourceAudio.getNumSamples());
+  const auto converted =
+      recordingchange::analysisCopy(audio.warpedSourceAudio, audio.sourceSampleRate);
+  CHECK(audio.warpedOriginal.getNumChannels() == audio.originalWaveform.getNumChannels());
+  CHECK(audio.warpedOriginal.getNumSamples() == audio.originalWaveform.getNumSamples());
+  CHECK(converted.getNumSamples() == audio.warpedOriginal.getNumSamples());
+  for (int i = 0; i < converted.getNumSamples(); ++i)
+    CHECK(audio.warpedOriginal.getSample(0, i) == converted.getSample(0, i));
+
+  // Nothing edited: playback is the recording as the warp laid it out.
+  audio.waveform.makeCopyOf(warp::reference(audio));
+  const auto playback = sourceaudio::build(audio);
+  for (int channel = 0; channel < 2; ++channel)
+    for (int i = 0; i < playback.audio.getNumSamples(); ++i)
+      CHECK(playback.audio.getSample(channel, i) ==
+            audio.warpedSourceAudio.getSample(channel, i));
+
+  // An edit in the stretched part: 20 ms outside it, where playback hands
+  // back to the recording, the two sides are the same audio (they used to
+  // differ by the phase of two separate stretches).
+  const int editStart = static_cast<int>(0.30 * SAMPLE_RATE);
+  const int editEnd = static_cast<int>(0.40 * SAMPLE_RATE);
+  for (int i = editStart; i < editEnd; ++i)
+    audio.waveform.setSample(0, i, 0.0f);
+  const auto edited = sourceaudio::build(audio);
+  std::vector<double> difference, level;
+  const int from = static_cast<int>((0.40 + 0.002) * kSourceRate);
+  const int to = static_cast<int>((0.40 + sourceaudio::kMarginSeconds - 0.001) * kSourceRate);
+  for (int i = from; i < to; ++i)
+  {
+    const double mono = 0.5 * (audio.warpedSourceAudio.getSample(0, i) +
+                               audio.warpedSourceAudio.getSample(1, i));
+    const double played = 0.5 * (edited.audio.getSample(0, i) + edited.audio.getSample(1, i));
+    difference.push_back(played - mono);
+    level.push_back(mono);
+  }
+  const double errorDb = rmsDb(difference) - rmsDb(level);
+  std::printf("  margin after an edit in a stretch: %.1f dB off the recording\n", errorDb);
+  CHECK(errorDb < -40.0);
+
+  AudioData withoutRecording;
+  withoutRecording.originalWaveform.makeCopyOf(audio.originalWaveform);
+  withoutRecording.sampleRate = SAMPLE_RATE;
+  withoutRecording.warpMap = map;
+  warp::rebuildReference(withoutRecording);
+  CHECK(withoutRecording.warpedSourceAudio.getNumSamples() == 0);
+  CHECK(withoutRecording.warpedOriginal.getNumSamples() ==
+        audio.originalWaveform.getNumSamples());
+}
+
+// A stretched project saved before the one stretch (format 7 and earlier)
+// keeps the reference its edits were rendered onto - the analysis copy
+// stretched on its own - until the warp is laid out again, which renders
+// every edit anew. The file says which reference it was saved with.
+void olderStretchedProjectsKeepTheirReference()
+{
+  auto audio = makeRecording(3.0);
+  const int frames = audio.originalWaveform.getNumSamples() / HOP_SIZE;
+  warp::WarpMap map(static_cast<double>(frames));
+  const int anchor = map.addAnchorAtDestination(40.0);
+  map.addAnchorAtDestination(80.0);
+  map.moveAnchor(anchor, 50.0);
+  audio.warpMap = map;
+
+  AudioData separate;
+  separate.originalWaveform.makeCopyOf(audio.originalWaveform);
+  separate.sampleRate = SAMPLE_RATE;
+  separate.warpMap = map;
+  warp::rebuildReference(separate);
+
+  audio.warpReferenceFromRecording = false;
+  warp::rebuildReference(audio);
+  CHECK(audio.warpedOriginal.getNumSamples() == separate.warpedOriginal.getNumSamples());
+  for (int i = 0; i < audio.warpedOriginal.getNumSamples(); ++i)
+    CHECK(audio.warpedOriginal.getSample(0, i) == separate.warpedOriginal.getSample(0, i));
+
+  Project project;
+  project.getAudioData() = audio;
+  auto json = ProjectSerializer::toJson(project);
+  CHECK(static_cast<int>(json.getProperty("formatVersion", 0)) == 8);
+  CHECK(!static_cast<bool>(json.getProperty("warp", juce::var())
+                               .getProperty("referenceFromRecording", true)));
+  Project reopened;
+  CHECK(ProjectSerializer::fromJson(reopened, json));
+  CHECK(!reopened.getAudioData().warpReferenceFromRecording);
+
+  // A format 7 file has no such word: stretched, it was rendered onto the
+  // separate stretch; unstretched, its first layout is the one stretch.
+  json.getDynamicObject()->setProperty("formatVersion", 7);
+  json.getProperty("warp", juce::var()).getDynamicObject()->removeProperty("referenceFromRecording");
+  Project older;
+  CHECK(ProjectSerializer::fromJson(older, json));
+  CHECK(!older.getAudioData().warpReferenceFromRecording);
+  Project plain;
+  auto plainJson = ProjectSerializer::toJson(plain);
+  plainJson.getDynamicObject()->setProperty("formatVersion", 7);
+  Project plainReopened;
+  CHECK(ProjectSerializer::fromJson(plainReopened, plainJson));
+  CHECK(plainReopened.getAudioData().warpReferenceFromRecording);
+
+  // Laid out again, the project is on the one stretch.
+  warp::layOut(project);
+  CHECK(project.getAudioData().warpReferenceFromRecording);
+  const auto &laidOut = project.getAudioData();
+  const auto converted =
+      recordingchange::analysisCopy(laidOut.warpedSourceAudio, laidOut.sourceSampleRate);
+  CHECK(converted.getNumSamples() == laidOut.warpedOriginal.getNumSamples());
+  for (int i = 0; i < converted.getNumSamples(); ++i)
+    CHECK(laidOut.warpedOriginal.getSample(0, i) == converted.getSample(0, i));
+}
+
+// The plug-in keeps the host's audio apart from the project and stretches it
+// channel by channel for playback. Its analysis copy is channel 0 converted;
+// given that channel at the host's rate, the project's reference is the same
+// stretch converted the same way, so an edit hands back to the host's audio
+// in phase there too.
+void thePluginsReferenceIsTheHostsStretch()
+{
+  const auto standalone = makeRecording(3.0);
+  AudioData recording; // as PluginProcessor::buildPlaybackPieces keeps it
+  recording.sourceAudio.makeCopyOf(standalone.sourceAudio);
+  recording.sourceSampleRate = kSourceRate;
+
+  auto channel0 = std::make_shared<juce::AudioBuffer<float>>(1, recording.sourceAudio.getNumSamples());
+  channel0->copyFrom(0, 0, recording.sourceAudio, 0, 0, recording.sourceAudio.getNumSamples());
+
+  AudioData edit; // the plug-in's project: no sourceAudio of its own
+  edit.originalWaveform = AudioResampler::resample(*channel0, kSourceRate, SAMPLE_RATE);
+  edit.sampleRate = SAMPLE_RATE;
+  edit.analysisSource = channel0;
+  edit.analysisSourceRate = kSourceRate;
+  const int frames = edit.originalWaveform.getNumSamples() / HOP_SIZE;
+  warp::WarpMap map(static_cast<double>(frames));
+  const int anchor = map.addAnchorAtDestination(40.0);
+  map.addAnchorAtDestination(80.0);
+  map.moveAnchor(anchor, 50.0);
+  edit.warpMap = map;
+  recording.warpMap = map;
+
+  warp::rebuildReference(edit);
+  sourceaudio::rebuildWarped(recording);
+  CHECK(edit.warpedSourceAudio.getNumSamples() == 0);
+  CHECK(edit.warpedOriginal.getNumSamples() == edit.originalWaveform.getNumSamples());
+
+  // The reference is channel 0 of what playback stretched, converted.
+  juce::AudioBuffer<float> played(1, recording.warpedSourceAudio.getNumSamples());
+  played.copyFrom(0, 0, recording.warpedSourceAudio, 0, 0, played.getNumSamples());
+  const auto converted = AudioResampler::resample(played, kSourceRate, SAMPLE_RATE);
+  CHECK(converted.getNumSamples() == edit.warpedOriginal.getNumSamples());
+  for (int i = 0; i < converted.getNumSamples(); ++i)
+    CHECK(edit.warpedOriginal.getSample(0, i) == converted.getSample(0, i));
+
+  // An edit in the stretched part hands back to the host's audio in phase.
+  edit.waveform.makeCopyOf(warp::reference(edit));
+  for (int i = static_cast<int>(0.30 * SAMPLE_RATE); i < static_cast<int>(0.40 * SAMPLE_RATE); ++i)
+    edit.waveform.setSample(0, i, 0.0f);
+  const auto playback = sourceaudio::build(edit, edit.waveform, recording);
+  std::vector<double> difference, level;
+  for (int i = static_cast<int>(0.402 * kSourceRate);
+       i < static_cast<int>((0.40 + sourceaudio::kMarginSeconds - 0.001) * kSourceRate); ++i)
+  {
+    const double host = recording.warpedSourceAudio.getSample(0, i);
+    difference.push_back(playback.audio.getSample(0, i) - host);
+    level.push_back(host);
+  }
+  const double errorDb = rmsDb(difference) - rmsDb(level);
+  std::printf("  plug-in, margin after an edit in a stretch: %.1f dB off the host's audio\n", errorDb);
+  CHECK(errorDb < -40.0);
+
+  // At the host's own rate there is nothing to convert: the analysis copy is
+  // that audio, and its stretch is the playback's.
+  AudioData sameRate;
+  sameRate.originalWaveform.makeCopyOf(edit.originalWaveform);
+  sameRate.sampleRate = SAMPLE_RATE;
+  sameRate.warpMap = map;
+  warp::rebuildReference(sameRate);
+  CHECK(sameRate.warpedOriginal.getNumSamples() == edit.originalWaveform.getNumSamples());
+}
 } // namespace
 
 int main()
@@ -208,6 +408,9 @@ int main()
   editedRangesAreWidenedAndJoined();
   warpRendersAtTheRecordingsOwnRate();
   piecesOverTheRecordingAreThePlayback();
+  theReferenceIsThePlaybackStretch();
+  olderStretchedProjectsKeepTheirReference();
+  thePluginsReferenceIsTheHostsStretch();
   std::printf("SourceAudioTests passed\n");
   return 0;
 }

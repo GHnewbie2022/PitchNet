@@ -3208,6 +3208,10 @@ void PitchNetAudioProcessor::analyzeAraRegionForCanvas(
         ? (double)trackAnalysisFinished / std::max(1, trackAnalysisTotal) : 0.0);
   }
 
+  // The host's audio the analysis copy is converted from, for the stretched
+  // reference (as hydrateAraRegionProject keeps it).
+  const auto hostAudio = std::make_shared<const juce::AudioBuffer<float>>(buffer);
+
   regionCanvasController->setHostAudioAsync(
       buffer, sampleRate,
       [this, analysisGeneration](double progress, const juce::String &msg) {
@@ -3233,11 +3237,22 @@ void PitchNetAudioProcessor::analyzeAraRegionForCanvas(
       },
       [this, regionKey, modification, startSampleInModification,
        analysisGeneration, sampleRate, backgroundAnalysis,
-       timelineOffsetSeconds, hostRecording](const juce::AudioBuffer<float> &) {
+       timelineOffsetSeconds, hostRecording, hostAudio](const juce::AudioBuffer<float> &) {
         if (!regionCanvasController ||
             regionCanvasAnalysisGeneration.load() != analysisGeneration)
           return;
         auto *project = regionCanvasController->getProject();
+        if (project != nullptr) {
+          auto &analysed = project->getAudioData();
+          const int hostRate = juce::roundToInt(sampleRate);
+          if (analysed.sampleRate > 0 && hostRate != analysed.sampleRate) {
+            analysed.analysisSource = hostAudio;
+            analysed.analysisSourceRate = hostRate;
+          } else {
+            analysed.analysisSource.reset();
+            analysed.analysisSourceRate = 0;
+          }
+        }
         if (!project || !projectHasRestorableAnalysisData(*project)) {
           pendingRegionCanvasAnalysisKey.clear();
           regionCanvasAnalysisPending.store(false);
@@ -3516,6 +3531,25 @@ bool PitchNetAudioProcessor::hydrateAraRegionProject(
     return false;
 
   auto &audioData = project->getAudioData();
+
+  // Spec Q5 C, one stretch: the stretched reference is the host's audio
+  // stretched at its own rate and converted (warp::rebuildReference), as the
+  // standalone derives it from the recording. This is that audio - channel
+  // 0, what the analysis copy is converted from - whenever its rate is not
+  // the analysis rate. Taken anew each time: the host's audio may have been
+  // edited since (spec Q11).
+  {
+    const int hostRate = juce::roundToInt(sourceSampleRate);
+    const int analysisRate = audioData.sampleRate > 0 ? audioData.sampleRate : hostRate;
+    if (hostRate != analysisRate) {
+      audioData.analysisSource =
+          std::make_shared<const juce::AudioBuffer<float>>(sourceBuffer);
+      audioData.analysisSourceRate = hostRate;
+    } else {
+      audioData.analysisSource.reset();
+      audioData.analysisSourceRate = 0;
+    }
+  }
 
   // A freshly split clone arrives with everything already populated, so
   // hydration is a no-op for it.

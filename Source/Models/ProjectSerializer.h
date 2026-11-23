@@ -20,7 +20,14 @@ public:
     // audio (spec Q11, RecordingFingerprint.h): "recording" and
     // "editPieces" in place of "waveform", "originalWaveform" and
     // "melSpectrogram". Version 6 files still open as before.
-    static constexpr int FORMAT_VERSION = 7;
+    // 8: a stretched project's edits are blended onto the recording
+    // stretched once, at its own rate ("referenceFromRecording" in "warp",
+    // AudioData::warpReferenceFromRecording). A build before it stretches
+    // the analysis copy on its own and would lay the saved edits over a
+    // reference they do not meet, so it refuses the file. Versions 6 and 7
+    // still open: stretched, they keep their own reference until the warp
+    // is next laid out.
+    static constexpr int FORMAT_VERSION = 8;
     static constexpr int FIRST_WARP_FORMAT_VERSION = 6;
 
     /** True when the last fromJson()/fromBinaryArchive() call refused a

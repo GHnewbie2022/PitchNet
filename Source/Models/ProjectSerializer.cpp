@@ -323,6 +323,8 @@ juce::var ProjectSerializer::toJson(const Project& project,
         for (const auto &anchor : map.anchors())
             anchors.add(juce::Array<juce::var>{anchor.source, anchor.destination});
         warpObject->setProperty("anchors", anchors);
+        warpObject->setProperty("referenceFromRecording",
+                                project.getAudioData().warpReferenceFromRecording);
         obj->setProperty("warp", juce::var(warpObject));
     }
 
@@ -557,6 +559,13 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
         map.setAnchors(std::move(anchors));
         if (!map.isValid())
             map.clear();
+        // A stretched file from before format 8 was rendered onto the
+        // analysis copy stretched on its own; unstretched, the first layout
+        // is the one stretch.
+        audioData.warpReferenceFromRecording =
+            formatVersion >= 8
+                ? static_cast<bool>(warpVar.getProperty("referenceFromRecording", true))
+                : map.isIdentity();
         audioData.warpMap = std::move(map);
         audioData.warpedOriginal.setSize(0, 0);
         audioData.warpLayoutPending = false;

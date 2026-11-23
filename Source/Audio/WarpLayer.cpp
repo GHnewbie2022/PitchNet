@@ -2,8 +2,10 @@
 
 #include "BreathSibilanceDetector.h"
 #include "ProjectGain.h"
+#include "RecordingChange.h"
 #include "Synthesis/WarpedSource.h"
 #include "SourceAudio.h"
+#include "../Utils/AudioResampler.h"
 #include "../Utils/Constants.h"
 #include "../Utils/NoteGainCurve.h"
 #include "../Utils/PitchCurveProcessor.h"
@@ -99,6 +101,69 @@ void rebuildReference(AudioData &audioData)
     return;
   }
 
+  // One stretch, not two (spec Q5 C). Where the recording is held at its
+  // own rate, the reference is that stretch converted the way the analysis
+  // copy was made from the recording. Stretched a second time from the
+  // analysis copy, the reference carried the same audio at another phase:
+  // signalsmith keeps its own, and two runs (44.1 and 48 kHz) drifted up to
+  // 0.5 ms apart. Playback crossfades from the edited composite to the
+  // recording at its own rate 20 ms outside each edit, and there the two
+  // cancelled: a dip of 4 to 6 dB for 8 ms in a held voice next to an
+  // edited note (煙幕 at 86.2 s stretched 1.33x, heard as a catch).
+  if (audioData.warpReferenceFromRecording &&
+      audioData.warpedSourceAudio.getNumSamples() > 0 &&
+      audioData.sourceSampleRate > 0)
+  {
+    auto converted = recordingchange::analysisCopy(audioData.warpedSourceAudio,
+                                                   audioData.sourceSampleRate);
+    if (converted.getNumSamples() == original.getNumSamples())
+    {
+      audioData.warpedOriginal.setSize(original.getNumChannels(),
+                                       original.getNumSamples(), false, true,
+                                       false);
+      for (int channel = 0; channel < original.getNumChannels(); ++channel)
+        audioData.warpedOriginal.copyFrom(channel, 0, converted, 0, 0,
+                                          converted.getNumSamples());
+      return;
+    }
+  }
+
+  // The plug-in: the host owns the recording, and playback stretches the
+  // host's audio at its own rate, channel by channel (the same call with the
+  // same settings, sourceaudio::rebuildWarped). Channel 0 is what the
+  // analysis copy was converted from, so the reference is that channel
+  // stretched here the same way and converted the same way.
+  if (audioData.warpReferenceFromRecording && audioData.analysisSource != nullptr &&
+      audioData.analysisSourceRate > 0 &&
+      audioData.analysisSource->getNumChannels() > 0 &&
+      audioData.analysisSource->getNumSamples() > 0)
+  {
+    const auto &source = *audioData.analysisSource;
+    const int rate = audioData.analysisSourceRate;
+    WarpedSourceSettings atSourceRate;
+    atSourceRate.sampleRate = rate;
+    atSourceRate.hopSize = static_cast<double>(HOP_SIZE) * rate / SAMPLE_RATE;
+    juce::AudioBuffer<float> stretched(1, source.getNumSamples());
+    renderWarpedSource(source.getReadPointer(0), source.getNumSamples(),
+                       audioData.warpMap, stretched.getWritePointer(0),
+                       source.getNumSamples(), atSourceRate);
+    auto converted = AudioResampler::resample(stretched, rate, SAMPLE_RATE);
+    if (converted.getNumSamples() == original.getNumSamples())
+    {
+      audioData.warpedOriginal.setSize(original.getNumChannels(),
+                                       original.getNumSamples(), false, true,
+                                       false);
+      for (int channel = 0; channel < original.getNumChannels(); ++channel)
+        audioData.warpedOriginal.copyFrom(channel, 0, converted, 0, 0,
+                                          converted.getNumSamples());
+      return;
+    }
+  }
+
+  // Without the recording at its own rate (an embedded project with no file
+  // attached, a plug-in project at the host's rate or not yet given the
+  // host's audio), or for a project saved before the one stretch
+  // (AudioData::warpReferenceFromRecording): the analysis copy, stretched.
   WarpedSourceSettings settings;
   settings.sampleRate =
       audioData.sampleRate > 0 ? audioData.sampleRate : SAMPLE_RATE;
@@ -116,6 +181,9 @@ void rebuildReference(AudioData &audioData)
 void layOut(Project &project)
 {
   auto &audioData = project.getAudioData();
+  // Every edit is rendered again below, so the reference may be the one
+  // stretch from here on, whatever the file was saved with.
+  audioData.warpReferenceFromRecording = true;
   rebuildReference(audioData);
   const auto &source = reference(audioData);
   auto &composite = audioData.waveform;
