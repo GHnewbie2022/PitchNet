@@ -92,8 +92,8 @@ float interpolateF0(const std::vector<float> &f0, double frame) {
   return leftValue * (1.0f - amount) + rightValue * amount;
 }
 
-// A note with no edit, or one on Auto kept whole as recorded for the vocal
-// fry it holds (FryDetector.h): either plays the recording, and a pass that
+// A note with no edit, or one kept whole as recorded for the vocal fry it
+// holds or was told it holds (FryDetector.h): either plays the recording, and a pass that
 // finds it dirty puts the recording back. Called per note on the message
 // thread and on the synthesis thread: each keeps its own detection.
 bool neutralForRender(const Note &note, const AudioData &audioData) {
@@ -903,12 +903,14 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   std::vector<std::pair<int, int>> fryKeptFrames;
   fry::Ranges onsetHeld; // the onsets kept, for what the vocoder sings under them
   {
-    auto fryKept = fry::kept(project->getNotes(), audioData.rawF0,
-                             fry::detect(audioData));
-    const auto onsetKept =
-        fry::keptOnsets(project->getNotes(), fry::onsets(audioData.rawF0));
+    const auto fryFound = fry::find(audioData);
+    auto fryKept = fry::kept(project->getNotes(), audioData.rawF0, fryFound.ends);
+    const auto onsetKept = fry::keptOnsets(project->getNotes(), fryFound.onsets);
     fryKept.insert(fryKept.end(), onsetKept.begin(), onsetKept.end());
     onsetHeld = onsetKept;
+    // Notes the user told to keep fry the detector does not find: whole.
+    const auto toldKept = fry::keptAsTold(project->getNotes(), fryFound);
+    fryKept.insert(fryKept.end(), toldKept.begin(), toldKept.end());
     if (!fryKept.empty())
       for (int frame = std::max(0, startFrame); frame < endFrame; ++frame) {
         const int source = warp::sourceFrameAt(audioData, frame);

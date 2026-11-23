@@ -298,12 +298,25 @@ inline Ranges detect(const AudioData& audioData)
     return found;
 }
 
-/** detect() kept between calls while the recording and its pitch curve stay
+/** The fry the detector finds in a recording: at the ends of phrases
+ *  (detect()) and as words start (onsets()). */
+struct Found
+{
+    Ranges ends;
+    Ranges onsets;
+};
+
+inline Found find(const AudioData& audioData)
+{
+    return {detect(audioData), onsets(audioData.rawF0)};
+}
+
+/** find() kept between calls while the recording and its pitch curve stay
  *  the same: for what runs on every repaint. Not for use across threads. */
 class Cache
 {
 public:
-    const Ranges& of(const AudioData& audioData)
+    const Found& of(const AudioData& audioData)
     {
         double sum = 0.0;
         for (const float value : audioData.rawF0)
@@ -311,17 +324,17 @@ public:
         const int samples = audioData.originalWaveform.getNumSamples();
         if (!valid || sum != pitchSum || audioData.rawF0.size() != frames || samples != length)
         {
-            ranges = detect(audioData);
+            found = find(audioData);
             pitchSum = sum;
             frames = audioData.rawF0.size();
             length = samples;
             valid = true;
         }
-        return ranges;
+        return found;
     }
 
 private:
-    Ranges ranges;
+    Found found;
     double pitchSum = 0.0;
     size_t frames = 0;
     int length = 0;
@@ -353,13 +366,19 @@ inline bool playsRecording(const Note& note, const Ranges& ranges)
            std::abs(note.getSibilantBalance()) <= kNone;
 }
 
-/** How the note is rendered: its own choice, or on Auto the vocoder with
- *  the recording's highs. */
+/** The note keeps its fry as recorded: left to the detector (Auto), or the
+ *  user's own choice of it. */
+inline bool keepsFry(const Note& note)
+{
+    return note.getSynthEngine() == Note::SynthEngine::Auto ||
+           note.getSynthEngine() == Note::SynthEngine::VocoderRecordedHighsFry;
+}
+
+/** What renders the part of the note that is rendered: its own choice, or
+ *  where it keeps its fry the vocoder with the recording's highs. */
 inline Note::SynthEngine resolved(const Note& note)
 {
-    return note.getSynthEngine() == Note::SynthEngine::Auto
-               ? Note::SynthEngine::VocoderRecordedHighs
-               : note.getSynthEngine();
+    return keepsFry(note) ? Note::SynthEngine::VocoderRecordedHighs : note.getSynthEngine();
 }
 
 /** The frames of the recording that notes on Auto keep as recorded: each
@@ -390,7 +409,7 @@ constexpr int kWholeUnder = 9; // 100 ms
  *  the fry alone kept. */
 inline bool keepsWhole(const Note& note, const Ranges& ranges)
 {
-    if (note.isRest() || note.getSynthEngine() != Note::SynthEngine::Auto)
+    if (note.isRest() || !keepsFry(note))
         return false;
     for (const auto& [a, b] : ranges)
         if (holds(note, Ranges{{a, b}}) && a - note.getSrcStartFrame() < kWholeUnder)
@@ -398,7 +417,8 @@ inline bool keepsWhole(const Note& note, const Ranges& ranges)
     return false;
 }
 template <typename Notes>
-inline Ranges kept(const Notes& notes, const std::vector<float>& rawF0, const Ranges& ranges)
+inline Ranges kept(const Notes& notes, const std::vector<float>& rawF0, const Ranges& ranges,
+                   bool listPlaying = false)
 {
     Ranges found;
     const int total = static_cast<int>(rawF0.size());
@@ -408,8 +428,8 @@ inline Ranges kept(const Notes& notes, const std::vector<float>& rawF0, const Ra
         int start = a;
         int end = b;
         for (const auto& note : notes)
-            if (!note.isRest() && note.getSynthEngine() == Note::SynthEngine::Auto &&
-                holds(note, Ranges{{a, b}}) && !playsRecording(note, Ranges{{a, b}}))
+            if (!note.isRest() && keepsFry(note) && holds(note, Ranges{{a, b}}) &&
+                (listPlaying || !playsRecording(note, Ranges{{a, b}})))
             {
                 onAuto = true;
                 end = std::max(end, std::min(total, note.getSrcEndFrame()));
@@ -478,7 +498,7 @@ inline Ranges keptOnsets(const Notes& notes, const Ranges& ranges)
             const int to = std::min(b, note.getSrcEndFrame());
             if (to <= from)
                 continue;
-            if (note.getSynthEngine() == Note::SynthEngine::Auto)
+            if (keepsFry(note))
             {
                 onAuto = true;
                 continue;
@@ -497,5 +517,83 @@ inline Ranges keptOnsets(const Notes& notes, const Ranges& ranges)
             found.insert(found.end(), pieces.begin(), pieces.end());
     }
     return found;
+}
+
+// ---- the user's own choice of "keep the fry", and what the App shows ---------
+
+/** The note holds fry the detector found, of either kind. */
+inline bool holdsAny(const Note& note, const Found& found)
+{
+    if (holds(note, found.ends))
+        return true;
+    for (const auto& [a, b] : found.onsets)
+        if (std::min(b, note.getSrcEndFrame()) > std::max(a, note.getSrcStartFrame()))
+            return true;
+    return false;
+}
+
+/** Told by the user to keep its fry, and the detector finds none in it
+ *  (fry inside a phrase, fry it calls unvoiced): all of the note is taken
+ *  for fry and stays the recording. To keep part of it only, the note is
+ *  split where the fry starts and that piece is told. */
+inline bool toldWithoutFry(const Note& note, const Found& found)
+{
+    return !note.isRest() &&
+           note.getSynthEngine() == Note::SynthEngine::VocoderRecordedHighsFry &&
+           !holdsAny(note, found);
+}
+
+/** All of the note stays the recording: for the fry it holds with next to
+ *  no voice before it (keepsWhole), or because it was told so. */
+inline bool wholeAsRecorded(const Note& note, const Found& found)
+{
+    return keepsWhole(note, found.ends) || toldWithoutFry(note, found);
+}
+
+/** playsRecording() with the notes told to keep fry the detector misses. */
+inline bool playsRecording(const Note& note, const Found& found)
+{
+    constexpr float kNone = 0.001f;
+    return wholeAsRecorded(note, found) && std::abs(note.getVolumeDb()) <= kNone &&
+           std::abs(note.getFormantShift()) <= kNone &&
+           std::abs(note.getSibilantBalance()) <= kNone;
+}
+
+/** The frames of the notes told to keep fry the detector misses: each such
+ *  note, whole. Like kept(), without the ones that play the recording
+ *  anyway (they are not rendered at all) unless `listPlaying`. */
+template <typename Notes>
+inline Ranges keptAsTold(const Notes& notes, const Found& found, bool listPlaying = false)
+{
+    Ranges kept;
+    for (const auto& note : notes)
+        if (toldWithoutFry(note, found) && (listPlaying || !playsRecording(note, found)))
+            kept.emplace_back(note.getSrcStartFrame(), note.getSrcEndFrame());
+    return kept;
+}
+
+/** What the note's menu marks: its own choice, or on Auto the one the
+ *  detector decides on - keeping the fry where it finds some in the note. */
+inline Note::SynthEngine shownAs(const Note& note, const Found& found)
+{
+    if (note.getSynthEngine() != Note::SynthEngine::Auto)
+        return note.getSynthEngine();
+    return holdsAny(note, found) ? Note::SynthEngine::VocoderRecordedHighsFry
+                                 : Note::SynthEngine::VocoderRecordedHighs;
+}
+
+/** Every frame of the recording that stays as recorded for its fry, as the
+ *  piano roll paints them: what the notes keep now or would keep once
+ *  edited - the notes that play the recording anyway included. */
+template <typename Notes>
+inline Ranges keptForDisplay(const Notes& notes, const std::vector<float>& rawF0,
+                             const Found& found)
+{
+    auto shown = kept(notes, rawF0, found.ends, true);
+    const auto starts = keptOnsets(notes, found.onsets);
+    shown.insert(shown.end(), starts.begin(), starts.end());
+    const auto told = keptAsTold(notes, found, true);
+    shown.insert(shown.end(), told.begin(), told.end());
+    return shown;
 }
 } // namespace fry

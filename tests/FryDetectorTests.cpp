@@ -314,6 +314,83 @@ void theVoiceArrivesWithTheSungCurve()
 }
 } // namespace
 
+// The user's own choice of "keep the fry": what Auto does where the detector
+// finds fry in the note, and all of the note where it finds none.
+void theUsersChoiceOfKeptFry()
+{
+  const fry::Ranges ends{{60, 68}};
+  std::vector<float> curve(100, 0.0f);
+  for (int i = 20; i < 68; ++i)
+    curve[static_cast<size_t>(i)] = 200.0f;
+  curve[69] = 100.0f;
+  curve[80] = 200.0f;
+  const auto told = Note::SynthEngine::VocoderRecordedHighsFry;
+
+  // On a note the detector finds fry in: as on Auto.
+  std::vector<Note> notes{Note(20, 50, 55.0f), Note(50, 70, 55.0f)};
+  const auto onAuto = fry::kept(notes, curve, ends);
+  notes[1].setSynthEngine(told);
+  CHECK(fry::keepsFry(notes[1]));
+  CHECK(fry::resolved(notes[1]) == Note::SynthEngine::VocoderRecordedHighs);
+  CHECK(fry::kept(notes, curve, ends) == onAuto);
+  CHECK(onAuto.size() == 1 && onAuto[0].first == 60 && onAuto[0].second == 80);
+  const fry::Found found{ends, {}};
+  CHECK(!fry::toldWithoutFry(notes[1], found));
+  CHECK(!fry::wholeAsRecorded(notes[1], found));
+  CHECK(fry::keptAsTold(notes, found, true).empty());
+
+  // What the menu marks: the choice, or on Auto what the detector decides.
+  Note left(20, 50, 55.0f), fried(50, 70, 55.0f);
+  CHECK(fry::shownAs(left, found) == Note::SynthEngine::VocoderRecordedHighs);
+  CHECK(fry::shownAs(fried, found) == told);
+  fried.setSynthEngine(Note::SynthEngine::VocoderRecordedHighs);
+  CHECK(fry::shownAs(fried, found) == Note::SynthEngine::VocoderRecordedHighs);
+  fried.setSynthEngine(Note::SynthEngine::RubberBand);
+  CHECK(fry::shownAs(fried, found) == Note::SynthEngine::RubberBand);
+  left.setSynthEngine(told);
+  CHECK(fry::shownAs(left, found) == told);
+
+  // On a note the detector finds none in: all of it is the recording. With
+  // no other edit it plays the recording and is not rendered (not listed
+  // for the synthesizer, listed for the display); with a volume edit it is
+  // rendered, and kept whole.
+  CHECK(fry::toldWithoutFry(left, found));
+  CHECK(fry::wholeAsRecorded(left, found));
+  CHECK(fry::playsRecording(left, found));
+  std::vector<Note> plain{left, Note(50, 70, 55.0f)};
+  CHECK(fry::keptAsTold(plain, found).empty());
+  auto listed = fry::keptAsTold(plain, found, true);
+  CHECK(listed.size() == 1 && listed[0].first == 20 && listed[0].second == 50);
+  plain[0].setVolumeDb(3.0f);
+  CHECK(!fry::playsRecording(plain[0], found));
+  listed = fry::keptAsTold(plain, found);
+  CHECK(listed.size() == 1 && listed[0].first == 20 && listed[0].second == 50);
+  // Auto on the same note keeps nothing: the detector found nothing.
+  Note untold(20, 50, 55.0f);
+  CHECK(!fry::wholeAsRecorded(untold, found));
+  CHECK(!fry::playsRecording(untold, found));
+
+  // Fry as the word starts counts as found too: the note is not taken whole.
+  const fry::Found starting{{}, {{34, 43}}};
+  Note word(36, 60, 55.0f);
+  word.setSynthEngine(told);
+  CHECK(fry::holdsAny(word, starting));
+  CHECK(!fry::toldWithoutFry(word, starting));
+  std::vector<Note> words{Note(10, 30, 55.0f), word};
+  const auto onset = fry::keptOnsets(words, starting.onsets);
+  CHECK(onset.size() == 1 && onset[0].first == 34 && onset[0].second == 43);
+  word.setSynthEngine(Note::SynthEngine::Auto);
+  CHECK(fry::shownAs(word, starting) == told);
+
+  // The display lists what stays the recording, the notes that play it
+  // anyway included: the note kept whole for its short lead, which the
+  // synthesizer's list leaves out.
+  std::vector<Note> shortLead{Note(20, 54, 55.0f), Note(54, 70, 55.0f)};
+  CHECK(fry::kept(shortLead, curve, ends).empty());
+  const auto shown = fry::keptForDisplay(shortLead, curve, found);
+  CHECK(shown.size() == 1 && shown[0].first == 54 && shown[0].second == 80);
+}
+
 int main()
 {
   theEndOfAPhraseIsFound();
@@ -328,6 +405,7 @@ int main()
   aLeapUpIsNot();
   autoKeepsTheOnset();
   theVoiceArrivesWithTheSungCurve();
+  theUsersChoiceOfKeptFry();
   std::printf("FryDetectorTests passed\n");
   return 0;
 }

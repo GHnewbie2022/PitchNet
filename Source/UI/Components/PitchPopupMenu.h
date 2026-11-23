@@ -64,6 +64,11 @@ public:
         setOpaque(false);
     }
 
+    /** The selection mark as a ring, not a dot: marked, but not by the
+     *  user's own choice (the synthesis menu, where the detector decides
+     *  for a note left to it). */
+    void setHollowMark(bool hollow) { hollowMark = hollow; }
+
     /** The item's text in a colour of its own (the synthesis menu, spec Q12). */
     void setTextColour(juce::Colour colour)
     {
@@ -91,7 +96,10 @@ public:
         if (isSelected)
         {
             g.setColour(juce::Colour(0xFFEFEFEFu));
-            g.fillEllipse(8.0f, area.getCentreY() - 3.5f, 7.0f, 7.0f);
+            if (hollowMark)
+                g.drawEllipse(8.75f, area.getCentreY() - 2.75f, 5.5f, 5.5f, 1.5f);
+            else
+                g.fillEllipse(8.0f, area.getCentreY() - 3.5f, 7.0f, 7.0f);
         }
 
         const auto* menuItem = getItem();
@@ -125,5 +133,6 @@ private:
     bool reservesSelectionSpace = true;
     juce::Colour textColour;
     bool hasTextColour = false;
+    bool hollowMark = false;
 };
 }

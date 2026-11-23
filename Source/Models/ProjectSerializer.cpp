@@ -1230,6 +1230,8 @@ juce::var ProjectSerializer::noteToJson(const Note& note,
         obj->setProperty("synthEngine", "rubberband");
     else if (note.getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs)
         obj->setProperty("synthEngine", "vocoderRecordedHighs");
+    else if (note.getSynthEngine() == Note::SynthEngine::VocoderRecordedHighsFry)
+        obj->setProperty("synthEngine", "vocoderRecordedHighsFry");
     else if (note.getSynthEngine() == Note::SynthEngine::Vocoder)
         obj->setProperty("synthEngine", "vocoder");
     obj->setProperty("vibrato", note.getVibrato());
@@ -1334,6 +1336,8 @@ bool ProjectSerializer::noteFromJson(Note& note, const juce::var& json,
         note.setSynthEngine(engineName == "rubberband" ? Note::SynthEngine::RubberBand
                             : engineName == "vocoderRecordedHighs"
                                 ? Note::SynthEngine::VocoderRecordedHighs
+                            : engineName == "vocoderRecordedHighsFry"
+                                ? Note::SynthEngine::VocoderRecordedHighsFry
                                 : engineName == "vocoder" ? Note::SynthEngine::Vocoder
                                                           : Note::SynthEngine::Auto);
     }

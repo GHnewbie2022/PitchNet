@@ -4887,38 +4887,60 @@ void PianoRollComponent::showResetMenu(Note &note)
   });
 }
 
-void PianoRollComponent::showSynthMenu(Note &note)
+juce::PopupMenu PianoRollComponent::synthMenuFor(Note &note)
 {
   juce::PopupMenu menu;
   menu.setLookAndFeel(&pitchPopupMenu::getLookAndFeel());
   const auto targets = getResetTargetNotes(note);
-  const auto all = [&targets](Note::SynthEngine engine)
+  // Three ways, each marked where it is what the notes do now. A note the
+  // user has not chosen for is left to the detector (Auto, FryDetector.h):
+  // it keeps its fry where the detector finds some in it, and is marked
+  // with a ring - the detector's decision - on the entry that says so. A
+  // dot is the user's own choice, which the detector never changes; "Back
+  // to Automatic" hands the note back.
+  const auto found = project ? fry::find(project->getAudioData()) : fry::Found{};
+  const auto all = [&targets, &found](Note::SynthEngine engine)
   {
     return !targets.empty() &&
-           std::all_of(targets.begin(), targets.end(),
-                       [engine](const Note* n) { return n && n->getSynthEngine() == engine; });
+           std::all_of(targets.begin(), targets.end(), [&](const Note* n)
+                       { return n && fry::shownAs(*n, found) == engine; });
   };
-  // Each entry in the colour its notes are outlined with (vocoder +
-  // recorded highs has none).
-  const auto addItem = [&menu, &all](int id, const juce::String& label,
-                                     Note::SynthEngine engine, Note::SynthEngine shownAs)
+  const bool allAutomatic =
+      std::all_of(targets.begin(), targets.end(), [](const Note* n)
+                  { return n && n->getSynthEngine() == Note::SynthEngine::Auto; });
+  const auto addItem = [&](int id, const juce::String& label, Note::SynthEngine engine)
   {
     juce::PopupMenu::Item item(label);
     item.itemID = id;
     auto component = std::make_unique<pitchPopupMenu::MenuItemComponent>(label, all(engine));
-    if (synthEngineColour::has(shownAs))
-      component->setTextColour(synthEngineColour::of(shownAs));
+    component->setHollowMark(allAutomatic);
+    // In the colour its notes carry: R3's outline, the fill of kept fry.
+    if (synthEngineColour::has(engine))
+      component->setTextColour(synthEngineColour::of(engine));
+    else if (engine == Note::SynthEngine::VocoderRecordedHighsFry)
+      component->setTextColour(synthEngineColour::keptFry());
     item.customComponent = component.release();
     menu.addItem(std::move(item));
   };
-  // Auto: the vocoder with the recording's highs, and vocal fry at the end
-  // of a phrase or as a word starts kept as recorded (FryDetector.h).
-  addItem(3, TR("synth.auto"), Note::SynthEngine::Auto, Note::SynthEngine::Auto);
-  addItem(1, TR("synth.vocoderRecordedHighs"), Note::SynthEngine::VocoderRecordedHighs,
-          Note::SynthEngine::VocoderRecordedHighs);
-  addItem(2, TR("synth.rubberband"), Note::SynthEngine::RubberBand,
-          Note::SynthEngine::RubberBand);
+  addItem(1, TR("synth.vocoderRecordedHighs"), Note::SynthEngine::VocoderRecordedHighs);
+  addItem(4, TR("synth.vocoderRecordedHighsFry"), Note::SynthEngine::VocoderRecordedHighsFry);
+  addItem(2, TR("synth.rubberband"), Note::SynthEngine::RubberBand);
+  menu.addSeparator();
+  {
+    juce::PopupMenu::Item item(TR("synth.backToAutomatic"));
+    item.itemID = 3;
+    item.isEnabled = !targets.empty() && !allAutomatic;
+    item.customComponent =
+        std::make_unique<pitchPopupMenu::MenuItemComponent>(TR("synth.backToAutomatic"))
+            .release();
+    menu.addItem(std::move(item));
+  }
+  return menu;
+}
 
+void PianoRollComponent::showSynthMenu(Note &note)
+{
+  auto menu = synthMenuFor(note);
   juce::Component::SafePointer<PianoRollComponent> safeThis(this);
   Note* notePtr = &note;
   menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&synthButton),
@@ -4933,6 +4955,7 @@ void PianoRollComponent::showSynthMenu(Note &note)
       return;
     const auto engine = result == 2 ? Note::SynthEngine::RubberBand
                         : result == 3 ? Note::SynthEngine::Auto
+                        : result == 4 ? Note::SynthEngine::VocoderRecordedHighsFry
                                       : Note::SynthEngine::VocoderRecordedHighs;
     auto targets = safeThis->getResetTargetNotes(*notePtr);
     if (std::all_of(targets.begin(), targets.end(),

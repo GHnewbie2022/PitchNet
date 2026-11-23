@@ -19,4 +19,13 @@ inline juce::Colour of(Note::SynthEngine engine)
   juce::ignoreUnused(engine);
   return juce::Colour(0xffffd60a); // yellow
 }
+
+/**
+ * Vocal fry kept as recorded (FryDetector.h): the stretch of a note's body
+ * that stays the recording is filled with this, and the menu entry that
+ * keeps it is written in it. A bright grass green: the bodies run from blue
+ * to red by how far the note is off pitch, breath is hatched light blue,
+ * sibilance orange, R3 outlined yellow - nothing else on the roll is green.
+ */
+inline juce::Colour keptFry() { return juce::Colour(0xff7ed321); }
 } // namespace synthEngineColour

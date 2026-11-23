@@ -159,12 +159,24 @@ void theChoiceIsSaved()
   note.setSynthEngine(Note::SynthEngine::RubberBand);
   project.addNote(note);
   project.addNote(Note(40, 70, 62.0f));
+  // The user's own choices of the other two ways; a note with none is left
+  // to the detector (Auto) and stores nothing.
+  Note keepsFry(70, 100, 62.0f);
+  keepsFry.setSynthEngine(Note::SynthEngine::VocoderRecordedHighsFry);
+  project.addNote(keepsFry);
+  Note vocoderAll(100, 130, 62.0f);
+  vocoderAll.setSynthEngine(Note::SynthEngine::VocoderRecordedHighs);
+  project.addNote(vocoderAll);
+  const auto json = ProjectSerializer::toJson(project);
+  CHECK(!json["notes"][1].hasProperty("synthEngine"));
   Project reopened;
-  CHECK(ProjectSerializer::fromJson(reopened, juce::JSON::parse(juce::JSON::toString(
-                                                  ProjectSerializer::toJson(project)))));
-  CHECK(reopened.getNotes().size() == 2);
+  CHECK(ProjectSerializer::fromJson(reopened,
+                                    juce::JSON::parse(juce::JSON::toString(json))));
+  CHECK(reopened.getNotes().size() == 4);
   CHECK(reopened.getNotes()[0].getSynthEngine() == Note::SynthEngine::RubberBand);
   CHECK(reopened.getNotes()[1].getSynthEngine() == Note::SynthEngine::Auto);
+  CHECK(reopened.getNotes()[2].getSynthEngine() == Note::SynthEngine::VocoderRecordedHighsFry);
+  CHECK(reopened.getNotes()[3].getSynthEngine() == Note::SynthEngine::VocoderRecordedHighs);
 }
 
 // A note on a stretched part of the track: R3 stretches and shifts the

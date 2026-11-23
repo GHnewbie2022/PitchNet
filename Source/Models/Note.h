@@ -250,10 +250,14 @@ public:
     // vocoder below 10 kHz with the recording above it (HighBandRestore.h),
     // which keeps the fine rasp the vocoder turns to noise up there; and
     // Rubber Band's R3 engine, which shifts the recording itself, for what
-    // the vocoder breaks below 10 kHz (vocal fry). The default, Auto, is
-    // the vocoder with recorded highs, and keeps the recording itself where
-    // the note holds fry at the end of a phrase or as a word starts
-    // (FryDetector.h). The
+    // the vocoder breaks below 10 kHz (vocal fry). A third keeps vocal fry
+    // as recorded: the vocoder with recorded highs, and the recording itself
+    // where the note holds fry at the end of a phrase or as a word starts
+    // (FryDetector.h) - all of the note where the detector finds none in it,
+    // for fry it misses. A note the user has not chosen for is on Auto: the
+    // detector decides between the first and the third (fry::shownAs), and
+    // the menu shows which. Auto is not an entry of its own; "Back to
+    // Automatic" returns a note to it. The
     // vocoder on its own lost every listening test and is not offered in the
     // App; the listening-test tool still renders with it. A note that plays
     // the recording ignores the choice.
@@ -262,7 +266,8 @@ public:
         Vocoder,
         RubberBand,
         VocoderRecordedHighs,
-        Auto
+        Auto,
+        VocoderRecordedHighsFry
     };
     SynthEngine getSynthEngine() const { return synthEngine; }
     void setSynthEngine(SynthEngine engine) { synthEngine = engine; }

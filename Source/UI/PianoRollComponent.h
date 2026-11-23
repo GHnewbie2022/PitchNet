@@ -405,8 +405,8 @@ private:
   // onHistoryActionApplied so it is processed like undo/redo.
   void applyRestoreAction(std::unique_ptr<UndoableAction> action);
   void showResetMenu(Note &note);
-  // How the note (and the selected notes) are rendered: vocoder or Rubber
-  // Band R3 (spec Q12).
+  // How the note (and the selected notes) are rendered (spec Q12): the menu
+  // of synthMenuFor(), shown.
   void showSynthMenu(Note &note);
   void setHoveredNote(Note *note);
   void updateScrollBars();
@@ -591,6 +591,12 @@ private:
 public:
   void invalidateWaveformCache();
   void invalidateBasePitchCache();
+  // The synthesis menu as it opens on this note (and the selected notes):
+  // its three ways, marked with a ring where the detector decides and a dot
+  // where the user chose, and "Back to Automatic". Public for the tool that
+  // draws it (WarpRender --synth-menu-shot): a popup closes by itself when
+  // the App is driven in the background, so it cannot be captured there.
+  juce::PopupMenu synthMenuFor(Note &note);
   void beginMacroCurvePreview(const std::vector<Note*>& notes);
   void endMacroCurvePreview();
   std::function<std::vector<TrackPitchMacroTarget>()> getTrackEditTargets;

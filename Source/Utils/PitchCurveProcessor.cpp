@@ -86,7 +86,7 @@ namespace
         segments.reserve(notes.size());
         // Runs on every drag step: the detection is kept between calls.
         thread_local fry::Cache fryCache;
-        const auto& fryRanges = fryCache.of(project.getAudioData());
+        const auto& fryFound = fryCache.of(project.getAudioData());
 
         for (const auto& note : notes)
         {
@@ -101,7 +101,7 @@ namespace
                          - note.getTiltMean();
             // A note kept whole as recorded (FryDetector.h) plays its
             // recorded pitch: its neighbours bend toward that one.
-            if (fry::keepsWhole(note, fryRanges))
+            if (fry::wholeAsRecorded(note, fryFound))
                 seg.midiNote = note.getOriginalMidiNote();
             segments.push_back(seg);
         }

@@ -172,6 +172,51 @@ bool fillBodyAsImage(juce::Graphics &g, const juce::Path &shape,
   return true;
 }
 
+// The stretches of a note that stay the recording for the vocal fry in them
+// (`kept`, source frames: fry::keptForDisplay), filled grass green over its
+// body: where the note is not moved, whatever the rest of it is tuned to.
+void fillKeptFry(juce::Graphics &g, const AudioData &audioData, const Note &note,
+                 const juce::Path &bodyShape, float x, float width,
+                 const fry::Ranges &kept)
+{
+  const int sourceStart = note.getSrcStartFrame();
+  const int sourceEnd = note.getSrcEndFrame();
+  const float visualStart = note.getVisualStartFrame();
+  const float visualLength = note.getVisualDurationFrames();
+  if (kept.empty() || bodyShape.isEmpty() || width <= 2.0f || sourceEnd <= sourceStart ||
+      !(visualLength > 0.0f))
+    return;
+  // Most notes keep nothing; skip the path clip for them (the costly part).
+  if (std::none_of(kept.begin(), kept.end(), [&](const auto &range)
+                   { return std::min(range.second, sourceEnd) >
+                            std::max(range.first, sourceStart); }))
+    return;
+
+  const auto map = notetiming::forNoteOnScreen(audioData, note);
+  const float pixelsPerFrame = width / visualLength;
+  const auto xAt = [&](int sourceFrame)
+  {
+    return x + (static_cast<float>(map.destinationAt(sourceFrame)) - visualStart) *
+                   pixelsPerFrame;
+  };
+  const auto bounds = bodyShape.getBounds();
+  juce::Graphics::ScopedSaveState state(g);
+  g.reduceClipRegion(bodyShape);
+  g.setColour(synthEngineColour::keptFry());
+  for (const auto &[from, to] : kept)
+  {
+    const int first = std::max(from, sourceStart);
+    const int last = std::min(to, sourceEnd);
+    if (last <= first)
+      continue;
+    const float left = std::max(x, xAt(first));
+    const float right = std::min(x + width, xAt(last));
+    if (right > left)
+      g.fillRect(juce::Rectangle<float>(left, bounds.getY() - 1.0f, right - left,
+                                        bounds.getHeight() + 2.0f));
+  }
+}
+
 bool isContinuousSplitPair(const Note &left, const Note &right)
 {
   return left.getEndFrame() == right.getStartFrame() &&
@@ -234,6 +279,14 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
        (boxSelector->isSelecting() || boxSelector->wasLastSelectionFromBox()));
 
   const auto &audioData = project->getAudioData();
+  // Where the recording is kept for its vocal fry (FryDetector.h): painted
+  // over the bodies of the track being edited. On every repaint, so the
+  // detection is kept between calls.
+  thread_local fry::Cache fryCache;
+  const fry::Ranges keptFry =
+      drawBodies && !greyscale
+          ? fry::keptForDisplay(project->getNotes(), audioData.rawF0, fryCache.of(audioData))
+          : fry::Ranges{};
   const auto getSplitHoverLimits = [&](const Note &note)
   {
     int leftLimit = std::numeric_limits<int>::min();
@@ -637,6 +690,7 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
           {
             const auto hatchInImage = [&](juce::Graphics &ig)
             {
+              fillKeptFry(ig, audioData, note, waveformPath, x, renderedWidth, keptFry);
               if (showBreathsAndSibilance)
                 BreathSibilanceRenderer::hatchNoteBody(
                     ig, audioData, note, waveformPath, x, renderedWidth);
@@ -683,6 +737,10 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
         noteVisualBounds = {x, y, renderedWidth, h};
         bodyShape.addRoundedRectangle(x, y, renderedWidth, h, 2.0f);
       }
+
+      // Bodies not drawn as an image: the kept fry, then the hatch, over them.
+      if (fillBodies && !bodyHatched)
+        fillKeptFry(g, audioData, note, bodyShape, x, renderedWidth, keptFry);
 
       // Hatch the unpitched parts (sibilants, breaths) of the body.
       if (fillBodies && showBreathsAndSibilance && !bodyHatched)
