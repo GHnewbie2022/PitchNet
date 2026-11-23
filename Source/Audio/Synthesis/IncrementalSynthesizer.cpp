@@ -2007,6 +2007,9 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               while (next.angle - previous.angle < -kPi)
                 next.angle += 2.0 * kPi;
             }
+            if (!spliceAligned)
+              for (auto &anchor : anchors)
+                anchor.alignment = {};
             if (journalOn)
               for (size_t k = 0; k < anchors.size(); ++k)
                 journalSplices.push_back(

@@ -3934,6 +3934,11 @@ int main(int argc, char **argv)
       if (const char *voiceTail = std::getenv("PITCHNET_VOICE_TAIL"))
         if (auto *synth = resynthController->getIncrementalSynth())
           synth->setVoiceTailRemoved(juce::String(voiceTail) != "0");
+      // PITCHNET_SPLICE_ALIGN=0: the render is not shifted or rotated to
+      // meet the recording at its splices.
+      if (const char *align = std::getenv("PITCHNET_SPLICE_ALIGN"))
+        if (auto *synth = resynthController->getIncrementalSynth())
+          synth->setSpliceAligned(juce::String(align) != "0");
       resynthController->setProject(std::make_unique<Project>(project));
       auto &p = *resynthController->getProject();
       auto &data = p.getAudioData();
