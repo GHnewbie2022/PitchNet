@@ -696,6 +696,104 @@ void gainTests()
     CHECK(reloadedPlain.getNotes()[0].getSibilantBalance() == 0.0f);
   }
 }
+
+// What an edited vowel leaves under the sibilant after it
+// (BreathSibilanceProtection.h).
+void voiceTailTests()
+{
+  constexpr int total = 200;
+  std::vector<std::uint8_t> labels(total, None);
+  std::vector<bool> voiced(total, false);
+  std::vector<float> pitch(total, 0.0f);
+  const auto label = [&](int from, int to, std::uint8_t value)
+  { std::fill(labels.begin() + from, labels.begin() + to, value); };
+  const auto voice = [&](int from, int to, float hz)
+  {
+    std::fill(voiced.begin() + from, voiced.begin() + to, true);
+    std::fill(pitch.begin() + from, pitch.begin() + to, hz);
+  };
+  const auto tails = [&](int startFrame, int endFrame)
+  {
+    return breathsibilance::voiceTailsUnderSibilants(
+        [&](int f) { return breathsibilance::labelAt(labels, f); },
+        [&](int f) { return f >= 0 && f < total && voiced[static_cast<size_t>(f)]; },
+        [&](int f) { return f >= 0 && f < total ? pitch[static_cast<size_t>(f)] : 0.0f; },
+        startFrame, endFrame);
+  };
+  const auto is = [](const breathsibilance::VoiceTail &tail, int runStart, int runEnd,
+                     int voiceFrame, float hz)
+  {
+    return tail.runStart == runStart && tail.runEnd == runEnd &&
+           tail.voiceFrame == voiceFrame && tail.pitchHz == hz;
+  };
+
+  // A vowel whose last 4 frames lie under the consonant after it (煙幕
+  // 02:49.82): the whole run, the vowel's last voiced frame, and the pitch it
+  // ended on - the median of its last three frames.
+  voice(20, 50, 320.0f);
+  pitch[47] = 310.0f;
+  pitch[48] = 290.0f;
+  pitch[49] = 300.0f;
+  label(46, 56, Sibilance);
+  CHECK(tails(0, total).size() == 1 && is(tails(0, total)[0], 46, 56, 49, 300.0f));
+
+  // A run that opens unvoiced a frame after its vowel: the vowel is still
+  // the one whose tail lies under it.
+  voice(60, 69, 250.0f);
+  label(70, 78, Sibilance);
+  CHECK(tails(0, total).size() == 2 && is(tails(0, total)[1], 70, 78, 68, 250.0f));
+
+  // Voiced frames a run ends with are the next vowel's: the consonant ends
+  // where they start.
+  voice(76, 90, 400.0f);
+  CHECK(tails(0, total).size() == 2 && is(tails(0, total)[1], 70, 76, 68, 250.0f));
+
+  // No vowel right before it (a rest), voiced from end to end (no consonant
+  // to keep apart), or a breath: none.
+  label(100, 108, Sibilance);
+  voice(120, 130, 200.0f);
+  label(122, 126, Sibilance);
+  label(140, 150, Breath);
+  voice(136, 142, 200.0f);
+  CHECK(tails(0, total).size() == 2);
+
+  // A range that cuts a run still gives the whole run.
+  CHECK(tails(48, total).size() == 2 && is(tails(48, total)[0], 46, 56, 49, 300.0f));
+  CHECK(tails(0, 48).size() == 1 && is(tails(0, 48)[0], 46, 56, 49, 300.0f));
+  CHECK(tails(56, 70).empty());
+
+  // How much goes, per sample: in over 12 ms centred on the run's first
+  // sample (its first frame's centre less half a hop), out over 12 ms centred
+  // 5 ms before the consonant's end.
+  constexpr int hop = 512;
+  constexpr int rate = 44100;
+  constexpr int startFrame = 40;
+  constexpr int samples = 30 * hop;
+  const int first = 6 * hop - hop / 2;                   // 2816
+  const int runEnd = 16 * hop - hop / 2;                 // 7936
+  const int end = runEnd - static_cast<int>(0.005 * rate); // 7716
+  const int half = static_cast<int>(0.006 * rate) + 1;   // 265
+  const auto weight = breathsibilance::voiceTailWeight({46, 56, true, 300.0f}, startFrame,
+                                                       samples, hop, rate);
+  CHECK(static_cast<int>(weight.size()) == samples);
+  for (int i = 0; i < first - half; ++i)
+    CHECK(weight[static_cast<size_t>(i)] == 0.0f);
+  CHECK(std::abs(weight[static_cast<size_t>(first)] - 0.5f) < 0.01f);
+  for (int i = first + half; i < end - half; ++i)
+    CHECK(weight[static_cast<size_t>(i)] == 1.0f);
+  CHECK(std::abs(weight[static_cast<size_t>(end)] - 0.5f) < 0.01f);
+  for (int i = end + half + 1; i < samples; ++i)
+    CHECK(weight[static_cast<size_t>(i)] == 0.0f);
+  for (size_t i = 1; i < weight.size(); ++i) // no step anywhere
+    CHECK(std::abs(weight[i] - weight[i - 1]) < 0.01f);
+
+  // Where the pass stops short of the run's end there is nothing to keep
+  // clear of: out on the span's own end.
+  const auto cut = breathsibilance::voiceTailWeight({46, 56, false, 300.0f}, startFrame,
+                                                    samples, hop, rate);
+  CHECK(cut[static_cast<size_t>(runEnd - half)] == 1.0f);
+  CHECK(std::abs(cut[static_cast<size_t>(runEnd)] - 0.5f) < 0.01f);
+}
 } // namespace
 
 int main()
@@ -946,6 +1044,7 @@ int main()
   noteEdgeTests();
   sibilantOnlyTests();
   gainTests();
+  voiceTailTests();
 
   CHECK(breathsibilance::labelAt(labels, -1) == None);
   CHECK(breathsibilance::labelAt(labels, take.frames()) == None);

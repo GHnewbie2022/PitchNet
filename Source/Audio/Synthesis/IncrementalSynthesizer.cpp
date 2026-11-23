@@ -8,6 +8,7 @@
 #include "../WarpLayer.h"
 #include "OriginalWaveformRestore.h"
 #include "RubberBandShift.h"
+#include "HarmonicFloor.h"
 #include "HighBandRestore.h"
 #include "../../Utils/FryDetector.h"
 #include "../../Utils/NoteGainCurve.h"
@@ -923,6 +924,88 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
       }
   }
 
+  // What an edited vowel leaves under the sibilant after it
+  // (BreathSibilanceProtection.h): where the vowel a run follows is rendered
+  // with an edit, the run loses the harmonics of the pitch that vowel was
+  // recorded ending on - all of the run, in whichever note its frames lie:
+  // the consonant mostly belongs to the next note, edited or not, and the
+  // tail under it is the edited vowel's (煙幕 01:21.15: one frame of the run
+  // in the edited note, ten in the unedited one after it, and only the first
+  // was taken). What this pass does not write of the run is taken from the
+  // composite as it stands, and when the vowel is put back the recording is
+  // put back as far. Not vocal fry
+  // kept as recorded, which is the recording on purpose, all of it.
+  std::vector<breathsibilance::VoiceTailSpan> voiceTailSpans;
+  std::vector<std::pair<int, int>> voiceTailRestores;
+  {
+    const auto noteAt = [&](int frame) -> const Note * {
+      for (const auto &note : project->getNotes())
+        if (!note.isRest() && frame >= note.getStartFrame() && frame < note.getEndFrame())
+          return &note;
+      return nullptr;
+    };
+    const auto edited = [&](const Note &note) {
+      return std::abs(project->getFormantShift()) > 0.001f ||
+             !neutralForRender(note, audioData);
+    };
+    const auto keptAsFry = [&](int frame) {
+      return std::any_of(fryKeptFrames.begin(), fryKeptFrames.end(),
+                         [frame](const auto &kept) {
+                           return frame >= kept.first && frame < kept.second;
+                         });
+    };
+    const auto tails = breathsibilance::voiceTailsUnderSibilants(
+        [&](int frame) {
+          return frame >= 0 ? warp::labelAt(audioData, frame)
+                            : static_cast<std::uint8_t>(breathsibilance::None);
+        },
+        [&](int frame) { return frame >= 0 && warp::voicedAt(audioData, frame); },
+        [&](int frame) {
+          const int source = frame >= 0 ? warp::sourceFrameAt(audioData, frame) : -1;
+          return source >= 0 && source < static_cast<int>(audioData.rawF0.size())
+                     ? audioData.rawF0[static_cast<size_t>(source)]
+                     : 0.0f;
+        },
+        startFrame, endFrame);
+    for (const auto &tail : tails) {
+      const Note *vowel = noteAt(tail.voiceFrame);
+      if (vowel == nullptr || !vowel->isDirty())
+        continue;
+      // The first unbroken stretch of the run inside the range that is not
+      // kept fry.
+      int from = -1, to = -1;
+      for (int frame = std::max(tail.runStart, startFrame);
+           frame < std::min(tail.runEnd, endFrame); ++frame) {
+        if (!keptAsFry(frame)) {
+          if (from < 0)
+            from = frame;
+          to = frame + 1;
+        } else if (from >= 0) {
+          break;
+        }
+      }
+      if (from < 0)
+        continue;
+      if (!edited(*vowel)) {
+        // The vowel goes back to the recording: so does what a pass before
+        // this one took from under the consonant, past the vowel's note and
+        // short of a note this pass renders with an edit.
+        int end = std::max(from, vowel->getEndFrame());
+        while (end < to) {
+          const Note *note = noteAt(end);
+          if (note != nullptr && note->isDirty() && edited(*note))
+            break;
+          ++end;
+        }
+        if (end > vowel->getEndFrame())
+          voiceTailRestores.emplace_back(vowel->getEndFrame(), end);
+        continue;
+      }
+      if (voiceTailRemoved)
+        voiceTailSpans.push_back({from, to, to == tail.runEnd, tail.pitchHz});
+    }
+  }
+
   // Spec Q12: notes the user chose to render with Rubber Band R3. They take
   // the recording shifted by R3 instead of the engine's render, by the same
   // ratio PSOLA would apply (target over recorded pitch, per frame).
@@ -1137,6 +1220,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
        capturedNoteCount, journalDetail, commitFrameRanges = std::move(commitFrameRanges),
        recordedHighsFrames = std::move(recordedHighsFrames),
        fryKeptFrames = std::move(fryKeptFrames),
+       voiceTailSpans = std::move(voiceTailSpans),
+       voiceTailRestores = std::move(voiceTailRestores),
        rubberBandFrames = std::move(rubberBandFrames),
        rubberBandRatio = std::move(rubberBandRatio),
        rubberBandFormant = rubberBandFormantPreserved,
@@ -1170,7 +1255,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
                      currentJobId, onComplete, elapsedText, hasDirtyNoteAnchors,
                      f0DirtyStart, f0DirtyEnd, capturedNoteCount, journalDetail,
                      commitFrameRanges, blendMask, originalSegment,
-                     recordedHighsFrames, fryKeptFrames,
+                     recordedHighsFrames, fryKeptFrames, voiceTailSpans, voiceTailRestores,
                      rubberBandFrames, rubberBandRatio, rubberBandFormant,
                      rubberBandSourceHz, warpedRecording, warpedSourceAt,
                      formantShifts, formantF0, formantSampleRate, hasGlobalFormant, usePsola,
@@ -1622,6 +1707,16 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               neutralFrameRanges.emplace_back(note.getStartFrame(),
                                               note.getEndFrame());
             }
+            // What an edited vowel leaves under the sibilant after it
+            // (BreathSibilanceProtection.h) is taken out of the run even
+            // where a note going back to the recording plays it, and a vowel
+            // going back takes the recording with it as far as its run went.
+            for (const auto &span : voiceTailSpans)
+              for (auto &range : neutralFrameRanges)
+                if (range.first >= span.from && range.first < span.to)
+                  range.first = std::min(range.second, span.to);
+            for (const auto &restore : voiceTailRestores)
+              neutralFrameRanges.push_back(restore);
             std::sort(neutralFrameRanges.begin(), neutralFrameRanges.end());
 
             int spanStartFrame = -1;
@@ -1994,6 +2089,27 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
             }
           }
 
+          // What an edited vowel leaves under the sibilant after it: the
+          // harmonics of the pitch it was recorded ending on go down to the
+          // noise around them (BreathSibilanceProtection.h). On what is about
+          // to be written, like the highs above, whichever of the render and
+          // the recording it came from.
+          for (const auto &span : voiceTailSpans) {
+            const auto weight = breathsibilance::voiceTailWeight(
+                span, capturedStartFrame, static_cast<int>(committed.size()), hopSize,
+                formantSampleRate);
+            if (!harmonicfloor::flatten(committed, weight, formantSampleRate, span.pitchHz,
+                                        breathsibilance::kVoiceTailTopHz,
+                                        capturedCancelFlag.get())) {
+              if (currentJobId == jobId.load()) {
+                isBusy = false;
+                if (onComplete)
+                  juce::MessageManager::callAsync([onComplete]() { onComplete(false); });
+              }
+              return;
+            }
+          }
+
           // The composite as it was before this pass wrote (debug recording).
           std::vector<float> journalBefore;
           if (journalOn && audioData.waveform.getNumChannels() > 0)
@@ -2011,6 +2127,35 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               const float current = destination[sample];
               const float rendered = committed[static_cast<size_t>(sample)];
               destination[sample] = current + blend * (rendered - current);
+            }
+          }
+
+          // What an edited vowel leaves under the sibilant after it, where
+          // the run lies past what this pass wrote - in the next note, which
+          // may not be edited at all: taken from the composite as it stands
+          // there. The commit ranges stay the edited notes' own, so the
+          // splices and their alignment are where they were.
+          for (const auto &span : voiceTailSpans) {
+            auto weight = breathsibilance::voiceTailWeight(
+                span, capturedStartFrame, samplesToWrite, hopSize, formantSampleRate);
+            bool any = false;
+            for (int sample = 0; sample < samplesToWrite; ++sample) {
+              auto &w = weight[static_cast<size_t>(sample)];
+              w *= 1.0f - std::clamp(commitMask[static_cast<size_t>(sample)], 0.0f, 1.0f);
+              any = any || w > 0.0f;
+            }
+            if (!any)
+              continue;
+            std::vector<float> standing(static_cast<size_t>(samplesToWrite));
+            for (int channel = 0; channel < audioData.waveform.getNumChannels(); ++channel) {
+              auto *destination = audioData.waveform.getWritePointer(channel, startSample);
+              std::copy(destination, destination + samplesToWrite, standing.begin());
+              if (!harmonicfloor::flatten(standing, weight, formantSampleRate, span.pitchHz,
+                                          breathsibilance::kVoiceTailTopHz))
+                break;
+              for (int sample = 0; sample < samplesToWrite; ++sample)
+                if (weight[static_cast<size_t>(sample)] > 0.0f)
+                  destination[sample] = standing[static_cast<size_t>(sample)];
             }
           }
 
@@ -2056,6 +2201,13 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
               for (const auto &region : breathRegions)
                 timingProtectedRanges.push_back({region.start - 128,
                                                  region.end + 128});
+              // Nor is a run an edited vowel's tail was taken from under.
+              for (const auto &span : voiceTailSpans) {
+                const int reach = hopSize;
+                timingProtectedRanges.push_back(
+                    {startSample + (span.from - capturedStartFrame) * hopSize - reach,
+                     startSample + (span.to - capturedStartFrame) * hopSize + reach});
+              }
               const auto &allNotes = capturedProject->getNotes();
 
               // True if audio of an edited note (current edit, or rendered

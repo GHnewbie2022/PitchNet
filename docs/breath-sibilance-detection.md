@@ -19,6 +19,19 @@ not make them buzz, even 12 semitones up (see Evaluation) - but not exactly:
 it takes about 1 dB off the top band of an "s". Keeping the recording
 returns them bit-identical.
 
+One exception, after a vowel rendered with an edit. The recording under a
+sibilant is not the consonant alone: the vowel before it ends under the
+consonant's onset, and the room goes on ringing with it under the rest - a
+line on the vowel's last recorded pitch. Kept, it sits off the pitch the
+vowel has after the edit (heard as a wrong note at 2 semitones), and the
+vocoder does not move it either: that far under the vowel its output follows
+the mel. So through such a run, up to 25 ms before its end, the harmonics of
+the pitch the vowel was recorded ending on are pressed down to the noise
+around them, up to 3.5 kHz (`voiceTailsUnderSibilants`, `voiceTailWeight` in
+`BreathSibilanceProtection.h`; `harmonicfloor::flatten` in `HarmonicFloor.h`).
+The consonant's own noise stays. Unedited notes, and runs whose vowel was not
+edited, keep every sample.
+
 ## Code
 
 - `Source/Audio/BreathSibilanceDetector.{h,cpp}` - the detector. No JUCE

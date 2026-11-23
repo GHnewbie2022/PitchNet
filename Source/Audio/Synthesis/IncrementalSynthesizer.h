@@ -43,6 +43,9 @@ public:
   // Listening tests only: false puts R3 back on the stretched recording (the
   // two passes the one-pass render replaced), to tell the two apart by ear.
   void setRubberBandOnePass(bool onePass) { rubberBandOnePass = onePass; }
+  // Listening tests only: false keeps what an edited vowel leaves under the
+  // sibilant after it (BreathSibilanceProtection.h), to tell the two apart.
+  void setVoiceTailRemoved(bool removed) { voiceTailRemoved = removed; }
 
   void synthesizeRegion(ProgressCallback onProgress,
                         CompleteCallback onComplete);
@@ -77,6 +80,7 @@ private:
   SynthesisEngineType synthesisEngine = SynthesisEngineType::Vocoder;
   bool rubberBandFormantPreserved = true;
   bool rubberBandOnePass = true;
+  bool voiceTailRemoved = true;
   PsolaSynthesizer psola;
 
   std::shared_ptr<std::atomic<bool>> cancelFlag;
