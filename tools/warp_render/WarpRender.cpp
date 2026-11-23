@@ -32,6 +32,7 @@
 #include "../../Source/Undo/PitchUndoManager.h"
 #include "../../Source/UI/PianoRollComponent.h"
 #include "../../Source/UI/ParameterPanel.h"
+#include "../../Source/UI/ToolbarComponent.h"
 #include "../../Source/UI/PianoRoll/NoteSplitter.h"
 #include "../../Source/UI/PianoRoll/PianoRollInteractionContext.h"
 
@@ -1741,6 +1742,16 @@ int main(int argc, char **argv)
       std::fprintf(stderr, "could not load\n");
       return 1;
     }
+    // A project that links its recording (spec Q11) holds no audio until the
+    // recording is attached, as the App does on open: without it there is no
+    // level to tell the loud frames by and no composed pitch to judge (every
+    // note came out "no-voiced"). One that embeds its audio is left as it is.
+    if (project.getAudioData().originalWaveform.getNumSamples() == 0 &&
+        !sourceaudio::attachRecording(project, input))
+    {
+      std::fprintf(stderr, "could not attach the recording\n");
+      return 1;
+    }
     const juce::File midiFile = juce::File::getCurrentWorkingDirectory().getChildFile(
         juce::String::fromUTF8(argv[4]));
     juce::FileInputStream midiIn(midiFile);
@@ -3292,6 +3303,19 @@ int main(int argc, char **argv)
     std::printf("shot %s\n", writePng(panel, output) ? "ok" : "FAILED");
     return 0;
   }
+  // WarpRender - <out.png> --toolbar-shot <width> <project file> [recording]:
+  // the toolbar at this width, naming the project and, on the line under
+  // it, its recording (the standalone; neither file is read).
+  if (argc >= 6 && juce::String::fromUTF8(argv[3]) == "--toolbar-shot")
+  {
+    ToolbarComponent toolbar;
+    toolbar.setSize(juce::String::fromUTF8(argv[4]).getIntValue(), 60);
+    toolbar.setDocumentName(juce::File(juce::String::fromUTF8(argv[5])));
+    if (argc >= 7)
+      toolbar.setSourceFile(juce::File(juce::String::fromUTF8(argv[6])));
+    std::printf("shot %s\n", writePng(toolbar, output) ? "ok" : "FAILED");
+    return 0;
+  }
   if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--reopen")
   {
     Project loaded;
@@ -3490,6 +3514,9 @@ int main(int argc, char **argv)
                      beforeFile.getFullPathName().toRawUTF8());
         return 1;
       }
+      // Linked, it has no curves to compare until its recording is attached.
+      if (before.getAudioData().originalWaveform.getNumSamples() == 0)
+        sourceaudio::attachRecording(before, beforeFile);
       PitchCurveProcessor::rebuildBaseFromNotes(before);
       changed = differingFrames(before, p, nullptr);
       for (const auto &[from, to] : changed)
