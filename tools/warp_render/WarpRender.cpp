@@ -3303,6 +3303,85 @@ int main(int argc, char **argv)
     std::printf("shot %s\n", writePng(panel, output) ? "ok" : "FAILED");
     return 0;
   }
+  // WarpRender <in.pitchnet> <out.png> --synth-menu-shot <note>[,<note>...]:
+  // the synthesis menu as it opens on each of these notes (index in the
+  // project), one under the other: what is marked, with a ring or a dot,
+  // and whether "Back to Automatic" can be chosen.
+  if (argc >= 5 && juce::String::fromUTF8(argv[3]) == "--synth-menu-shot")
+  {
+    Project project;
+    if (!ProjectSerializer::loadFromFile(project, input))
+      return 1;
+    sourceaudio::attachRecording(project, input);
+    PianoRollComponent roll;
+    roll.setSize(1400, 700);
+    roll.setProject(&project);
+    juce::StringArray indices;
+    indices.addTokens(juce::String::fromUTF8(argv[4]), ",", "");
+    std::vector<juce::PopupMenu> menus;
+    int width = 0, height = 8;
+    constexpr int kGap = 18, kSeparator = 9;
+    for (const auto &index : indices)
+    {
+      auto &note = project.getNotes()[static_cast<size_t>(index.getIntValue())];
+      std::printf("note %d: frames %d-%d, engine %d, shown as %d\n", index.getIntValue(),
+                  note.getStartFrame(), note.getEndFrame(),
+                  static_cast<int>(note.getSynthEngine()),
+                  static_cast<int>(fry::shownAs(note, fry::find(project.getAudioData()))));
+      menus.push_back(roll.synthMenuFor(note));
+      for (juce::PopupMenu::MenuItemIterator it(menus.back()); it.next();)
+      {
+        const auto &item = it.getItem();
+        int w = 0, h = kSeparator;
+        if (!item.isSeparator && item.customComponent != nullptr)
+          item.customComponent->getIdealSize(w, h);
+        width = std::max(width, w);
+        height += h;
+      }
+      height += kGap;
+    }
+    juce::Image image(juce::Image::ARGB, 2 * (width + 16), 2 * height, true);
+    {
+      juce::Graphics g(image);
+      g.addTransform(juce::AffineTransform::scale(2.0f));
+      g.fillAll(juce::Colour(0xff2a2a2a));
+      int y = 8;
+      for (auto &menu : menus)
+      {
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+        {
+          const auto &item = it.getItem();
+          if (item.isSeparator || item.customComponent == nullptr)
+          {
+            g.setColour(juce::Colours::white.withAlpha(0.15f));
+            g.fillRect(8 + 8, y + kSeparator / 2, width - 16, 1);
+            y += kSeparator;
+            continue;
+          }
+          int w = 0, h = 0;
+          item.customComponent->getIdealSize(w, h);
+          item.customComponent->setBounds(0, 0, width, h);
+          juce::Graphics::ScopedSaveState state(g);
+          g.setOrigin(8, y);
+          // The component reads "enabled" from the menu window's item, which
+          // there is none of here: dim it by hand.
+          if (!item.isEnabled)
+            g.beginTransparencyLayer(0.35f);
+          item.customComponent->paintEntireComponent(g, true);
+          if (!item.isEnabled)
+            g.endTransparencyLayer();
+          y += h;
+        }
+        y += kGap;
+      }
+    }
+    output.deleteFile();
+    juce::FileOutputStream stream(output);
+    juce::PNGImageFormat png;
+    std::printf("shot %s\n",
+                stream.openedOk() && png.writeImageToStream(image, stream) ? "ok" : "FAILED");
+    return 0;
+  }
   // WarpRender - <out.png> --toolbar-shot <width> <project file> [recording]:
   // the toolbar at this width, naming the project and, on the line under
   // it, its recording (the standalone; neither file is read).
@@ -4143,6 +4222,8 @@ int main(int argc, char **argv)
                                     ? Note::SynthEngine::RubberBand
                                     : juce::String(noteEngine) == "highs"
                                         ? Note::SynthEngine::VocoderRecordedHighs
+                                    : juce::String(noteEngine) == "fry"
+                                        ? Note::SynthEngine::VocoderRecordedHighsFry
                                         : juce::String(noteEngine) == "auto"
                                             ? Note::SynthEngine::Auto
                                             : Note::SynthEngine::Vocoder);
@@ -4161,7 +4242,11 @@ int main(int argc, char **argv)
                           return engine == Note::SynthEngine::RubberBand
                                      ? (isAuto ? "r3 (auto)" : "r3")
                                      : engine == Note::SynthEngine::VocoderRecordedHighs
-                                           ? (isAuto ? "highs (auto)" : "highs")
+                                           ? (isAuto ? "highs (auto)"
+                                              : note.getSynthEngine() ==
+                                                        Note::SynthEngine::VocoderRecordedHighsFry
+                                                    ? "highs + fry"
+                                                    : "highs")
                                            : "vocoder";
                         }());
           ++marked;
@@ -4200,6 +4285,7 @@ int main(int argc, char **argv)
         list("end kept", fry::kept(p.getNotes(), data.rawF0, ends));
         list("onset", starts);
         list("onset kept", fry::keptOnsets(p.getNotes(), starts));
+        list("told kept", fry::keptAsTold(p.getNotes(), fry::Found{ends, starts}));
         if (juce::String(fryList) == "only")
           return 0;
       }
