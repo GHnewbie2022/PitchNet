@@ -88,6 +88,12 @@ public:
     void setCurrentTime(double time);
     // The open project's file name (tooltip: its full path); empty hides it.
     void setDocumentName(const juce::File& file);
+    // The project's recording, its full path on a line under the name (which
+    // file the project plays and renders from, after Relink Recording above
+    // all). Too long for the space, it loses folders from the front and keeps
+    // the file's name; the tooltip always holds all of it. Empty hides it:
+    // the plug-in's recording is the host's and has no path.
+    void setSourceFile(const juce::File& file);
     // Where playback starts (standalone); shown beside the transport.
     void setPlayheadTime(double time);
     void setTotalTime(double time);
@@ -187,6 +193,8 @@ private:
     juce::Label timeLabel;
     juce::Label documentLabel;
     juce::File documentFile;
+    juce::Label sourceLabel;
+    juce::File sourceFile;
 
     juce::Slider zoomSlider;
     juce::Label zoomLabel;

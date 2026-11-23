@@ -119,6 +119,13 @@ ToolbarComponent::ToolbarComponent()
     documentLabel.setMinimumHorizontalScale(1.0f); // elide rather than squash
     documentLabel.setInterceptsMouseClicks(true, false);
 
+    addChildComponent(sourceLabel);
+    sourceLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_PRIMARY.withAlpha(0.42f));
+    sourceLabel.setJustificationType(juce::Justification::centredLeft);
+    sourceLabel.setFont(juce::FontOptions(11.0f));
+    sourceLabel.setMinimumHorizontalScale(1.0f);
+    sourceLabel.setInterceptsMouseClicks(true, false);
+
     addAndMakeVisible(timeLabel);
     timeLabel.setText("00:00:000", juce::dontSendNotification);
     timeLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_PRIMARY);
@@ -440,9 +447,38 @@ void ToolbarComponent::resized()
     {
         const int left = toolContainerBounds.getRight() + 14;
         const int right = scaleSelectionButton.getX() - 12;
-        documentLabel.setBounds(left, transportCapsuleY, std::max(0, right - left),
-                                transportCapsuleH);
-        documentLabel.setVisible(documentFile != juce::File{} && right - left >= 60);
+        const int width = std::max(0, right - left);
+        const bool showName = documentFile != juce::File{} && width >= 60;
+        const bool showSource = showName && sourceFile != juce::File{};
+        // With a recording to name, the project's name moves to the upper
+        // half and the recording's path takes the lower.
+        const int nameH = showSource ? transportCapsuleH / 2 + 2 : transportCapsuleH;
+        documentLabel.setBounds(left, transportCapsuleY, width, nameH);
+        documentLabel.setVisible(showName);
+        sourceLabel.setBounds(left, transportCapsuleY + nameH - 3, width,
+                              transportCapsuleH - nameH + 3);
+        sourceLabel.setVisible(showSource);
+        if (showSource)
+        {
+            // The whole path if it fits; else "…" and as many of its last
+            // folders as do, the file's name always among them.
+            const auto font = sourceLabel.getFont();
+            const float room = static_cast<float>(
+                sourceLabel.getBorderSize().subtractedFrom(sourceLabel.getLocalBounds()).getWidth());
+            juce::String shown = sourceFile.getFullPathName();
+            const auto separator = juce::File::getSeparatorString();
+            while (juce::GlyphArrangement::getStringWidth(font, shown) > room)
+            {
+                const auto rest = shown.startsWith(juce::String::fromUTF8("\xe2\x80\xa6"))
+                                      ? shown.substring(1 + separator.length())
+                                      : shown.substring(separator.length());
+                const int next = rest.indexOf(separator);
+                if (next < 0)
+                    break; // only the name is left: the label elides it
+                shown = juce::String::fromUTF8("\xe2\x80\xa6") + rest.substring(next);
+            }
+            sourceLabel.setText(shown, juce::dontSendNotification);
+        }
     }
 }
 
@@ -868,5 +904,14 @@ void ToolbarComponent::setDocumentName(const juce::File& file)
     documentFile = file;
     documentLabel.setText(file.getFileNameWithoutExtension(), juce::dontSendNotification);
     documentLabel.setTooltip(file.getFullPathName());
+    resized();
+}
+
+void ToolbarComponent::setSourceFile(const juce::File& file)
+{
+    if (file == sourceFile)
+        return;
+    sourceFile = file;
+    sourceLabel.setTooltip(file.getFullPathName());
     resized();
 }

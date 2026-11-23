@@ -1736,6 +1736,11 @@ void MainComponent::timerCallback()
       document = open->getProjectFilePath() != juce::File{} ? open->getProjectFilePath()
                                                            : open->getFilePath();
     toolbar.setDocumentName(document);
+    // And the recording it plays and renders from (none in the plug-in: the
+    // host's audio has no path).
+    const auto *open = getProject();
+    toolbar.setSourceFile(open != nullptr && !isPluginMode() ? open->getFilePath()
+                                                             : juce::File{});
   }
 
   // Handle throttled cursor updates (30Hz max)
