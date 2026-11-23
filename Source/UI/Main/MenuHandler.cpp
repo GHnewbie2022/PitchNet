@@ -58,6 +58,7 @@ juce::PopupMenu MenuHandler::getMenuForIndex(int menuIndex, const juce::String& 
                 menu.addSeparator();
                 menu.addCommandItem(commandManager, CommandIDs::saveProject);
                 menu.addCommandItem(commandManager, CommandIDs::saveProjectAs);
+                menu.addCommandItem(commandManager, CommandIDs::relinkRecording);
                 menu.addSeparator();
                 menu.addCommandItem(commandManager, CommandIDs::exportAudio);
                 menu.addCommandItem(commandManager, CommandIDs::exportMidi);

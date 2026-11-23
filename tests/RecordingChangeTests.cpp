@@ -9,6 +9,7 @@
 #include "../Source/Models/ProjectSerializer.h"
 #include "../Source/Utils/Constants.h"
 #include "../Source/Utils/PitchCurveProcessor.h"
+#include "../Source/Utils/SHA256Utils.h"
 
 #include <cmath>
 #include <cstdio>
@@ -306,6 +307,183 @@ void bakedContoursFollowAsFarAsTheyFollowedTheRecording()
   CHECK(worstKept < 0.02f);
   CHECK(worstFlat < 0.02f);
 }
+
+// ---- a recording in a file: overwritten, or another file in its place -------
+
+void writeRecording(const juce::File &file, const juce::AudioBuffer<float> &source)
+{
+  file.deleteFile();
+  juce::WavAudioFormat wav;
+  std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream>(file);
+  auto writer = wav.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+                                                .withSampleRate(kSourceRate)
+                                                .withNumChannels(source.getNumChannels())
+                                                .withBitsPerSample(24));
+  CHECK(writer != nullptr);
+  CHECK(writer->writeFromAudioSampleBuffer(source, 0, source.getNumSamples()));
+}
+
+// The linked project of `file` as a save writes it (makeProject over what the
+// file reads), its second note on Rubber Band by the user's choice.
+juce::var savedProjectOf(const juce::File &file)
+{
+  AudioData read;
+  CHECK(sourceaudio::load(read, file));
+  Project project;
+  makeProject(project, read.sourceAudio);
+  for (auto &note : project.getNotes())
+    if (note.getStartFrame() == 140)
+      note.setSynthEngine(Note::SynthEngine::RubberBand);
+  project.setFilePath(file);
+  project.setAudioSha256(SHA256Utils::fileSHA256(file));
+  // toJson's defaults leave the rendered pieces out: read back, that is no
+  // linked project, and the App's Relink Recording refused every project
+  // ("Open failed") while it went by them.
+  Project plain;
+  CHECK(ProjectSerializer::fromJson(plain, ProjectSerializer::toJson(project)));
+  CHECK(!plain.linksRecording());
+  // As a save writes it - and handed over as it is, not through text, the
+  // way the App reads its own project back.
+  const auto saved = ProjectSerializer::toSavedJson(project);
+  Project direct;
+  CHECK(ProjectSerializer::fromJson(direct, saved));
+  CHECK(direct.linksRecording() && direct.getLinkedEditPieces().size() == 1);
+  return saved;
+}
+
+// The edited note's render (the composite halved over frames 140-180) is
+// still what plays outside [from, to) analysis frames.
+void checkTheRenderIsKeptOutside(const Project &project, int from, int to)
+{
+  const auto &audio = project.getAudioData();
+  const auto &reference = warp::reference(audio);
+  int kept = 0;
+  for (int i = 140 * HOP_SIZE; i < 180 * HOP_SIZE; ++i)
+  {
+    if (i >= from * HOP_SIZE && i < to * HOP_SIZE)
+      continue;
+    if (std::abs(reference.getSample(0, i)) < 0.05f)
+      continue;
+    CHECK(std::abs(audio.waveform.getSample(0, i) - 0.5f * reference.getSample(0, i)) < 1.0e-3f);
+    ++kept;
+  }
+  CHECK(kept > 1000);
+}
+
+// A click taken out inside the edited note (frames 155-157), as RX would.
+juce::AudioBuffer<float> cleaned(const juce::AudioBuffer<float> &source)
+{
+  juce::AudioBuffer<float> out;
+  out.makeCopyOf(source);
+  const int from = static_cast<int>(155.0 * HOP_SIZE * kSourceRate / SAMPLE_RATE);
+  for (int c = 0; c < out.getNumChannels(); ++c)
+    for (int i = from; i < from + 100; ++i)
+      out.setSample(c, i, out.getSample(c, i) * 0.8f);
+  return out;
+}
+
+const recordingchange::Detect samePitch =
+    [](const float *, int, int frames, std::vector<float> &f0, std::vector<bool> &voiced) {
+      f0.assign(static_cast<size_t>(frames), 220.0f);
+      voiced.assign(static_cast<size_t>(frames), true);
+      return true;
+    };
+
+void checkOpenedAgainOverTheCleanedAudio(const Project &project,
+                                         const recordingchange::Opened &opened,
+                                         const juce::File &file)
+{
+  CHECK(opened.result == recordingchange::Opened::Result::opened);
+  CHECK(opened.changed);
+  CHECK(opened.update.audioFrames.size() == 1);
+  CHECK(opened.update.audioFrames[0].first > 140 && opened.update.audioFrames[0].second < 180);
+  CHECK(opened.update.notesToRender == 1);
+  CHECK(project.getFilePath() == file);
+  CHECK(project.getAudioSha256() == SHA256Utils::fileSHA256(file));
+  // The edit and the synthesis the user chose are as they were; the edited
+  // note over the change is queued, the other is not.
+  CHECK(project.getNotes().size() == 2);
+  for (const auto &note : project.getNotes())
+  {
+    const bool edited = note.getStartFrame() == 140;
+    CHECK(std::abs(note.getMidiNote() - (edited ? 59.0f : 57.0f)) < 1.0e-4f);
+    CHECK(note.getSynthEngine() ==
+          (edited ? Note::SynthEngine::RubberBand : Note().getSynthEngine()));
+    CHECK(note.isDirty() == edited);
+  }
+}
+
+void aRecordingOverwrittenAndThenSavedIsStillFound()
+{
+  // The project is open, the recording is overwritten (RX), and the project
+  // is saved before it is closed: the save takes the file's hash from the
+  // disk - the new one - while the fingerprint it writes is still that of
+  // the audio the project holds. The next open has to go by the fingerprint.
+  const auto file = juce::File::createTempFile(".wav");
+  writeRecording(file, recordingOf(3.0));
+  auto json = savedProjectOf(file);
+  AudioData before;
+  CHECK(sourceaudio::load(before, file));
+  writeRecording(file, cleaned(before.sourceAudio));
+  json.getDynamicObject()->setProperty("audioSha256", SHA256Utils::fileSHA256(file));
+
+  Project reopened;
+  CHECK(ProjectSerializer::fromJson(reopened, json));
+  CHECK(reopened.getAudioSha256() == SHA256Utils::fileSHA256(file));
+  const auto opened = recordingchange::openLinked(reopened, file, samePitch);
+  checkOpenedAgainOverTheCleanedAudio(reopened, opened, file);
+
+  // Saved again and opened again: nothing left to find.
+  reopened.getAudioData().waveform.makeCopyOf(warp::reference(reopened.getAudioData()));
+  Project third;
+  CHECK(ProjectSerializer::fromJson(third, ProjectSerializer::toSavedJson(reopened)));
+  const auto again = recordingchange::openLinked(third, file, samePitch);
+  CHECK(again.result == recordingchange::Opened::Result::opened && !again.changed);
+  file.deleteFile();
+  std::printf("  overwritten, saved, opened: the change is found by its blocks\n");
+}
+
+void anotherFileTakesTheRecordingsPlace()
+{
+  // Relink Recording: the cleaned audio saved under another name.
+  const auto file = juce::File::createTempFile(".wav");
+  const auto other = juce::File::createTempFile(".wav");
+  writeRecording(file, recordingOf(3.0));
+  const auto json = savedProjectOf(file);
+  AudioData before;
+  CHECK(sourceaudio::load(before, file));
+  writeRecording(other, cleaned(before.sourceAudio));
+
+  Project relinked;
+  CHECK(ProjectSerializer::fromJson(relinked, json));
+  const auto opened = recordingchange::openLinked(relinked, other, samePitch);
+  checkOpenedAgainOverTheCleanedAudio(relinked, opened, other);
+
+  // The same audio under another name: the project names it, nothing else.
+  writeRecording(other, before.sourceAudio);
+  Project same;
+  CHECK(ProjectSerializer::fromJson(same, json));
+  const auto copy = recordingchange::openLinked(same, other, samePitch);
+  CHECK(copy.result == recordingchange::Opened::Result::opened && !copy.changed);
+  CHECK(copy.update.notesToRender == 0);
+  CHECK(same.getFilePath() == other);
+  for (const auto &note : same.getNotes())
+    CHECK(!note.isDirty());
+  // The render made from the first file plays on over the second.
+  checkTheRenderIsKeptOutside(same, 0, 0);
+
+  // Another length is refused, and the project is left as it was.
+  writeRecording(other, recordingOf(2.5));
+  Project refused;
+  CHECK(ProjectSerializer::fromJson(refused, json));
+  const auto shorter = recordingchange::openLinked(refused, other, samePitch);
+  CHECK(shorter.result == recordingchange::Opened::Result::otherShape);
+  CHECK(refused.getFilePath() == file);
+  file.deleteFile();
+  other.deleteFile();
+  std::printf("  another file: changed part rendered again, same audio only named, "
+              "another length refused\n");
+}
 } // namespace
 
 int main()
@@ -316,6 +494,8 @@ int main()
   linkedProjectRoundTrips();
   changedPitchMovesTheEditedLine();
   bakedContoursFollowAsFarAsTheyFollowedTheRecording();
+  aRecordingOverwrittenAndThenSavedIsStillFound();
+  anotherFileTakesTheRecordingsPlace();
   std::printf("RecordingChangeTests passed\n");
   return 0;
 }

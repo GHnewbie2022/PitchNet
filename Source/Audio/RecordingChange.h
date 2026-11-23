@@ -118,9 +118,12 @@ struct Opened
 /**
  * A project that links its recording, opened with `file`: refused when the
  * file's shape differs from the saved fingerprint; else read, hydrated, and
- * when its content differs, analysed again where it changed (apply). The
- * project then names the file and its SHA-256. The App's open and the
- * offline tools go through this alike.
+ * when its content differs - block by block against the saved fingerprint,
+ * not by the file's hash, which a save takes from the disk - analysed again
+ * where it changed (apply). The project then names the file and its
+ * SHA-256. `file` may be another file than the one saved (the App's Relink
+ * Recording: a copy cleaned in RX). The App's open and the offline tools go
+ * through this alike.
  */
 Opened openLinked(Project &project, const juce::File &file, const Detect &detect);
 } // namespace recordingchange

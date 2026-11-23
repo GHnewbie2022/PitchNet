@@ -60,6 +60,15 @@ public:
     static bool saveToFile(const Project& project, const juce::File& file);
 
     /**
+     * What saveToFile writes, as JSON: with the recording known, the linked
+     * form (the rendered edits as pieces); without, the audio and the
+     * analysis embedded. toJson's defaults are not this - they leave the
+     * pieces and the caches out - so whoever needs the project "as saved"
+     * (the App's Relink Recording reads it back) asks here.
+     */
+    static juce::var toSavedJson(const Project& project);
+
+    /**
      * Load project from JSON file.
      */
     static bool loadFromFile(Project& project, const juce::File& file);

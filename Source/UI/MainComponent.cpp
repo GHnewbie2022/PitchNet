@@ -4254,6 +4254,7 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID> &commands)
       CommandIDs::openFile,
       CommandIDs::saveProject,
       CommandIDs::saveProjectAs,
+      CommandIDs::relinkRecording,
       CommandIDs::exportAudio,
       CommandIDs::exportMidi,
       CommandIDs::quit,
@@ -4325,6 +4326,14 @@ void MainComponent::getCommandInfo(juce::CommandID commandID,
                    TR("menu.file"), 0);
     result.addDefaultKeypress('s', primaryModifier | juce::ModifierKeys::shiftModifier);
     result.setActive(project != nullptr);
+    break;
+
+  case CommandIDs::relinkRecording:
+    result.setInfo(TR("command.relink_recording"), TR("command.relink_recording.desp"),
+                   TR("menu.file"), 0);
+    // The plug-in's recording is the host's.
+    result.setActive(project != nullptr && !isPluginMode() &&
+                     project->getRecordingFingerprint().isValid());
     break;
 
   case CommandIDs::exportAudio:
@@ -4541,6 +4550,10 @@ bool MainComponent::perform(const ApplicationCommandTarget::InvocationInfo &info
 
   case CommandIDs::saveProjectAs:
     this->saveProject(true);
+    return true;
+
+  case CommandIDs::relinkRecording:
+    relinkProjectRecording();
     return true;
 
   case CommandIDs::exportAudio:

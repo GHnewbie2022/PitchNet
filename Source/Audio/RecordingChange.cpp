@@ -638,15 +638,21 @@ Opened openLinked(Project &project, const juce::File &file, const Detect &detect
     return opened;
   project.setFilePath(file);
   opened.result = Opened::Result::opened;
-  const auto sha = SHA256Utils::fileSHA256(file);
-  if (sha.isNotEmpty() && sha.equalsIgnoreCase(project.getAudioSha256()))
-    return opened;
-  // Another file content: compare block by block. A file rewritten with the
-  // same samples (only its header or markers changed) changes nothing.
+  // Block by block against the saved fingerprint, whatever the file's hash
+  // says. A save writes the hash of the file as it is on disk then: a
+  // recording overwritten while the project was open is saved with the new
+  // hash beside the fingerprint of the audio its edits were rendered from,
+  // and by the hash alone the next open found nothing changed. A file
+  // rewritten with the same samples (only its header or markers changed)
+  // still changes nothing.
   opened.update = apply(project, saved, detect);
   opened.changed = !opened.update.audioFrames.empty();
-  project.setAudioSha256(sha);
-  project.setModified(true);
+  const auto sha = SHA256Utils::fileSHA256(file);
+  if (opened.changed || !sha.equalsIgnoreCase(project.getAudioSha256()))
+  {
+    project.setAudioSha256(sha);
+    project.setModified(true);
+  }
   return opened;
 }
 } // namespace recordingchange

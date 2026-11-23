@@ -236,10 +236,14 @@ bool ProjectSerializer::saveToFile(const Project& project, const juce::File& fil
     // With its recording known (a fingerprint) the document links it and
     // keeps only the rendered edits (spec Q11); without, it embeds the audio
     // and the analysis caches so it reopens without the source.
-    auto json = toJson(project, true, true);
+    auto json = toSavedJson(project);
     auto jsonString = juce::JSON::toString(json, true); // Pretty print
 
     return file.replaceWithText(jsonString);
+}
+
+juce::var ProjectSerializer::toSavedJson(const Project& project) {
+    return toJson(project, true, true);
 }
 
 bool ProjectSerializer::loadFromFile(Project& project, const juce::File& file) {

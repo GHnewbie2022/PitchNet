@@ -370,8 +370,18 @@ private:
                          bool findRecording);
   // A project that links its recording (spec Q11): read it (asking for it
   // when missing), refuse another shape, analyse again where it changed.
+  // `relinked`: the file was chosen with Relink Recording, so the project
+  // differs from what is saved even where the audio is the same.
   void openLinkedProject(const juce::File &file, std::shared_ptr<Project> loadedProject,
-                         const juce::File &chosen = {});
+                         const juce::File &chosen = {}, bool relinked = false);
+  // File > Relink Recording (standalone): another file takes the place of
+  // the project's recording - a copy cleaned in RX, or the same file after it
+  // was overwritten. The project as a save would write it now is read back
+  // and opened with that file (openLinkedProject): every edit and every
+  // note's synthesis choice stays, and only where the audio differs is the
+  // pitch detected again and the edited notes rendered again.
+  void relinkProjectRecording();
+  void relinkProjectRecording(const juce::File &recording);
   void analyzeAudio();
   void analyzeAudio(
       Project &targetProject,

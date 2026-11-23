@@ -418,7 +418,7 @@ void MainComponent::showOpenedProject(const juce::File &file,
 
 void MainComponent::openLinkedProject(const juce::File &file,
                                       std::shared_ptr<Project> loadedProject,
-                                      const juce::File &chosen) {
+                                      const juce::File &chosen, bool relinked) {
   // The saved path, else a recording beside the project with its name.
   juce::File audioFile = chosen;
   if (audioFile == juce::File{}) {
@@ -487,7 +487,7 @@ void MainComponent::openLinkedProject(const juce::File &file,
 
   juce::Component::SafePointer<MainComponent> safeThis(this);
   auto *controller = editorController;
-  juce::Thread::launch([safeThis, controller, file, audioFile, loadedProject]() {
+  juce::Thread::launch([safeThis, controller, file, audioFile, loadedProject, relinked]() {
     // The pitch detector is only needed where the recording changed; wait
     // for its models then (they load in the background at startup).
     const recordingchange::Detect detect =
@@ -501,7 +501,7 @@ void MainComponent::openLinkedProject(const juce::File &file,
           return controller->detectPitch(samples, numSamples, frames, f0, voiced);
         };
     const auto opened = recordingchange::openLinked(*loadedProject, audioFile, detect);
-    juce::MessageManager::callAsync([safeThis, file, loadedProject, opened]() {
+    juce::MessageManager::callAsync([safeThis, file, loadedProject, opened, relinked]() {
       if (safeThis == nullptr)
         return;
       safeThis->analysisProgressPopup.setTitle({});
@@ -517,13 +517,25 @@ void MainComponent::openLinkedProject(const juce::File &file,
       safeThis->showOpenedProject(file, *loadedProject, false);
       if (!opened.changed) {
         safeThis->isLoadingAudio = false;
+        if (relinked) {
+          // The same audio in another file: only the link is new, and it is
+          // not saved yet.
+          safeThis->savedProjectSnapshot = {};
+          StyledMessageBox::show(safeThis.getComponent(), TR("dialog.recording_relinked"),
+                                 TR("dialog.recording_relinked_same") + "\n" +
+                                     loadedProject->getFilePath().getFullPathName(),
+                                 StyledMessageBox::InfoIcon);
+        }
         safeThis->layOutProjectStretchedTheOldWay();
         return;
       }
       // Changed outside: the project now differs from the file (new pitch
       // where it changed, the new fingerprint), so closing asks to save.
       safeThis->savedProjectSnapshot = {};
-      const auto report = TR("dialog.recording_changed_detail")
+      const auto title = relinked ? TR("dialog.recording_relinked")
+                                  : TR("dialog.recording_changed");
+      const auto report = TR(relinked ? "dialog.recording_relinked_detail"
+                                      : "dialog.recording_changed_detail")
                               .replace("%1", juce::String(static_cast<int>(
                                                  opened.update.audioFrames.size())))
                               .replace("%2", juce::String(opened.update.notesToRender)) +
@@ -535,8 +547,8 @@ void MainComponent::openLinkedProject(const juce::File &file,
       if (project == nullptr || (opened.update.notesToRender == 0 &&
                                  !project->getAudioData().warpLayoutPending)) {
         safeThis->isLoadingAudio = false;
-        StyledMessageBox::show(safeThis.getComponent(), TR("dialog.recording_changed"),
-                               report, StyledMessageBox::InfoIcon);
+        StyledMessageBox::show(safeThis.getComponent(), title, report,
+                               StyledMessageBox::InfoIcon);
         return;
       }
       safeThis->toolbar.showProgress(TR("progress.synthesizing"));
@@ -548,14 +560,14 @@ void MainComponent::openLinkedProject(const juce::File &file,
             if (safeThis != nullptr)
               safeThis->toolbar.showProgress(message);
           },
-          [safeThis, report](bool success) {
+          [safeThis, report, title](bool success) {
             if (safeThis == nullptr)
               return;
             safeThis->setToolGroupEnabled(true);
             safeThis->toolbar.hideProgress();
             safeThis->isLoadingAudio = false;
             safeThis->repaint();
-            StyledMessageBox::show(safeThis.getComponent(), TR("dialog.recording_changed"),
+            StyledMessageBox::show(safeThis.getComponent(), title,
                                    success ? report : TR("dialog.pitch_edits_failed"),
                                    success ? StyledMessageBox::InfoIcon
                                            : StyledMessageBox::WarningIcon);
@@ -563,6 +575,64 @@ void MainComponent::openLinkedProject(const juce::File &file,
           safeThis->pendingIncrementalResynth, safeThis->isPluginMode());
     });
   });
+}
+
+void MainComponent::relinkProjectRecording() {
+  // The plug-in's recording is the host's.
+  auto *project = getProject();
+  if (isPluginMode() || project == nullptr || isLoadingAudio.load() ||
+      fileChooser != nullptr)
+    return;
+  // UI tests only: PITCHNET_RELINK_FILE names the file, so the command runs
+  // without the system's Open panel (which cannot be driven in the
+  // background). Everything after the choice is the same.
+  if (const char *named = std::getenv("PITCHNET_RELINK_FILE")) {
+    relinkProjectRecording(juce::File(juce::String::fromUTF8(named)));
+    return;
+  }
+  fileChooser = std::make_unique<juce::FileChooser>(
+      TR("dialog.select_audio"), project->getFilePath().getParentDirectory(),
+      "*.wav;*.aif;*.aiff;*.flac");
+  juce::Component::SafePointer<MainComponent> safeThis(this);
+  fileChooser->launchAsync(
+      juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+      [safeThis](const juce::FileChooser &fc) {
+        if (safeThis == nullptr)
+          return;
+        const auto selected = fc.getResult();
+        safeThis->fileChooser.reset();
+        if (selected.existsAsFile())
+          safeThis->relinkProjectRecording(selected);
+      });
+}
+
+void MainComponent::relinkProjectRecording(const juce::File &recording) {
+  auto *project = getProject();
+  if (isPluginMode() || project == nullptr || isLoadingAudio.load())
+    return;
+  // The project as a save would write it now - the edits not saved yet
+  // included - read back as an open reads it. The file given then takes the
+  // saved recording's place exactly as one edited outside does on open:
+  // refused if its shape differs, compared block by block, analysed and
+  // rendered again where it changed. Nothing is written to disk here. The
+  // file's hash is left as the project holds it: it does not decide what
+  // changed (recordingchange::openLinked), so the same file, overwritten
+  // while the project was open, is read again the same way.
+  project->uiWidth = getWidth();
+  project->uiHeight = getHeight();
+  rememberViewInProject(*project);
+  auto reopened = std::make_shared<Project>();
+  if (!ProjectSerializer::fromJson(*reopened, ProjectSerializer::toSavedJson(*project)) ||
+      !reopened->linksRecording()) {
+    StyledMessageBox::show(this, TR("dialog.open_failed"),
+                           TR("dialog.project_load_failed") + "\n" +
+                               recording.getFullPathName(),
+                           StyledMessageBox::WarningIcon);
+    return;
+  }
+  const auto projectFile = project->getProjectFilePath();
+  reopened->setProjectFilePath(projectFile);
+  openLinkedProject(projectFile, reopened, recording, true);
 }
 
 void MainComponent::layOutProjectStretchedTheOldWay() {
