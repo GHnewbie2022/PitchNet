@@ -191,6 +191,7 @@ ol.timeline p b { color: var(--fg); font-weight: 600; }
       <li><a href="#open"><span class="num">10</span>尚未決定</a></li>
       <li><a href="#progress"><span class="num">11</span>實作進度</a></li>
       <li><a href="#scope"><span class="num">12</span>附錄：影響範圍</a></li>
+      <li><a href="#timing"><span class="num">13</span>修拍 roadmap</a></li>
     </ol>
   </nav>
 
@@ -439,7 +440,7 @@ ol.timeline p b { color: var(--fg); font-weight: 600; }
         <div><dt>聲碼器範圍裡的無聲段</dt><dd>連續 24 格以上的無聲段、吐息、齒音：沒伸縮時保留原始錄音（PitchNet 現在的做法），有伸縮時用伸縮層算出的聲音（2026-11-24 起依聲音種類選方法，見本節「伸縮層依聲音種類選方法」；原本整段是 signalsmith）。</dd></div>
         <div><dt>修過的母音留在齒音底下的尾音</dt><dd><b>已實作（<code>1443508</code>）。</b><b>現象：</b>齒音保留錄音，但錄音在那裡不只有子音。前一個母音的尾巴收在子音的起頭底下（齒音標記會延伸進還判成有聲的格），房間的殘響又讓它在整個子音底下繼續響：煙幕是宅錄，「挑選」「呼吸」的ㄒ底下，一條停在母音收尾音高的線從頭到尾都在，每秒掉約 365 dB，相當於殘響時間約 0.16 秒；整首量得到的 137 個齒音範圍裡，84 個的正中間那條線高出旁邊空檔 12 dB 以上。這些都不會跟著修音走，修過之後它留在原音高：「呼」下移 2 半音時，尾巴錯開約 2.8 個半音，使用者聽到怪音；「挑」修 64 音分時聽不出來，在頻譜上看得到。交給聲碼器唱也不行：聲音比母音本體小約 30 dB 以下時，輸出跟著沒移調的 mel 回到原音高。<b>規則：</b>前面的母音這次重算、而且有修過，後面接著的齒音範圍裡，把「母音收尾音高」（錄音的音高，取最後 3 個有聲格的中位數，整段固定）的每一條泛音，壓到上下兩條泛音之間空檔的高度（只壓低、不放大，相位不動），到 3.5 kHz 為止。ㄒ自己的噪音留著（泛音頻帶裡的噪音約低 3 dB）。時間從齒音標記的起點到子音結尾前 5 ms，前後各 12 ms 淡入淡出；子音結尾指齒音標記的結尾，標記結尾如果是有聲格（下一個母音已經開始），就停在那些有聲格之前（原本是結尾前 25 ms；使用者在 RX 看到 02:47.24 那一處留下約 20 ms 沒處理到，2026-11-23 改成 5 ms。量測：那一處 0.58 秒的殘留由 2.8 dB 降到 −11.0 dB；代價是「挑選」下一個母音起音的頭 20 ms 小了 1.5～3 dB；使用者聽過「呼吸」「挑選」、02:47.24 三處的 5 ms 版本，三個都可以）；前面不內縮，因為標記的起點本來就比噪音開始變大的位置晚約 25 ms。不設修改量門檻（使用者決定：目的是避免修過音高之後殘留的尾音變成怪聲，套用在有修過的地方就好）。<b>不處理：</b>前面的母音沒修過的齒音；沒修的音裡齒音以外的部分（逐樣本保留錄音）；前面 3 格內沒有有聲格的齒音（接在休止後面）；吐息；整段都判成有聲的齒音範圍；保留錄音的氣泡音。同樣的尾音在別處還在（修過的母音後面接休止、換氣、ㄉㄊㄅ等子音），這條規則管不到。<b>齒音落在沒修的音裡：</b>子音通常被歸到下一顆音，下一顆音沒修時也照樣處理整個齒音範圍，因為底下的尾音是前一顆修過的母音留下的（使用者在 RX 指出煙幕 01:21.15 與 03:27.19 兩處只消了頭：齒音只有前 1、3 格在修過的音裡）。做法：原本的寫入範圍不動，寫入之後再處理齒音裡這次沒寫到的部分；把那顆母音還原時，錄音會一路還原到齒音結尾（實測：先消掉、存檔、再還原，子音那一段跟錄音逐樣本相同）。<b>經過（2026-11-23）：</b>(1) 第一版只保留那幾格 3.5 kHz 以上（整段挖掉），使用者試聽在下移 0.5、1、2 半音都標最好，之後用 RX 看頻譜，指出連ㄒ的低頻噪音一起挖出一個洞、太暴力；(2) 改成只消掉泛音（RX Spectral Repair 的 Attenuate、垂直方向的做法），使用者：「這招好，又準又乾淨」；(3) 使用者指出那條線在整個ㄒ底下都有，範圍改成整個齒音；「呼吸」下移 2 半音的試作以「前面不內縮、後面內縮 25 ms」比較好；(4) 使用者判斷那條線是宅錄的房間尾音，ㄒ理論上只有噪音，所以消掉，不設門檻。試過不採用的：低頻交給聲碼器（有問題）、低頻用 R3（可以接受、不如只留高頻）。<b>低音：</b>分析窗依音高自動加長（237 Hz 以上 46 ms，118～237 Hz 93 ms，以下 186 ms），約 35 Hz 以下不處理。規則會處理的位置裡，煙幕 152 處有 17 處、女友感台本 69 處有 35 處在 237 Hz 以下（其中 2 處在 118 Hz 以下）。<b>程式：</b><code>harmonicfloor::flatten</code>（<code>HarmonicFloor.h</code>）；<code>breathsibilance::voiceTailsUnderSibilants</code>、<code>voiceTailWeight</code>（<code>BreathSibilanceProtection.h</code>）；<code>IncrementalSynthesizer.cpp</code> 在寫入前套用；<code>setVoiceTailRemoved</code> 是試聽專用開關。獨立版與外掛共用同一段合成程式。</dd></div>
         <div><dt>氣泡音（Q7 定案）</dt><dd><b>已實作（<code>07568fd</code>）。現行的偵測規則與交接做法以第 5 節「Auto：句尾氣泡音保留錄音」為準，有伸縮時的伸縮方法以本節「伸縮層依聲音種類選方法」為準（時域疊接），以下是定案當時的內容。</b>用 <code>detect_fry</code> 的規則偵測句尾氣泡音（比前一段低 7 個半音以上、30 格以內、之後 10 格內沒有回到原音高的短段落），這些格跟吐息、齒音同樣處理：沒伸縮時保留原始錄音，有伸縮時用 signalsmith，不走聲碼器，也就不跟著移調。<span class="why">盲測（試聽_氣泡音，試聽檔已於 2026-11-21 刪除，整句移高 0.5 半音）以「還原度」為準，5 段都是保留原始錄音較好：聲碼器會把原始錄音的瑕疵吃掉，聽起來乾淨，但跟原聲不同（F01、F02 起初選了聲碼器，重聽後改判）。氣泡音沒有明確音高，不跟著移調聽不出落差。限制：規則只在女友感台本上驗證過 5 段；S1 那種句子中間的不規則發聲不在範圍內。</span></dd></div>
-        <div><dt>音高自動修正</dt><dd><b>尚未實作。</b>送進聲碼器的音高加上「自動折回」：很短的段落如果剛好是前後音高的 1/2～1/5，乘回整數倍；再加上 Viterbi 解碼，處理偵測器在兩個八度之間猶豫的格。<span class="why">盲測 10 個案例：自動折回較好 4、不修正較好 0、差不多 3、兩個都壞 3（都是氣泡音）。S5 那段 RMVPE、FCPE、SwiftF0 都給 142～205 Hz，表示低週期是真的（次諧波），聲碼器要用上方主要諧波才合得對，換偵測模型解決不了。實驗程式在 <code>試聽工具/pitch_paths.py</code>。</span></dd></div>
+        <div><dt>音高偵測錯誤的自動修正（擱置）</dt><dd><b>擱置（使用者，2026-11-25）。</b>這一項修的是「音高偵測抓錯八度」，讓聲碼器拿到正確的音高；它跟「自動把音準修好」（第 9 節的 agent 修音）是兩件事，原本的名稱「音高自動修正」容易混淆，所以改名。<b>擱置的依據：</b>程式裡沒有實作，只有實驗腳本。當初的 2 個案例（S1、S5）都在 ASMR 練習音檔，使用者後來不用那批素材；盲測「兩個都壞」的 3 個案例都是氣泡音，現在改成保留錄音、不經過聲碼器。用實驗腳本的規則掃使用者實際在用的專案（2026-11-25）：煙幕 v18 會被折回的 2 段都已經在氣泡音保留範圍裡，剩 0 段；女友感台本 5 段裡 3 段已保留錄音、1 段是修過時整顆保留的「電」，只剩 00:09.73～00:09.79 這 1 段（5 格、119 Hz、句尾，使用者先前判定那裡沒有氣泡音）。照做的話分析出來的音高曲線會變，每個專案都要整批回歸加試聽。之後在實際素材遇到聲碼器因為音高抓錯而壞掉的地方再重啟。<b>原本的構想：</b>送進聲碼器的音高加上「自動折回」：很短的段落如果剛好是前後音高的 1/2～1/5，乘回整數倍；再加上 Viterbi 解碼，處理偵測器在兩個八度之間猶豫的格。<span class="why">盲測 10 個案例：自動折回較好 4、不修正較好 0、差不多 3、兩個都壞 3（都是氣泡音）。S5 那段 RMVPE、FCPE、SwiftF0 都給 142～205 Hz，表示低週期是真的（次諧波），聲碼器要用上方主要諧波才合得對，換偵測模型解決不了。實驗程式在 <code>試聽工具/pitch_paths.py</code>。</span></dd></div>
       </dl>
       <h3 id="sound-signalsmith">伸縮方法與 signalsmith 參數</h3>
       <dl class="decisions">
@@ -782,6 +783,7 @@ ol.timeline p b { color: var(--fg); font-weight: 600; }
         <div class="item"><span class="q">Q10</span><p>agent 修音的判斷規則：給導引旋律 MIDI，agent 怎麼決定每個音符要改成多少<small>使用者認為這是 agent 修音成敗的關鍵。進度（2026-11-20）：整音符吸附（App 的 MIDI 雙擊）試聽後作廢，會把滑音起頭拉平；改用白線規則（第 9 節「白線判斷規則」），整首已合成待試聽。第 9 節的規則只寫了怎麼改、怎麼合成、怎麼檢查，還沒寫要改成多少。判斷規則只讀寫音符資料，跟用官方版還是 fork 無關；SLEEP FREAKS 的影片用的是官方版。官方版裡，檔案沒有 waveform 時開檔會讀原錄音、照音符重新合成整首（<code>MainComponent_ProjectIO.cpp</code>，master），這是不改程式也能讓修改出聲的路徑，代價是整首變成聲碼器聲音（第 9 節「不採用」）。影片實際用哪條路徑未知。</small></p></div>
         <div class="item"><span class="q">Q12</span><p>合成架構的下一步與整體合成設定<small>「聲碼器＋10 kHz 以上原聲」的架構尚未實作，還有幾個條件沒驗證；整體合成設定要不要改成每個專案各自設定也還沒定。內容見第 5 節最後三項。</small></p></div>
         <div class="item"><span class="q">Q4</span><p>音符層的其他問題，等伸縮層做完再規劃<small>無音高的即興段落（例如「嗚呼」）被切成很多段：GAME 的 4 個切割參數寫死在程式裡，介面上調不到；後處理也只有齒音合併這一條規則。</small></p></div>
+        <div class="item"><span class="q">Q13</span><p>修拍：只提供伴奏就能自主修拍<small>2026-11-25 開始討論，還沒有規則，也沒有實作。待定項目照架構順序與討論順序整理在第 13 節。</small></p></div>
       </div>
     </section>
 
@@ -872,7 +874,7 @@ ol.timeline p b { color: var(--fg); font-weight: 600; }
             <tr><td style="white-space:nowrap">試聽</td><td>最新架構總試聽（<code>素材/最新架構總試聽.html</code>，全部用 <code>f70abf5</code> 的預設行為輸出，45 列、7 組情境：整句沒伸縮、整句有伸縮 0.80／1.10／1.33 倍、1.10 倍再移 2 半音、字頭氣泡音沒伸縮與有伸縮、有伸縮時還原、說話）。<b>試聽結果（使用者，2026-11-23）：</b>45 列裡「最新版」42 列可以接受（其中 02:35 句 1.33 倍標「最好」），2 列有問題，1 列沒標（字頭、沒伸縮、上移 2 半音的 03:37.54）。比上一版好的：03:47 句的 1.10 與 1.33 倍，上一版有問題、最新版可以接受。沒有哪一列是上一版可以接受而最新版有問題。有問題的 2 列：(1) 02:49 句 1.10 倍整句下移 2 半音，上一版同樣有問題，備註「每個呼吸，呼與吸之間有怪聲」；(2) 說話句尾「捏」沒伸縮上移 1 半音，備註「好像有個細微的偏高頻卡一下」。這 2 列都不是今天的改動造成的：(1) 上一版就有；(2) 用今天之前的程式重新輸出，跟最新版逐樣本相同。(2) 的量測線索：「捏」這顆音開頭（72.108 秒）有一個 4～10 kHz 的短促聲音，合成結果裡它比錄音早 2 ms 出現，10 kHz 以上貼回的原聲高頻仍在原本的時間，兩個頻段錯開 2 ms；是不是使用者聽到的那一下還沒確認。只伸縮：02:35 與 02:45 句的 1.33 倍有問題，0.80 與 1.10 倍 4 句都可以接受；這跟先前 48 列試聽「只伸縮在 02:35、02:45、02:49 連 1.10 倍都有抖抖瑕疵」的記錄不同（同一批檔）。使用者用耳機重聽這 5 個檔（2026-11-23）後確認以這次為準：只伸縮在 0.80 與 1.10 倍可以接受。 <b>(1) 的成因（2026-11-23 追查）：</b>使用者指出位置是「呼」的尾巴跟ㄒ之間。齒音標記從偵測器還判成有聲的 4 格就開始（錄音第 14627～14630 格，音高 510～522 Hz；2026-11-20「擴大齒音保護」的延伸規則），標成齒音的格保留錄音、不移調，所以移調後的母音後面接上約 50 ms 原音高的母音尾巴（比母音本體小 13～19 dB）：下移 2 半音時音高往上跳約 2.7 個半音（445 → 520 Hz），上移 2 半音時往下掉約 1.3 個半音（562 → 520 Hz）。沒伸縮也會發生。整首 188 個齒音範圍裡，開頭含有聲格的有 80 個（1 格 56 個、2 格 18 個、3 格 5 個、4 格 1 個，就是這一處）。驗證檔 2 個放在總試聽頁的追查卡片：驗證 1 把那 4 格改由聲碼器唱（量測：原音高那一條小 5 dB、沒有完全消失，另外多出 470 Hz 的一條）；驗證 2 離線把那一小段 3.5 kHz 以下淡掉。<b>試聽結果（使用者，2026-11-23）：</b>只聽「呼吸」那一列：只伸縮可以接受、最新版有問題、驗證 1 有問題、驗證 2 可以接受；整句那一列沒標。結論：怪聲就是那一小段 3.5 kHz 以下、原音高的母音尾巴；把那 4 格交給聲碼器唱（驗證 1）解決不了。<b>再往下查（2026-11-23）：</b>直接跑聲碼器（沒有混合、沒有伸縮）逐格量。母音本體照指定的音高唱（錄音 500 Hz，下移 2 半音得到 450 Hz）。聲音很弱的格就沒有照：比母音本體小約 30 dB 以下時，輸出的頻率跟沒移調時相同。這 4 格裡前 2 格（9～10 dB）照新音高（462、477 Hz），後 2 格（4、−1 dB）回到 518～520 Hz；02:49 句句尾（母音收尾接換氣，沒有子音）也一樣，最後 2 格回到原音高。有伸縮的實際輸出更明顯：那一小段裡原音高那一條 8 dB、新音高那一條 1～2 dB。程式上的事實：聲碼器吃的 mel 頻譜來自錄音，只做時間伸縮、沒有移調，裡面的泛音還在原音高。推論：聲音夠強時聲碼器照指定音高產生泛音，很弱時輸出跟著 mel 走。這是聲碼器這條路徑的性質，不限於這一處。<b>第二輪驗證檔：</b>驗證 3：那一小段 3.5 kHz 以下用聲碼器、以上用錄音（量測：原音高那一條 8 dB，只比最新版小 4 dB）。驗證 4：那一小段 3.5 kHz 以下用 R3 移調後的聲音、以上用錄音，母音本體仍是聲碼器（量測：尾巴變成 460～480 Hz、14～15 dB，原音高那一條消失；交接處全頻帶音量跟最新版差 1 dB 以內）。R3 是直接移動錄音裡的聲音，不靠 mel，所以弱的尾巴也移得動。兩個都是離線混合，產品程式沒有改。<b>第二輪試聽結果（使用者，2026-11-23）：</b>最新版有問題、驗證 2 只留高頻最好、驗證 3 低頻用聲碼器有問題、驗證 4 低頻用 R3 可以接受（截圖回報，是「只聽呼吸」還是整句那一列沒有註明）。<b>門檻對照：</b>整句下移 0.5 與 1 半音，各 2 個版本：最新版（那 4 格保留錄音）與只留高頻（離線處理，做法同驗證 2）。用同一個量法量母音本體到尾巴的音高差：沒移調 0.38、下移 0.5 是 1.28、下移 1 是 1.78、下移 2 是 2.79 個半音。用途：決定小幅修音時要不要也只留高頻。兩列的「只留高頻」都不比最新版差，就可以一律套用；小幅移調時最新版比較好，就需要門檻。<b>門檻對照試聽結果（使用者，2026-11-23）：</b>下移 0.5 半音與下移 1 半音兩列都是：最新版（保留錄音）可以接受、只留高頻最好。結論：只留高頻在 0.5、1、2 半音都最好，不需要門檻。還沒寫進程式。<b>結尾那一側的試聽檔（使用者要求，2026-11-23）：</b>齒音範圍的「結尾」如果是有聲格（子音還沒結束、母音已經開始），現在同樣保留錄音、原音高，然後才接上移調後的母音。整首 36 處，35 處是 1 格、1 處是 2 格。03:47 句有 3 處：03:48.03（1 格）、03:48.66（2 格，整首最長）、03:50.04（1 格）。這 3 個字的歌詞手邊沒有，所以用時間標示。每列 3 個版本，只差結尾那一側：a 保留錄音（現在的做法）；b 只留高頻（那幾格 3.5 kHz 以下淡掉，母音的起音晚 12～35 ms 出來）；c 低頻用聲碼器（那幾格 3.5 kHz 以下用聲碼器、音高跟著移調，3.5 kHz 以上用錄音）。開頭那一側（母音尾巴接子音）3 個版本都已經只留高頻，這一句有 4 處，所以也可以順便聽開頭側在別的字上的效果。全部是離線處理，產品程式沒有改。量測：結尾那幾格 70～1500 Hz 的音量，a 是 16～25 dB，b 是 −3～−9 dB，c 是 11～23 dB（03:48.03 的 c 比 a 小 12 dB，另外 2 處跟 a 相近）。這麼短的範圍（12～35 ms）音高量不準，所以沒有列音高。核對：每個版本 22 顆音，21 顆是 Auto（聲碼器＋原聲高頻），「會」照專案設定用 R3。<b>結尾側試聽結果（使用者，2026-11-23）：</b>7 列的 a、b、c 全部標「可以接受」，沒有哪個版本標最好或有問題。也就是結尾那一側 3 種做法聽不出差別；整句那一列 3 個版本的開頭側都已經只留高頻（這一句 4 處），同樣可以接受。建議：結尾那一側維持現在的做法（保留錄音）、不改程式，只把開頭那一側改成只留高頻。使用者決定照這個範圍寫進程式（2026-11-23），見第 4 節。</td><td class="num" style="white-space:normal">—</td></tr>
             <tr><td style="white-space:nowrap">聲音</td><td>伸縮層依聲音種類選方法（見第 4 節）。<b>程式：</b><code>OverlapStretch.h</code>（時域疊接）、<code>NoiseStretch.h</code>（重新產生噪音）、<code>SourceKinds.h</code>（<code>warp::sourceKinds</code>，每一格是哪一種）；<code>WarpedSource.cpp</code> 先整段用 signalsmith 35／9 ms 算，再把氣泡音與噪音的段落蓋上去（<code>layKindsOver</code>），交叉淡化依相似程度補償音量（<code>levelGain</code>），被錨點切開的噪音提早接手（<code>extendBreathPastTheAnchors</code>）。伸縮的 4 個呼叫點（獨立版播放、外掛的基準、沒有原取樣率錄音時、載入錄音時）都傳同一份分類；外掛的播放那一份記住上次用的分類，分類不同就重算。<b>驗證：</b><code>KindStretchTests</code> 12 項（時域疊接在 1 倍等於錄音、脈衝保留、開頭對齊；噪音的音量、音色、音量階梯、種子；分類；三種方法只動自己的格；氣泡音的交接不凹；被錨點切開的吐息在錨點前後的 10 ms 音量是 −0.91～+0.30 dB，落在重新產生的噪音自己的起伏（−0.95～+0.52 dB）之內；同一段吐息不受別處影響；沒伸縮等於錄音），<code>SourceAudioTests</code> 加入帶分類時外掛的基準仍然逐樣本等於播放那一份。完整 34 項通過。回歸與量測的數字見第 4 節。</td><td class="num" style="white-space:normal">4134965</td></tr>
             <tr><td style="white-space:nowrap">檔案</td><td>存檔格式 9 與舊的伸縮自動升級（見第 8 節）。<code>ProjectSerializer</code>：<code>"warp"</code> 寫入 <code>"stretch": 2</code>；讀到沒有這個記號、又有伸縮的檔，設成待重排（<code>warpLayoutPending</code>）。獨立版開啟完成後呼叫 <code>layOutProjectStretchedTheOldWay</code>（內嵌音訊與連結錄音兩條路徑）；外掛在區段顯示到編輯畫面時（<code>finishRecordingChange</code>）要求重算；錄音被外部改過的流程（<code>RecordingChange.cpp</code>）保留待重排的狀態。<code>SourceAudioTests</code> 檢查格式 9 的存讀與自動升級的判斷。</td><td class="num" style="white-space:normal">4134965</td></tr>
-            <tr><td style="white-space:nowrap">工具</td><td>試聽工具 <code>WarpRender</code> 的開關：<code>PITCHNET_SPLICE_ALIGN=0</code>（修過的音寫回時不做接縫的相位對齊，用來分辨對齊的效果）；<code>PITCHNET_WARP_STRETCH=legacy</code>（伸縮改回整段 signalsmith 120／30 ms，舊專案也不自動升級，輸出跟改之前逐樣本相同，用來出新舊對照）。沒有開關時，讀到格式 8 以前有伸縮的專案會先重排一次，跟 App 開啟時相同。</td><td class="num" style="white-space:normal">1fd3fdb e12042e</td></tr>
+            <tr><td style="white-space:nowrap">工具</td><td>試聽工具 <code>WarpRender</code> 的開關：<code>PITCHNET_SPLICE_ALIGN=0</code>（修過的音寫回時不做接縫的相位對齊，用來分辨對齊的效果）；<code>PITCHNET_WARP_STRETCH=legacy</code>（伸縮改回整段 signalsmith 120／30 ms，用來出新舊對照；2026-11-25 已拿掉，見第 11 節進度表）。沒有開關時，讀到格式 8 以前有伸縮的專案會先重排一次，跟 App 開啟時相同。</td><td class="num" style="white-space:normal">1fd3fdb e12042e</td></tr>
             <tr><td style="white-space:nowrap">試聽</td><td>伸縮層依聲音種類的試聽（2026-11-23～24，使用者，耳機）。離線 5 輪在 <code>素材/試聽_只伸縮的相位感</code>，寫進程式後 3 輪在 <code>素材/試聽_伸縮層依種類</code>（第 1 輪 84 個檔：只伸縮、修過再伸縮、舊專案自動升級，新做法對舊設定；第 2 輪 18 個檔：齒音、「齁～」、被錨點切開的吸氣各自的候選修法；第 3 輪 48 個檔：最新程式重算）。每一輪的結論見第 4 節「伸縮層依聲音種類選方法」。第 3 輪使用者回覆全部沒問題。</td><td class="num" style="white-space:normal">—</td></tr>
             <tr><td style="white-space:nowrap">檔案</td><td>指定錄音檔（獨立版，見第 8 節）：<code>CommandIDs::relinkRecording</code>、File 選單、<code>MainComponent::relinkProjectRecording</code>（專案照存檔內容讀回，交給 <code>openLinkedProject</code>，多一個 <code>relinked</code> 參數：聲音相同時也標成未存檔並提示）；8 個語言檔各加 5 個字串；<code>ProjectSerializer::toSavedJson</code>（存檔寫入的內容，存檔與這個指令共用）；測試用的 <code>PITCHNET_RELINK_FILE</code>。重開時一律逐段比對錄音（<code>recordingchange::openLinked</code> 不再因為 SHA-256 相同就跳過）。<code>RecordingChangeTests</code> 加 2 項；完整 34 項通過。獨立版已重建，外掛沒有重建。</td><td class="num" style="white-space:normal">3a43507</td></tr>
             <tr><td style="white-space:nowrap">工具</td><td>試聽工具 <code>WarpRender</code>：<code>--guide-fix</code> 與 <code>--apply</code> 的對照檔，遇到只連結錄音的專案先接上錄音（見第 9 節乾音 v18）。內嵌音訊的專案照舊，lv 版的規則報告不變。另有 <code>--toolbar-shot</code>：把工具列畫成圖片，離線確認排版。</td><td class="num" style="white-space:normal">442ebf2</td></tr>
@@ -880,16 +882,22 @@ ol.timeline p b { color: var(--fg); font-weight: 600; }
             <tr><td style="white-space:nowrap">聲音</td><td>合成選單拿掉 Auto，氣泡音保留原聲可以手動選，保留的段落填草綠色（見第 5 節）。<code>Note::SynthEngine::VocoderRecordedHighsFry</code>；<code>FryDetector.h</code> 的 <code>keepsFry</code>、<code>toldWithoutFry</code>、<code>wholeAsRecorded</code>、<code>keptAsTold</code>、<code>shownAs</code>、<code>keptForDisplay</code>，偵測快取改成同時存句尾與字頭（<code>fry::Found</code>）；<code>PianoRollComponent::synthMenuFor</code>；<code>NoteRenderer.cpp</code> 的 <code>fillKeptFry</code>；選單項目的空心圓點（<code>MenuItemComponent::setHollowMark</code>）；8 個語言檔各加 2 個字串，並移除選單 Auto 項目原本用的 1 個（<code>synth.auto</code>）。試聽工具：<code>PITCHNET_RESYNTH_NOTE_ENGINE=fry</code>、<code>--synth-menu-shot</code>（把選單畫成圖片）。</td><td class="num" style="white-space:normal">cf6945a 5bfb293</td></tr>
             <tr><td style="white-space:nowrap">聲音</td><td>手動指定氣泡音保留錄音的範圍：音符左下、右下的草綠色方塊（見第 5 節）。<code>Note::setKeptRange</code>（<code>keptHeadUntil</code>、<code>keptTailFrom</code>）；<code>FryDetector.h</code> 的 <code>keptAsRecorded</code>（合成與畫面共用的單一出口）、<code>shownRange</code>；<code>SynthChoiceAction.h</code>（選單與方塊共用的復原動作，取代 <code>SetSynthEngineAction</code>，套用時重建音高曲線）；<code>PitchToolHandles</code> 的 <code>KeepHead</code>／<code>KeepTail</code>、<code>PitchToolController::dragKeep</code>；<code>IncrementalSynthesizer.cpp</code> 的母音尾音規則遇到手動保留的結尾不處理；存檔格式 10；切開時右半段維持合成方式；滑過範圍最少 20 px 高；8 個語言檔各加 2 個字串。試聽工具：<code>PITCHNET_RESYNTH_KEEP</code>、<code>--shot</code> 的 <code>--hover</code>／<code>--keep</code>／<code>--told</code>、<code>--keep-drag</code>、<code>--app-op engine</code>，<code>--app-op</code> 補上接錄音。</td><td class="num" style="white-space:normal">f9b3549、71cf19a</td></tr>
             <tr><td style="white-space:nowrap">聲音</td><td>字頭氣泡音開頭自動切開音符（見第 5 節）。<code>Source/Utils/FryNoteCuts.h</code>／<code>.cpp</code>（<code>frycut::wanted</code>、<code>apply</code>、<code>setEnabled</code>）；<code>NoteSplitter::splitNoteAtFrame</code> 加 <code>keepCentre</code>，<code>NoteSplitter</code> 移到核心程式庫；掛在 <code>ProjectSerializer</code>（讀檔與狀態封存）、<code>recordingchange::hydrate</code>／<code>openLinked</code>、<code>EditorController::analyzeAudioImpl</code>。試聽工具：<code>PITCHNET_FRY_CUT=0</code>；<code>--guide-fix</code> 讓切出來的短音跟著後面的音移動。測試 <code>FryNoteCutsTests</code>。</td><td class="num" style="white-space:normal">f9b3549、71cf19a</td></tr>
+            <tr><td style="white-space:nowrap">聲音</td><td>拿掉切回舊伸縮的試聽開關（<code>warp::setLegacyStretch</code>、<code>PITCHNET_WARP_STRETCH=legacy</code>）與它控制的 4 個分支。使用者決定（2026-11-25）：不會再回頭比舊的伸縮。程式只剩依聲音種類伸縮這一條路，之後算不出舊伸縮（整段 signalsmith 120／30 ms）的聲音。<code>WarpedSource.cpp</code>／<code>.h</code>、<code>ProjectSerializer.cpp</code>、<code>WarpRender.cpp</code>；<code>KindStretchTests</code>、<code>SourceAudioTests</code> 裡測這個開關的段落一併拿掉。驗證：測試 36 項全過；有伸縮的 12 個輸出（01:20.43、01:26.76、01:36.71 的 0.80 倍、0.80 倍只伸縮、1.33 倍，02:45 句的 0.80／1.10／1.33 倍）重算後跟拿掉之前逐位元組相同。</td><td class="num" style="white-space:normal">e6c472c</td></tr>
+            <tr><td style="white-space:nowrap">外掛</td><td>外掛與獨立版比對第一輪：修掉 4 項行為不一致（2026-11-25，使用者決定先修）。<b>① 立體聲錄音：</b>外掛分析時原本只讀左聲道，改成跟獨立版一樣取第 1、2 聲道的平均；轉單聲道收成 <code>recordingchange::monoOf</code>，獨立版的 <code>analysisCopy</code> 與外掛（<code>ARADocumentController.cpp</code>）共用。單聲道、或左右相同的錄音結果不變。<b>② 接上聲音之後的共用步驟：</b>「更新每顆音的音量、重算吐息齒音標記、沒修過的音重新貼合曲線、字頭氣泡音自動切開」收成 <code>recordingchange::settle</code>，獨立版的 <code>hydrate</code> 與外掛的 <code>hydrateAraRegionProject</code> 都呼叫它（外掛原本只做吐息齒音標記）；錄音被外部改過、重測音高之後，外掛也跟獨立版一樣再切一次。<b>③ 設定：</b>外掛背景用的控制器建立時套用「音高偵測器」與「合成引擎」的設定；分析區段與錄音變更後重測音高之前，再讀一次音高偵測器的設定（開著外掛時改設定也會跟上）。<b>④ 渲染後的重算標記：</b>外掛在背景渲染的是專案的複本，完成後把這次渲染回應的標記從畫面那份專案清掉（<code>Source/Models/RenderMarks.h</code>）；渲染期間又被改過的音、期間新改的音與變大的曲線範圍，標記留著給下一次渲染。<b>驗證：</b>測試 37 項全過，新增 <code>RenderMarksTests</code>（5 組：標記清掉、渲染期間再改的音留著、期間新改的音留著、音符照存檔內容比較、單聲道轉換）與 <code>FryNoteCutsTests</code> 的共用步驟 1 組；獨立版走同一條讀回連結錄音流程的 10 個輸出重算後逐位元組相同，整首規則修音的報告與專案檔逐位元組相同。外掛的程式只做了編譯檢查（<code>PitchNetPlugin</code> 目標，不產生也不安裝 VST3），<b>外掛已在 2026-11-25 03:13 用這一版重建並安裝，還沒有在 Cubase 裡驗過。</b><b>連帶補的：</b>外掛接回聲音時如果切了音符，就清掉那個區段的復原紀錄：紀錄裡的步驟記的是整顆音，復原會把整顆音放回、壓在切開的兩段上。獨立版是開檔時切，那時還沒有紀錄。<b>還留著的一處：</b>接回宿主聲音時，如果那份專案正顯示在鋼琴捲軸上，自動切開先不做（鋼琴捲軸以位址記著音符），其餘 3 步照做；下次那份專案不在畫面上時讀回才會切。</td><td class="num" style="white-space:normal">491c1ad</td></tr>
           </tbody>
         </table>
       </div>
 
       <h3>尚未實作</h3>
       <ul class="plain">
-        <li>音高自動修正：自動折回與 Viterbi 解碼。</li>
-        <li>伸縮層依聲音種類：切回舊設定的開關（<code>warp::setLegacyStretch</code>、<code>PITCHNET_WARP_STRETCH=legacy</code>）與舊的伸縮路徑還留在程式裡，要拿掉還是保留等使用者決定。還沒驗證的情況：Cubase 裡的行為（外掛尚未用這一版重建）、App 開啟舊專案的畫面流程、立體聲錄音、男聲與更低的音域。</li>
-        <li>外掛與獨立版全面比對：所有規則與行為都要一致（獨立版只是開發測試用）。<code>isPluginMode()</code> 分支約 85 處，外掛另有自己的 undo、渲染、存檔路徑，尚未逐一檢查。</li>
-        <li>非 ARA 的 insert 外掛：試聽播放器有同樣的選項，但渲染器規則與實際播放沒有在宿主裡測過（目前只用 ARA）。</li>
+        <li>伸縮層依聲音種類，還沒驗證的情況：Cubase 裡的行為（外掛已在 2026-11-24 重建，等使用者實測）、立體聲錄音、男聲與更低的音域（需要素材）。</li>
+        <li>外掛與獨立版全面比對：所有規則與行為都要一致（獨立版只是開發測試用）。第一輪（2026-11-25）讀完 91 處 <code>isPluginMode()</code> 分支，都屬於宿主本來就該不同的（App 外殼 12、復原管理器由外掛持有 6、播放與游標由宿主控制 24、試聽走宿主預覽 6、沒有自己的音效引擎 5、聲音來自宿主 10、外掛專用入口 16、渲染入口與通知 12）；找到的 4 項行為不一致已修，見上方進度表。<b>第二輪（2026-11-25）讀完剩下的 5 塊：</b>① 播放：外掛與獨立版共用同一套「錄音＋修改片段」（<code>sourceaudio::build</code>、<code>overlay</code>）。有條件的差異 1 項：錄音的取樣率跟宿主輸出不同時，外掛播放用即時的 Lagrange 內插轉換，獨立版是事先用 r8brain 轉好；會不會發生取決於宿主給的來源取樣率，沒有實測。② 每個區段各自的復原紀錄：類別與動作跟獨立版相同，分析完與讀回狀態時清空，沒有發現不一致。③ 區段分割與複製：同一個 audio modification 的所有區段共用一份專案，分割不切專案，複製時整份封存照抄，沒有發現不一致。<code>ProjectRegionSlice.h</code>、<code>ProjectRegionMerge.h</code> 的裁切與合併函式現在只有 2 個測試在用，外掛沒有呼叫；它們不處理手動保留範圍，要留還是清掉待決定。④ 鍵盤：外掛編輯器只管焦點，按鍵由共用的主畫面處理，沒有發現不一致。⑤ 非 ARA 的擷取路徑：見下一項。<b>還沒做的：</b>① 這 4 項修正在 Cubase 裡的實測（外掛已在 2026-11-25 重建）。② 接回宿主聲音時專案正顯示在畫面上的情況，自動切開還沒做。③ 「知道總格數之後要做的事」在讀檔與狀態封存那 2 處（<code>ProjectSerializer</code>）仍然各寫一份，這次只收了接上錄音的那 2 處。④ 上面播放取樣率轉換的差異要不要處理。</li>
+        <li>非 ARA 的 insert 外掛：試聽播放器有同樣的選項，但渲染器規則與實際播放沒有在宿主裡測過（目前只用 ARA）。讀程式（2026-11-25）：擷取自成一套流程，多段擷取照時間位置逐欄位併成一個專案，分析走跟獨立版相同的函式（含自動切開）。不一致 1 項，沒有修：擷取到的聲音保留宿主的聲道數，分析只讀第 1 聲道；獨立版與 ARA 都是第 1、2 聲道平均的單聲道。</li>
+      </ul>
+
+      <h3>擱置</h3>
+      <ul class="plain">
+        <li>音高偵測錯誤的自動修正：自動折回與 Viterbi 解碼。2026-11-25 擱置，依據見第 4 節同名條目。</li>
       </ul>
 
       <h3>已知風險</h3>
@@ -932,6 +940,69 @@ ol.timeline p b { color: var(--fg); font-weight: 600; }
         <div><code>Source/UI/MainComponent.cpp</code>、<code>Source/Audio/ResampledLoopAudition.*</code><span>拖曳試聽改播合成結果，原本變速循環的近似試聽移除。</span></div>
         <div><span class="mono">新增</span><span>伸縮層的資料模型、存檔欄位、伸縮層的介面（游標、錨點、比例顯示、數字輸入、吸附開關）。</span></div>
       </div>
+    </section>
+
+    <section id="timing">
+      <h2><span class="num">13</span>修拍 roadmap（Q13，討論中）</h2>
+      <p>2026-11-25 開始討論。目前只有待定項目，還沒有規則，也沒有任何實作。項目的編號是「第幾層-第幾項」；標「補列」的是整理時補上的，使用者還沒逐項看過。</p>
+      <h3>已確認的前提</h3>
+      <dl class="decisions">
+        <div><dt>最終目的</dt><dd>只提供伴奏，程式就能自主修拍，不需要原唱或導引 MIDI。<span class="why">使用者（2026-11-25）。</span></dd></div>
+        <div><dt>對人聲 guide 與對音樂是兩套判斷</dt><dd>使用者指出（2026-11-25）：兩者的判斷與標準差很多，不能當成只換目標來源。<b>對人聲 guide：</b>每個字都有對應的字，目標是一個確定的時間點，只要判斷離目標多遠。<b>對音樂：</b>沒有逐字的目標，要判斷這個字想落在哪個位置、偏差是唱歪還是表情、修多少、參考格線還是樂器實際的起音、整句一起偏與單一個字偏的差別。</dd></div>
+        <div><dt>分成 3 層</dt><dd>第 1 層找出唱的拍點（每個字實際從哪裡開始）；第 2 層決定目標與要不要修；第 3 層執行（下錨點、伸縮）。第 1、3 層兩種對法共用。第 2 層對音樂與對人聲各一套；對音樂的那一套跟伴奏分析綁在一起，要一起討論。</dd></div>
+        <div><dt>不採用</dt><dd>用煙幕的導引 MIDI 當拍點目標。<span class="why">那樣修拍就離不開 guide，驗不到最終目的。</span></dd></div>
+        <div><dt>現況</dt><dd>伸縮層已經有錨點與依聲音種類選伸縮方法（第 3、4 節），使用者試聽過 0.80～1.33 倍。修音規則已有（第 9 節），修拍規則沒有。現有的專案檔沒有對拍用的錨點（對齊原唱的 lv 版與 v18 都是 0 個）。</dd></div>
+      </dl>
+      <h3>架構順序：3 層與各層的待定項目</h3>
+      <dl class="decisions">
+        <div><dt>第 1 層：找出唱的拍點</dt><dd>兩種對法共用。
+            <ol class="steps">
+              <li><b>1-1</b>　字的哪個位置算「在拍上」：子音開頭，還是母音起點。先查聽覺研究的文獻，再對照使用者平常的做法。</li>
+              <li><b>1-2</b>　怎麼找出每個字的起點：現有的音符邊界、齒音與吐息標記夠不夠，還是要另外做起音偵測。（補列）</li>
+              <li><b>1-3</b>　一個字有多顆音（轉音）時哪一顆算拍點；連唱、沒有子音的字怎麼分開。（補列）</li>
+            </ol></dd></div>
+        <div><dt>第 2 層 A：對音樂，決定目標與要不要修</dt><dd>最終目的走這一套。
+            <ol class="steps">
+              <li><b>2A-1</b>　使用者手動對拍時聽的是什麼：鼓、bass、整體律動，還是看格線。</li>
+              <li><b>2A-2</b>　怎麼分辨唱歪與表情，哪些情況刻意不修。</li>
+              <li><b>2A-3</b>　修到貼齊，還是只拉回一部分。</li>
+              <li><b>2A-4</b>　要從伴奏分析出什麼（速度與拍點、小節、細分與 swing、樂器實際的起音）、用什麼方法、準確度多少。方法與準確度要上網查證，並用實際的伴奏素材測。</li>
+              <li><b>2A-5</b>　每個字想落在哪個位置怎麼判定：正拍、反拍、十六分、三連音、搶拍與拖拍的切分。</li>
+              <li><b>2A-6</b>　整句一起偏與其中一個字偏，各怎麼處理。</li>
+              <li><b>2A-7</b>　目標怎麼表示：一個時間點，還是「目標時間＋容許範圍」。這決定第 3 層能不能讓兩種對法共用。</li>
+            </ol></dd></div>
+        <div><dt>第 2 層 B：對人聲，合音對主唱</dt><dd>另一個功能（自動對齊合音），排在對音樂之後，不當成對音樂的前置步驟。
+            <ol class="steps">
+              <li><b>2B-1</b>　主唱與合音的字怎麼配對。（補列）</li>
+              <li><b>2B-2</b>　對到多準、保留多少差異。（補列）</li>
+              <li><b>2B-3</b>　範圍：只對字頭，還是連字尾與氣口一起。（補列）</li>
+            </ol></dd></div>
+        <div><dt>第 3 層：執行</dt><dd>兩種對法共用。
+            <ol class="steps">
+              <li><b>3-1</b>　錨點下在哪：字頭、字尾、句子邊界，一個字幾個。</li>
+              <li><b>3-2</b>　不能被拉扯的部分怎麼保護：子音、吐息、保留錄音的氣泡音。</li>
+              <li><b>3-3</b>　伸縮倍率的上限：試聽過的是 0.80～1.33 倍，超過時不修還是回報。（補列）</li>
+              <li><b>3-4</b>　字移動之後，跟前後的字與休止怎麼銜接。（補列）</li>
+              <li><b>3-5</b>　修拍與修音的先後順序。（補列）</li>
+              <li><b>3-6</b>　參考答案與回歸比對：要有一份使用者認可的對拍結果，規則每改一次整首重跑比對（比照第 9 節的修音規則）。「對齊原唱」的 wav 是不是使用者在 Cubase 手動對拍後匯出的，待使用者確認；它對的是原唱（人聲），適不適合拿來驗對音樂的規則也要定。</li>
+              <li><b>3-7</b>　做成什麼：App 裡的功能、agent 用的工具，或兩者；外掛要跟獨立版一致。（補列）</li>
+            </ol></dd></div>
+      </dl>
+      <h3>討論順序</h3>
+      <ol class="steps">
+        <li><b>使用者的對拍標準</b>（2A-1、2A-2、2A-3）。排第一，因為它決定要從伴奏分析什麼。</li>
+        <li><b>參考答案從哪來</b>（3-6）。同樣要使用者提供，而且之後每一條規則都靠它驗。</li>
+        <li><b>參考產品的功能對照。</b>使用者提供的連結（ourdaysrecords.com/class/product/cutjiang/）還沒讀。讀完把它的功能逐項歸到 3 層裡，補進這份清單。使用者感興趣的 2 項：只給伴奏就能修音、自動對齊合音。</li>
+        <li><b>第 1 層</b>：拍點位置（1-1，先查文獻）、起點偵測（1-2、1-3）。</li>
+        <li><b>伴奏分析的可行性</b>（2A-4）：查證方法，用實際的伴奏素材測。</li>
+        <li><b>對音樂的目標判定</b>（2A-5、2A-6、2A-7）。</li>
+        <li><b>第 3 層執行</b>（3-1～3-5）。</li>
+        <li><b>成品形態</b>（3-7）。</li>
+        <li><b>合音對主唱</b>（2B-1～2B-3）。</li>
+      </ol>
+      <p>「只給伴奏就能修音」的音高部分（目標音從伴奏的調性與和弦推出來）屬於修音，另外討論，不在這份 roadmap 裡。</p>
+      <h3>實作順序</h3>
+      <p>第 1 層與第 3 層兩種對法都用得到，可以在第 2 層定案之前先做。尚未開始。</p>
     </section>
   </main>
 </div>
