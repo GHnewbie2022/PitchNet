@@ -14,6 +14,7 @@
 // <prefix>_*.png, with a drag of the first anchor pushed past its limit.
 #include "../../Source/Audio/SourceAudio.h"
 #include "../../Source/Utils/FryDetector.h"
+#include "../../Source/Utils/FryNoteCuts.h"
 #include "../../Source/Audio/RecordingChange.h"
 #include "../../Source/Audio/PitchEnsemble.h"
 #include "../../Source/Audio/EditorController.h"
@@ -30,7 +31,9 @@
 #include "../../Source/Utils/ScaleUtils.h"
 #include "../../Source/Undo/NoteActions.h"
 #include "../../Source/Undo/PitchUndoManager.h"
+#include "../../Source/Undo/SynthChoiceAction.h"
 #include "../../Source/UI/PianoRollComponent.h"
+#include "../../Source/Audio/NoteTiming.h"
 #include "../../Source/UI/ParameterPanel.h"
 #include "../../Source/UI/ToolbarComponent.h"
 #include "../../Source/UI/PianoRoll/NoteSplitter.h"
@@ -1454,7 +1457,12 @@ int main(int argc, char **argv)
   // not laid out again. Read before any project is.
   if (const char *stretch = std::getenv("PITCHNET_WARP_STRETCH"))
     warp::setLegacyStretch(juce::String(stretch) == "legacy");
-  // WarpRender <in.pitchnet> <out.pitchnet> --app-op split|merge|delete
+  // PITCHNET_FRY_CUT=0: notes are not cut where the fry a word starts with
+  // begins (FryNoteCuts.h) - a project opens as it did before that was done,
+  // to compare with. Read before any project is.
+  if (const char *fryCut = std::getenv("PITCHNET_FRY_CUT"))
+    frycut::setEnabled(juce::String(fryCut) != "0");
+  // WarpRender <in.pitchnet> <out.pitchnet> --app-op split|merge|delete|engine
   // <noteStart> [splitFrame]: the App's own note edit, saved without
   // synthesis, as the reference an agent's direct JSON edit is checked against.
   if (argc >= 6 && juce::String::fromUTF8(argv[3]) == "--app-op")
@@ -1465,6 +1473,11 @@ int main(int argc, char **argv)
       std::fprintf(stderr, "could not load\n");
       return 1;
     }
+    // A project that links its recording has no audio until the recording
+    // is attached, as the App attaches it on open: saved without, the file
+    // came out with neither the audio nor the link (and nothing could go on
+    // from it).
+    sourceaudio::attachRecording(project, input);
     PitchCurveProcessor::rebuildBaseFromNotes(project);
     const juce::String op = juce::String::fromUTF8(argv[4]);
     const int start = juce::String::fromUTF8(argv[5]).getIntValue();
@@ -1487,6 +1500,24 @@ int main(int argc, char **argv)
       ok = splitter.splitNoteAtFrame(note, juce::String::fromUTF8(argv[6]).getIntValue());
     else if (op == "merge")
       ok = splitter.mergeNotes(note, noteAt(note->getEndFrame()));
+    else if (op == "engine" && argc >= 7)
+    {
+      // ... --app-op engine <noteStart> auto|highs|fry|r3: the choice of the
+      // synthesis menu on that note, made by the App's own action
+      // (SynthChoiceAction): the pitch curve moves where the note becomes
+      // whole as recorded or stops being so. (PITCHNET_RESYNTH_NOTE_ENGINE
+      // sets the field alone and leaves the curve.)
+      const juce::String way = juce::String::fromUTF8(argv[6]);
+      const auto engine = way == "r3"      ? Note::SynthEngine::RubberBand
+                          : way == "highs" ? Note::SynthEngine::VocoderRecordedHighs
+                          : way == "fry"   ? Note::SynthEngine::VocoderRecordedHighsFry
+                                           : Note::SynthEngine::Auto;
+      const std::vector<Note *> one{note};
+      SynthChoiceAction(project, one, SynthChoiceAction::current(one),
+                        {SynthChoice::ofMenu(*note, engine)}, "Set Synthesis Engine")
+          .redo();
+      ok = true;
+    }
     else if (op == "delete")
     {
       std::vector<Note> removed{*note};
@@ -2948,9 +2979,67 @@ int main(int argc, char **argv)
           ++counts["fix-join"];
           break;
         }
+    // A note cut where the fry it starts with begins (FryNoteCuts.h) left the
+    // frames before the fry as a note of their own, with no voiced frame to
+    // judge ("no-voiced" above). It goes with the note it led into, so that
+    // the two move as the one note they were: left where it was, the base
+    // took a step between them, and the note before glided up to 17 cents
+    // off over its last two frames (煙幕 at 1:19.3).
+    struct Lead
+    {
+      Note *note;
+      Note *into;
+      Note before;   // the lead as it was
+      float intoWas; // the centre of the note it leads into, before
+    };
+    std::vector<Lead> leads;
+    for (const auto &[first, last] : fry::onsets(project.getAudioData().rawF0))
+    {
+      juce::ignoreUnused(last);
+      Note *lead = nullptr;
+      Note *into = nullptr;
+      for (auto &n : project.getNotes())
+      {
+        if (n.isRest())
+          continue;
+        if (n.getSrcEndFrame() == first)
+          lead = &n;
+        if (n.getSrcStartFrame() == first)
+          into = &n;
+      }
+      const auto plan = std::find_if(plans.begin(), plans.end(),
+                                     [&](const Plan &p) { return p.note == into; });
+      const auto own = std::find_if(plans.begin(), plans.end(),
+                                    [&](const Plan &p) { return p.note == lead; });
+      // Only such a piece: a note that sings and happens to end where the
+      // fry begins is judged on its own.
+      bool silent = lead != nullptr;
+      for (int f = lead != nullptr ? lead->getStartFrame() : 0;
+           silent && f < lead->getEndFrame(); ++f)
+        if (f >= 0 && static_cast<size_t>(f) < recorded.size() &&
+            !std::isnan(recorded[static_cast<size_t>(f)]))
+          silent = false;
+      if (silent && into != nullptr && plan != plans.end() && own == plans.end())
+        leads.push_back({lead, into, *lead, plan->before.getMidiNote()});
+    }
+    // A note put back where it was ("over-shift" below) takes its lead back
+    // with it, untouched.
+    const auto leadsFollow = [&] {
+      for (const auto &lead : leads)
+      {
+        const float shift = lead.into->getMidiNote() - lead.intoWas;
+        *lead.note = lead.before;
+        if (shift != 0.0f)
+        {
+          lead.note->setMidiNote(lead.before.getMidiNote() + shift);
+          lead.note->markDirty();
+        }
+      }
+    };
     // Shift: measure on the rebuilt curve, correct, three times.
     for (int pass = 0; pass < 3; ++pass)
     {
+      leadsFollow();
       PitchCurveProcessor::rebuildBaseFromNotes(project);
       for (const auto &plan : plans)
       {
@@ -3074,6 +3163,7 @@ int main(int argc, char **argv)
                     plan.note->getStartFrame(), plan.before.getMidiNote(),
                     (plan.note->getMidiNote() - plan.before.getMidiNote()) * 100.0f, plan.target);
     }
+    leadsFollow();
     PitchCurveProcessor::rebuildBaseFromNotes(project);
     for (const auto &plan : plans)
       std::printf("fix-%s\t%s\t%d\t%.2f\t%.2f\t%s\n", plan.how.toRawUTF8(),
@@ -3258,13 +3348,41 @@ int main(int argc, char **argv)
     if (!ProjectSerializer::loadFromFile(project, input))
       return 1;
     sourceaudio::attachRecording(project, input);
-    if (argc >= 6)
+    if (argc >= 6 && !juce::String::fromUTF8(argv[5]).startsWith("--"))
     {
       juce::StringArray indices;
       indices.addTokens(juce::String::fromUTF8(argv[5]), ",", "");
       for (const auto &index : indices)
         project.getNotes()[static_cast<size_t>(index.getIntValue())].setSynthEngine(
             Note::SynthEngine::RubberBand);
+    }
+    // ... --hover <note>: with the pointer on that note (index in the
+    // project), so its handles are drawn - the green squares of what it
+    // keeps as recorded among them. --keep <note>:<head>:<tail>: that note
+    // marked by hand first (frames from its start, up to its end, 0 for
+    // none). --told <note>: told from the menu to keep its fry.
+    int hoverIndex = -1;
+    for (int k = 5; k + 1 < argc; ++k)
+    {
+      const juce::String arg = juce::String::fromUTF8(argv[k]);
+      const juce::String value = juce::String::fromUTF8(argv[k + 1]);
+      if (arg == "--hover")
+        hoverIndex = value.getIntValue();
+      else if (arg == "--told")
+        project.getNotes()[static_cast<size_t>(value.getIntValue())].setSynthEngine(
+            Note::SynthEngine::VocoderRecordedHighsFry);
+      else if (arg == "--keep")
+      {
+        juce::StringArray parts;
+        parts.addTokens(value, ":", "");
+        if (parts.size() >= 3)
+        {
+          auto &note = project.getNotes()[static_cast<size_t>(parts[0].getIntValue())];
+          const int head = parts[1].getIntValue(), tail = parts[2].getIntValue();
+          note.setKeptRange(head > 0 ? note.getSrcStartFrame() + head : Note::kKeepsNone,
+                            tail > 0 ? note.getSrcEndFrame() - tail : Note::kKeepsNone);
+        }
+      }
     }
     const juce::String range = juce::String::fromUTF8(argv[4]);
     const double from = range.upToFirstOccurrenceOf(":", false, false).getDoubleValue();
@@ -3284,6 +3402,32 @@ int main(int argc, char **argv)
         high = std::max(high, note.getMidiNote());
       }
     roll.centerOnPitchRange(low - 2.0f, high + 2.0f);
+    if (hoverIndex >= 0 && hoverIndex < static_cast<int>(project.getNotes().size()))
+    {
+      const auto &note = project.getNotes()[static_cast<size_t>(hoverIndex)];
+      auto &context = roll.getInteractionContext();
+      roll.setEditMode(EditMode::Select);
+      const juce::Point<float> at(
+          (note.getStartFrame() + note.getEndFrame()) * 0.5f * HOP_SIZE / SAMPLE_RATE *
+                  roll.getPixelsPerSecond() -
+              static_cast<float>(roll.getScrollX()) + PianoRollComponent::pianoKeysWidth,
+          context.midiToY(note.getAdjustedMidiNote()) + roll.getPixelsPerSemitone() * 0.5f -
+              static_cast<float>(roll.getScrollY()) + PianoRollComponent::headerHeight);
+      roll.mouseMove(mouseAt(roll, at, at, {}));
+      const auto found = fry::find(project.getAudioData());
+      const auto shown = fry::shownRange(note, project.getNotes(),
+                                         project.getAudioData().rawF0, found);
+      std::printf("hover note %d: src %d-%d, engine %d, by hand %d, squares at src %d and %d\n",
+                  hoverIndex, note.getSrcStartFrame(), note.getSrcEndFrame(),
+                  static_cast<int>(note.getSynthEngine()), note.hasKeptRange() ? 1 : 0,
+                  shown.headUntil, shown.tailFrom);
+      for (const auto &handle : context.pitchToolHandles->getHandles())
+        if (PitchToolController::isKeepHandle(handle.type))
+          std::printf("  %s square: x %.1f-%.1f, y %.1f-%.1f (world)\n",
+                      handle.type == PitchToolHandles::HandleType::KeepHead ? "left" : "right",
+                      handle.bounds.getX(), handle.bounds.getRight(), handle.bounds.getY(),
+                      handle.bounds.getBottom());
+    }
     std::printf("shot %s\n", writePng(roll, output) ? "ok" : "FAILED");
     return 0;
   }
@@ -3866,6 +4010,156 @@ int main(int argc, char **argv)
     controller.requestShutdown();
     return saved ? 0 : 1;
   }
+  // WarpRender <in.pitchnet> <out.pitchnet> --keep-drag <noteStart> head|tail
+  // <frames> [...] [--undo] [--shot <out.png>]: the App's drag of a note's
+  // green square (the stretch kept as recorded by hand), through the piano
+  // roll's own mouse handling - the pointer onto the note, the square taken
+  // hold of, moved by `frames` frames of the recording (the left one right,
+  // the right one left, for a positive count), let go - each rendered as the
+  // App renders after it. --undo takes the last one back the same way.
+  // Prints the note's choice before and after; saves the project.
+  if (argc >= 7 && juce::String::fromUTF8(argv[3]) == "--keep-drag")
+  {
+    Project loaded;
+    if (!ProjectSerializer::loadFromFile(loaded, input))
+      return 1;
+    sourceaudio::attachRecording(loaded, input);
+    juce::String ortError;
+    if (!OnnxRuntime::initialise(&ortError))
+      return 1;
+    EditorController controller(false);
+    controller.setProject(std::make_unique<Project>(loaded));
+    auto &p = *controller.getProject();
+    auto &data = p.getAudioData();
+    if (data.melSpectrogram.empty())
+    {
+      MelSpectrogram mel(data.sampleRate, N_FFT, HOP_SIZE, NUM_MELS, FMIN, FMAX);
+      data.melSpectrogram = mel.compute(data.originalWaveform.getReadPointer(0),
+                                        data.originalWaveform.getNumSamples());
+    }
+    PianoRollComponent roll;
+    PitchUndoManager history;
+    roll.setSize(1400, 700);
+    roll.setProject(&p);
+    roll.setUndoManager(&history);
+    roll.setEditMode(EditMode::Select);
+    auto &context = roll.getInteractionContext();
+    const juce::ModifierKeys left(juce::ModifierKeys::leftButtonModifier);
+    const auto render = [&](const char *what)
+    {
+      std::atomic<bool> pending{false}, done{false}, ok{false};
+      controller.resynthesizeIncrementalAsync(
+          p, nullptr, [&](bool success) { ok = success; done = true; }, pending, false);
+      const bool finished = waitFor(done, 600000);
+      std::printf("%s: render %s\n", what, finished && ok.load() ? "ok" : "failed");
+    };
+    const auto say = [](const char *when, const Note &note)
+    {
+      std::printf("  %s: engine %d, by hand %d, head until %d, tail from %d (src %d-%d)\n",
+                  when, static_cast<int>(note.getSynthEngine()), note.hasKeptRange() ? 1 : 0,
+                  note.getKeptHeadUntil(), note.getKeptTailFrom(), note.getSrcStartFrame(),
+                  note.getSrcEndFrame());
+    };
+    const auto onScreen = [&](juce::Point<float> world)
+    {
+      return juce::Point<float>(
+          world.x + PianoRollComponent::pianoKeysWidth - static_cast<float>(roll.getScrollX()),
+          world.y + PianoRollComponent::headerHeight - static_cast<float>(roll.getScrollY()));
+    };
+    juce::File shotFile;
+    int shotNote = -1;
+    for (int k = 4; k < argc; ++k)
+    {
+      const juce::String arg = juce::String::fromUTF8(argv[k]);
+      if (arg == "--undo")
+      {
+        history.undo();
+        render("undo");
+        continue;
+      }
+      if (arg == "--shot" && k + 1 < argc)
+      {
+        shotFile = juce::File::getCurrentWorkingDirectory().getChildFile(
+            juce::String::fromUTF8(argv[++k]));
+        continue;
+      }
+      if (k + 2 >= argc)
+        break;
+      const int start = arg.getIntValue();
+      const bool head = juce::String::fromUTF8(argv[k + 1]) == "head";
+      const int frames = juce::String::fromUTF8(argv[k + 2]).getIntValue();
+      k += 2;
+      Note *note = nullptr;
+      for (auto &n : p.getNotes())
+        if (!n.isRest() && n.getStartFrame() == start)
+          note = &n;
+      if (note == nullptr)
+      {
+        std::fprintf(stderr, "no note starts at %d\n", start);
+        return 1;
+      }
+      shotNote = start;
+      // The note 600 px wide on screen, 300 px from the left.
+      const double seconds =
+          std::max(0.02, (note->getEndFrame() - note->getStartFrame()) * double(HOP_SIZE) / SAMPLE_RATE);
+      roll.setPixelsPerSecond(static_cast<float>(std::min(2000.0, 600.0 / seconds)));
+      const float pps = roll.getPixelsPerSecond();
+      roll.setScrollX(std::max(0.0, note->getStartFrame() * double(HOP_SIZE) / SAMPLE_RATE * pps - 300.0));
+      roll.centerOnPitchRange(note->getAdjustedMidiNote() - 2.0f, note->getAdjustedMidiNote() + 2.0f);
+      const auto map = notetiming::forNoteOnScreen(data, *note);
+      const auto xOf = [&](int sourceFrame)
+      {
+        return framesToSeconds(static_cast<float>(map.destinationAt(sourceFrame))) * pps;
+      };
+      const juce::Point<float> body(
+          (xOf(note->getSrcStartFrame()) + xOf(note->getSrcEndFrame())) * 0.5f,
+          context.midiToY(note->getAdjustedMidiNote()) + roll.getPixelsPerSemitone() * 0.5f);
+      roll.mouseMove(mouseAt(roll, onScreen(body), onScreen(body), {}));
+      const auto shown = fry::shownRange(*note, p.getNotes(), data.rawF0, fry::find(data));
+      const auto type = head ? PitchToolHandles::HandleType::KeepHead
+                             : PitchToolHandles::HandleType::KeepTail;
+      const PitchToolHandles::Handle *square = nullptr;
+      for (const auto &handle : context.pitchToolHandles->getHandles())
+        if (handle.type == type)
+          square = &handle;
+      if (square == nullptr)
+      {
+        std::fprintf(stderr, "no square on the note at %d\n", start);
+        return 1;
+      }
+      std::printf("drag @%d %s by %d frames\n", start, head ? "head" : "tail", frames);
+      say("before", *note);
+      const int from = head ? shown.headUntil : shown.tailFrom;
+      const int to = head ? from + frames : from - frames;
+      const auto grab = onScreen(square->bounds.getCentre());
+      const auto release = grab.translated(xOf(to) - xOf(from), 0.0f);
+      roll.mouseMove(mouseAt(roll, grab, grab, {}));
+      roll.mouseDown(mouseAt(roll, grab, grab, left));
+      roll.mouseDrag(mouseAt(roll, release, grab, left));
+      roll.mouseUp(mouseAt(roll, release, grab, {}));
+      say("after", *note);
+      std::printf("  history: %s\n", history.canUndo() ? "one step" : "nothing");
+      render("drag");
+    }
+    if (shotFile != juce::File() && shotNote >= 0)
+    {
+      for (const auto &n : p.getNotes())
+        if (!n.isRest() && n.getStartFrame() == shotNote)
+        {
+          const juce::Point<float> body(
+              (n.getStartFrame() + n.getEndFrame()) * 0.5f * HOP_SIZE / SAMPLE_RATE *
+                  roll.getPixelsPerSecond(),
+              context.midiToY(n.getAdjustedMidiNote()) + roll.getPixelsPerSemitone() * 0.5f);
+          roll.mouseMove(mouseAt(roll, onScreen({8.0f, body.y - 300.0f}), onScreen(body), {}));
+          roll.mouseMove(mouseAt(roll, onScreen(body), onScreen(body), {}));
+        }
+      std::printf("shot %s\n", writePng(roll, shotFile) ? "ok" : "FAILED");
+    }
+    roll.setProject(nullptr);
+    const bool saved = ProjectSerializer::saveToFile(p, output);
+    controller.requestShutdown();
+    return saved ? 0 : 1;
+  }
   // WarpRender <in.pitchnet> <out-prefix> --reset-undo pitch|all <noteStart>...:
   // the App's Restore on the selected notes, then undo, each rendered as the
   // App renders after a history change (afterHistoryChange). Writes the
@@ -4268,6 +4562,43 @@ int main(int argc, char **argv)
           }
         std::printf("voiced frames no longer noise: %d\n", cleared);
       }
+      // PITCHNET_RESYNTH_KEEP=<noteStart>:<head>:<tail>[,...]: the stretches
+      // these notes keep as recorded by hand (the two green squares): `head`
+      // frames of the recording from the note's start, `tail` up to its end,
+      // 0 for none. Made as the App makes it (SynthChoiceAction), so the
+      // pitch curve follows where a note becomes whole.
+      if (const char *keep = std::getenv("PITCHNET_RESYNTH_KEEP"))
+      {
+        juce::StringArray entries;
+        entries.addTokens(juce::String(keep), ",", "");
+        for (const auto &entry : entries)
+        {
+          juce::StringArray parts;
+          parts.addTokens(entry, ":", "");
+          if (parts.size() < 3)
+            continue;
+          Note *target = nullptr;
+          for (auto &note : p.getNotes())
+            if (!note.isRest() && note.getStartFrame() == parts[0].getIntValue())
+              target = &note;
+          if (target == nullptr)
+          {
+            std::fprintf(stderr, "keep: no note starts at %d\n", parts[0].getIntValue());
+            return 1;
+          }
+          const int head = parts[1].getIntValue(), tail = parts[2].getIntValue();
+          const std::vector<Note *> one{target};
+          SynthChoiceAction(p, one, SynthChoiceAction::current(one),
+                            {SynthChoice::byHand(
+                                head > 0 ? target->getSrcStartFrame() + head : Note::kKeepsNone,
+                                tail > 0 ? target->getSrcEndFrame() - tail : Note::kKeepsNone)},
+                            "Set Kept Range")
+              .redo();
+          std::printf("keep @%d src %d-%d: head %d, tail %d%s\n", target->getStartFrame(),
+                      target->getSrcStartFrame(), target->getSrcEndFrame(), head, tail,
+                      fry::wholeByHand(*target) ? " (whole)" : "");
+        }
+      }
       // PITCHNET_FRY_LIST=1: the vocal fry found in the recording (frames
       // and seconds of the recording), and what of it the notes left on Auto
       // keep as recorded. PITCHNET_FRY_LIST=only stops after the list.
@@ -4286,6 +4617,21 @@ int main(int argc, char **argv)
         list("onset", starts);
         list("onset kept", fry::keptOnsets(p.getNotes(), starts));
         list("told kept", fry::keptAsTold(p.getNotes(), fry::Found{ends, starts}));
+        // The notes marked by hand, and everything the synthesizer is told
+        // stays the recording (what it renders by, fry::keptAsRecorded).
+        for (const auto &note : p.getNotes())
+          if (fry::byHand(note))
+          {
+            const auto head = fry::handHead(note), tail = fry::handTail(note);
+            std::printf("fry by hand @%d src %d-%d: start %d-%d, end %d-%d%s\n",
+                        note.getStartFrame(), note.getSrcStartFrame(),
+                        note.getSrcEndFrame(), head.first, head.second, tail.first,
+                        tail.second, fry::wholeByHand(note) ? " (whole)" : "");
+          }
+        const auto keptNow =
+            fry::keptAsRecorded(p.getNotes(), data.rawF0, fry::Found{ends, starts});
+        list("kept in all", keptNow.all);
+        list("kept as a head", keptNow.heads);
         if (juce::String(fryList) == "only")
           return 0;
       }
