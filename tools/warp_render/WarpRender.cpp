@@ -1451,12 +1451,6 @@ int main(int argc, char **argv)
       juce::String::fromUTF8(argv[1]));
   const juce::File output = juce::File::getCurrentWorkingDirectory().getChildFile(
       juce::String::fromUTF8(argv[2]));
-  // PITCHNET_WARP_STRETCH=legacy: stretched audio as before the stretch went
-  // by kind (WarpedSource.h) - signalsmith's default for voice, breath and
-  // fry alike - and a project stretched that way is opened as it was saved,
-  // not laid out again. Read before any project is.
-  if (const char *stretch = std::getenv("PITCHNET_WARP_STRETCH"))
-    warp::setLegacyStretch(juce::String(stretch) == "legacy");
   // PITCHNET_FRY_CUT=0: notes are not cut where the fry a word starts with
   // begins (FryNoteCuts.h) - a project opens as it did before that was done,
   // to compare with. Read before any project is.

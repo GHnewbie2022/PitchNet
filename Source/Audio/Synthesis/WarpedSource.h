@@ -82,13 +82,6 @@ enum class SourceKind : std::uint8_t
   Pulses = 2, // vocal fry
 };
 
-/**
- * Listening tests only (WarpRender): true stretches everything with
- * signalsmith's default as before the kinds, so the two can be told apart.
- */
-void setLegacyStretch(bool legacy);
-bool legacyStretch();
-
 struct StretchedRun
 {
   int startSample = 0; // timeline samples [startSample, endSample)

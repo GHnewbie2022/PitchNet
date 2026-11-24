@@ -311,18 +311,12 @@ void olderStretchedProjectsKeepTheirReference()
   CHECK(!reopened.getAudioData().warpLayoutPending);
 
   // A format 8 file was stretched with one setting for everything: stretched,
-  // it is laid out again as it is opened (the stretch by kind, WarpedSource.h),
-  // unless a listening test asks for the old stretch.
+  // it is laid out again as it is opened (the stretch by kind, WarpedSource.h).
   json.getDynamicObject()->setProperty("formatVersion", 8);
   json.getProperty("warp", juce::var()).getDynamicObject()->removeProperty("stretch");
   Project eight;
   CHECK(ProjectSerializer::fromJson(eight, json));
   CHECK(eight.getAudioData().warpLayoutPending);
-  warp::setLegacyStretch(true);
-  Project eightAsItWas;
-  CHECK(ProjectSerializer::fromJson(eightAsItWas, json));
-  CHECK(!eightAsItWas.getAudioData().warpLayoutPending);
-  warp::setLegacyStretch(false);
 
   // A format 7 file has no such word: stretched, it was rendered onto the
   // separate stretch; unstretched, its first layout is the one stretch.

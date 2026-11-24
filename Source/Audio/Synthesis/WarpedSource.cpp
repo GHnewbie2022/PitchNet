@@ -20,8 +20,6 @@ constexpr double kUnityTolerance = 1.0e-6;
 constexpr double kVoiceWindowSeconds = 0.035;
 constexpr double kVoiceHopSeconds = 0.009;
 
-std::atomic<bool> legacyStretchFlag{false};
-
 // signalsmith reads inputs[channel][index]; this reads the recording from an
 // absolute offset and is silent outside it.
 struct SourceReader
@@ -68,11 +66,8 @@ void stretchRange(const float *source, int sourceSamples, InputAt inputAt,
     return;
 
   signalsmith::stretch::SignalsmithStretch<float> stretch(settings.seed);
-  if (legacyStretchFlag.load())
-    stretch.presetDefault(1, static_cast<float>(settings.sampleRate));
-  else
-    stretch.configure(1, static_cast<int>(settings.sampleRate * kVoiceWindowSeconds),
-                      static_cast<int>(settings.sampleRate * kVoiceHopSeconds));
+  stretch.configure(1, static_cast<int>(settings.sampleRate * kVoiceWindowSeconds),
+                    static_cast<int>(settings.sampleRate * kVoiceHopSeconds));
   const int inputLatency = stretch.inputLatency();
   const int outputLatency = stretch.outputLatency();
 
@@ -364,9 +359,6 @@ void layKindsOver(const float *source, int sourceSamples,
 }
 } // namespace
 
-void setLegacyStretch(bool legacy) { legacyStretchFlag.store(legacy); }
-bool legacyStretch() { return legacyStretchFlag.load(); }
-
 std::vector<StretchedRun> renderWarpedSource(const float *source,
                                              int sourceSamples,
                                              const WarpMap &map,
@@ -450,7 +442,7 @@ std::vector<StretchedRun> renderWarpedSource(const float *source,
     rendered.assign(static_cast<size_t>(last - first), 0.0f);
     stretchRange(source, sourceSamples, inputAt, first, last, rendered.data(),
                  settings);
-    if (settings.kinds != nullptr && !settings.kinds->empty() && !legacyStretchFlag.load())
+    if (settings.kinds != nullptr && !settings.kinds->empty())
     {
       auto spans = kindSpans(map, hop, *settings.kinds, segments, core.startSample,
                              core.endSample);
@@ -471,12 +463,10 @@ std::vector<StretchedRun> renderWarpedSource(const float *source,
         fadeOut ? handOverWindow(output, rendered.data(), first,
                                  core.endSample, last, fade, false)
                 : last;
-    // The old stretch stays as it was, to the sample.
-    const bool keepLevel = !legacyStretchFlag.load();
     const auto likenessAcross = [&](int from)
     {
       const int length = std::min(fade, std::min(last, outputSamples) - from);
-      return keepLevel && length > 0
+      return length > 0
                  ? likeness(output, 0, rendered.data(), first, from, length)
                  : 1.0;
     };
@@ -505,7 +495,7 @@ std::vector<StretchedRun> renderWarpedSource(const float *source,
       }
       const float stretched = rendered[static_cast<size_t>(sample - first)];
       output[sample] += amount * (stretched - output[sample]);
-      if (keepLevel && amount < 1.0f)
+      if (amount < 1.0f)
         output[sample] = static_cast<float>(levelGain(amount, like) * output[sample]);
     }
     runs.push_back({first, last});

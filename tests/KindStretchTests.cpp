@@ -453,12 +453,7 @@ void eachKindIsLaidOverItsOwnFramesOnly()
   std::printf("kinds: a recorded pulse found in the fry at correlation %.3f\n", best);
   CHECK(best > 0.98);
 
-  // With the old stretch the kinds are not looked at.
-  warp::setLegacyStretch(true);
-  const auto legacy = render(source, layout.map, nullptr);
-  CHECK(render(source, layout.map, &kinds) == legacy);
-  warp::setLegacyStretch(false);
-  CHECK(legacy != plain);
+  // The same again: nothing is kept from one rendering to the next.
   CHECK(render(source, layout.map, &kinds) == laid);
 }
 
