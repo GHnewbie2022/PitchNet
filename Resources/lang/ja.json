@@ -129,6 +129,8 @@
   "handle.amplitude": "振幅",
   "handle.fine_pitch": "ピッチ微調整（セント）",
   "handle.formant": "フォルマントシフト",
+  "handle.keep_head": "先頭の録音を保持（右へドラッグ）",
+  "handle.keep_tail": "末尾の録音を保持（左へドラッグ）",
   "handle.pitch_drift": "ピッチドリフト",
   "handle.sibilant_balance": "歯擦音バランス",
   "handle.tilt_left": "左の傾き（Option で回転）",

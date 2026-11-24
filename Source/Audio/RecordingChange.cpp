@@ -7,6 +7,7 @@
 #include "../Utils/AudioResampler.h"
 #include "../Utils/Constants.h"
 #include "../Utils/F0Smoother.h"
+#include "../Utils/FryNoteCuts.h"
 #include "../Utils/MelSpectrogram.h"
 #include "../Utils/NoteAmplitude.h"
 #include "../Utils/PitchCurveProcessor.h"
@@ -333,6 +334,9 @@ bool hydrate(Project &project)
   breathsibilance::ensure(audioData);
   // As ProjectSerializer::loadFromFile, now that the frames are known.
   PitchCurveProcessor::refitUntouchedCurves(project, 0, audioData.getNumFrames());
+  // ...and a note is cut where the fry a word starts with begins
+  // (FryNoteCuts.h): a project saved before that was done opens cut.
+  frycut::apply(project);
   return true;
 }
 
@@ -646,6 +650,11 @@ Opened openLinked(Project &project, const juce::File &file, const Detect &detect
   // rewritten with the same samples (only its header or markers changed)
   // still changes nothing.
   opened.update = apply(project, saved, detect);
+  // The pitch detected again can start a word in fry where it did not: the
+  // note there is cut as hydrate() cut the others (FryNoteCuts.h). Here and
+  // not in apply(): the plug-in applies a changed recording to a project
+  // its piano roll may be showing.
+  frycut::apply(project);
   opened.changed = !opened.update.audioFrames.empty();
   const auto sha = SHA256Utils::fileSHA256(file);
   if (opened.changed || !sha.equalsIgnoreCase(project.getAudioSha256()))

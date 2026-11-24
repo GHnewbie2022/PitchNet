@@ -33,6 +33,7 @@ set(PITCHNET_TEST_SOURCES
     RecordingChangeTests.cpp
     HighBandRestoreTests.cpp
     FryDetectorTests.cpp
+    FryNoteCutsTests.cpp
     RubberBandShiftTests.cpp
     TiltPivotTests.cpp
     TimelineCoordinateTests.cpp
@@ -93,6 +94,11 @@ add_executable(TrackGestureTests TrackGestureTests.cpp)
 target_link_libraries(TrackGestureTests PRIVATE pitchnet_ui)
 target_compile_features(TrackGestureTests PRIVATE cxx_std_17)
 add_test(NAME TrackGestureTests COMMAND TrackGestureTests)
+
+add_executable(KeptRangeTests KeptRangeTests.cpp)
+target_link_libraries(KeptRangeTests PRIVATE pitchnet_ui)
+target_compile_features(KeptRangeTests PRIVATE cxx_std_17)
+add_test(NAME KeptRangeTests COMMAND KeptRangeTests)
 
 add_executable(PitchMacroRenderTests PitchMacroRenderTests.cpp)
 target_link_libraries(PitchMacroRenderTests PRIVATE pitchnet_ui)

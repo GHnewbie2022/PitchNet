@@ -130,6 +130,8 @@
   "handle.amplitude": "Амплитуда",
   "handle.fine_pitch": "Точная высота (центы)",
   "handle.formant": "Сдвиг форманты",
+  "handle.keep_head": "Сохранить запись с начала (тянуть вправо)",
+  "handle.keep_tail": "Сохранить запись до конца (тянуть влево)",
   "handle.pitch_drift": "Дрейф высоты",
   "handle.sibilant_balance": "Баланс сибилянтов",
   "handle.tilt_left": "Левый наклон",

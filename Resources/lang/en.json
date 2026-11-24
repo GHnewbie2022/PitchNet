@@ -132,6 +132,8 @@
   "handle.amplitude": "Amplitude",
   "handle.fine_pitch": "Fine Pitch (cents)",
   "handle.formant": "Formant Shift",
+  "handle.keep_head": "Keep Recording from Note Start (drag right)",
+  "handle.keep_tail": "Keep Recording to Note End (drag left)",
   "handle.pitch_drift": "Pitch Drift",
   "handle.sibilant_balance": "Sibilant Balance",
   "handle.tilt_left": "Tilt Left (Option: rotate)",

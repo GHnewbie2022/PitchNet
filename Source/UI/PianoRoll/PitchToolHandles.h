@@ -24,8 +24,28 @@ public:
     // The seesaw's pivot (Cubase's diamond): drag it along the note,
     // Alt + click puts it back in the middle.
     TiltPivot,
+    // The stretches kept as recorded by hand (Note::setKeptRange, spec
+    // Q12): green squares on the body's lower corners. The left one is
+    // dragged right to keep the note's start, the right one left to keep
+    // its end; each stands on the edge of what it keeps.
+    KeepHead,
+    KeepTail,
     None
   };
+
+  /** Where a note's two green squares stand: the x (world) of the edge of
+   *  what is kept at its start and at its end. */
+  struct KeepMarks {
+    bool shown;
+    float headX;
+    float tailX;
+  };
+
+  // The side of a corner square, and the least height a note's hover area
+  // may have for the squares of its upper and lower corners to clear each
+  // other (a quiet note's blob is thinner than that).
+  static constexpr float cornerSize = 9.0f;
+  static constexpr float minHoverHeight = cornerSize * 2.0f + 2.0f;
 
   static constexpr float buttonWidth = 30.0f;
   static constexpr float buttonHeight = 12.0f;
@@ -48,7 +68,8 @@ public:
    */
   void updateHandles(const std::vector<Note*>& selectedNotes,
                      const CoordinateMapper& mapper,
-                     const juce::Rectangle<float>& hoverBounds = {});
+                     const juce::Rectangle<float>& hoverBounds = {},
+                     const KeepMarks& keep = KeepMarks{false, 0.0f, 0.0f});
 
   /**
    * Draw all handles to graphics context.
@@ -56,7 +77,9 @@ public:
   void draw(juce::Graphics& g) const;
 
   /**
-   * Hit-test for mouse interaction.
+   * Hit-test for mouse interaction. The handle the point lies on, else the
+   * first one it lies within the tolerance of: two handles side by side
+   * (the green squares where they meet) each answer for their own side.
    * @param worldX Mouse X in world coordinates
    * @param worldY Mouse Y in world coordinates
    * @param tolerance Hit-test radius in pixels (default 12.0)

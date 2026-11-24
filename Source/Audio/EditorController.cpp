@@ -10,6 +10,7 @@
 #include "../Utils/ScaleUtils.h"
 #include "../Utils/Constants.h"
 #include "../Utils/F0Smoother.h"
+#include "../Utils/FryNoteCuts.h"
 #include "../Utils/Localization.h"
 #include "../Utils/MelSpectrogram.h"
 #include "../Utils/PitchCurveProcessor.h"
@@ -1370,6 +1371,9 @@ void EditorController::analyzeAudioImpl(
     return;
 
   PitchCurveProcessor::rebuildCurvesFromSource(targetProject, audioData.f0);
+  // A note is cut where the fry a word starts with begins, so that the fry
+  // it keeps as recorded starts the note (FryNoteCuts.h).
+  frycut::apply(targetProject);
   ScaleUtils::detectAndApplyScale(targetProject);
 
   if (onComplete)

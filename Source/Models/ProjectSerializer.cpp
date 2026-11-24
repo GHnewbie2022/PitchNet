@@ -4,6 +4,7 @@
 #include "../Audio/RecordingChange.h"
 #include "../Audio/Synthesis/WarpedSource.h"
 #include "../Utils/Constants.h"
+#include "../Utils/FryNoteCuts.h"
 #include "../Utils/MelSpectrogram.h"
 #include "../Utils/PitchCurveProcessor.h"
 
@@ -858,6 +859,11 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
     // A binary archive reads its buffers after this and relabels then.
     breathsibilance::ensure(audioData);
 
+    // A note is cut where the fry a word starts with begins (FryNoteCuts.h):
+    // here when the JSON carried the project's frames, else once they are
+    // known (fromBinaryArchive below, recordingchange::hydrate).
+    frycut::apply(project);
+
     // A recording goes on from the notes as loaded.
     project.getDebugJournal().resync(project.getNotes());
 
@@ -1170,6 +1176,10 @@ bool ProjectSerializer::fromBinaryArchive(Project& project, const void* data,
     // (curves saved before the refit could carry a spike at an edge).
     PitchCurveProcessor::refitUntouchedCurves(project, 0, audioData.getNumFrames());
 
+    // The mel gives the project its frames: a state saved before notes were
+    // cut where their fry starts is cut now (FryNoteCuts.h).
+    frycut::apply(project);
+
     project.setModified(false);
     return true;
 }
@@ -1234,6 +1244,12 @@ juce::var ProjectSerializer::noteToJson(const Note& note,
         obj->setProperty("synthEngine", "vocoderRecordedHighsFry");
     else if (note.getSynthEngine() == Note::SynthEngine::Vocoder)
         obj->setProperty("synthEngine", "vocoder");
+    // The stretches kept by hand, written only for the notes that have them.
+    if (note.hasKeptRange())
+    {
+        obj->setProperty("keptHeadUntil", note.getKeptHeadUntil());
+        obj->setProperty("keptTailFrom", note.getKeptTailFrom());
+    }
     obj->setProperty("vibrato", note.getVibrato());
     obj->setProperty("pitchDrift", note.getPitchDrift());
     obj->setProperty("smoothLeftFrames", note.getSmoothLeftFrames());
@@ -1340,6 +1356,12 @@ bool ProjectSerializer::noteFromJson(Note& note, const juce::var& json,
                                 ? Note::SynthEngine::VocoderRecordedHighsFry
                                 : engineName == "vocoder" ? Note::SynthEngine::Vocoder
                                                           : Note::SynthEngine::Auto);
+        // After the engine: a range kept by hand puts the note on
+        // VocoderRecordedHighsFry whatever the file says beside it.
+        if (json.hasProperty("keptHeadUntil") || json.hasProperty("keptTailFrom"))
+            note.setKeptRange(
+                static_cast<int>(json.getProperty("keptHeadUntil", Note::kKeepsNone)),
+                static_cast<int>(json.getProperty("keptTailFrom", Note::kKeepsNone)));
     }
     note.setVibrato(static_cast<float>(json.getProperty("vibrato", 1.0)));
     note.setPitchDrift(static_cast<float>(json.getProperty("pitchDrift", 1.0)));

@@ -17,6 +17,7 @@
 #include "../Utils/PitchCurveProcessor.h"
 #include "../Utils/ScaleUtils.h"
 #include "../Undo/NoteActions.h"
+#include "../Undo/SynthChoiceAction.h"
 #include "PianoRoll/BreathSibilanceRenderer.h"
 #include "PianoRoll/PianoRollViewHelpers.h"
 #include "PianoRoll/VisualWaveformEnvelope.h"
@@ -261,47 +262,8 @@ namespace
     juce::String name;
   };
 
-  // Spec Q12: how the notes are rendered (vocoder or Rubber Band R3). Edited
-  // notes are rendered again with it; a note that plays the recording keeps
-  // the choice for when it is edited.
-  class SetSynthEngineAction final : public UndoableAction
-  {
-  public:
-    SetSynthEngineAction(Project& project, std::vector<Note*> notes,
-                         Note::SynthEngine engine)
-        : project(project), notes(noteref::refs(notes)), after(engine)
-    {
-      for (const auto* note : notes)
-        before.push_back(note->getSynthEngine());
-    }
-    void undo() override { apply(false); }
-    void redo() override { apply(true); }
-    juce::String getName() const override { return "Set Synthesis Engine"; }
-
-  private:
-    void apply(bool forward)
-    {
-      const auto resolved = noteref::resolve(notes);
-      for (size_t i = 0; i < resolved.size() && i < before.size(); ++i)
-      {
-        auto* note = resolved[i];
-        if (note == nullptr)
-          continue;
-        note->setSynthEngine(forward ? after : before[i]);
-        if (!note->isNeutralForOriginalWaveform())
-        {
-          note->markDirty();
-          note->markSynthDirty();
-        }
-      }
-      project.setModified(true);
-    }
-
-    Project& project;
-    std::vector<NoteRef> notes;
-    std::vector<Note::SynthEngine> before;
-    Note::SynthEngine after;
-  };
+  // (Spec Q12, how the notes are rendered: SynthChoiceAction.h, shared with
+  // the drag of a note's green squares.)
 
   class ResetNoteEditsAction final : public UndoableAction
   {
@@ -541,6 +503,13 @@ PianoRollComponent::PianoRollComponent()
     updatePreviewButtonBounds();
     repaint();
     if (onAmplitudeEdited) onAmplitudeEdited();
+  };
+
+  // A green square let go: applied and recorded as a choice of the
+  // synthesis menu is.
+  pitchToolController->onSynthChoice = [this](std::unique_ptr<UndoableAction> action)
+  {
+    applyRestoreAction(std::move(action));
   };
 
   // Setup noteSplitter callbacks
@@ -2932,6 +2901,8 @@ juce::String PianoRollComponent::getTooltip()
     case PitchToolHandles::HandleType::Formant: return TR("handle.formant");
     case PitchToolHandles::HandleType::TiltRight: return TR("handle.tilt_right");
     case PitchToolHandles::HandleType::TiltPivot: return TR("handle.tilt_pivot");
+    case PitchToolHandles::HandleType::KeepHead: return TR("handle.keep_head");
+    case PitchToolHandles::HandleType::KeepTail: return TR("handle.keep_tail");
     default: return {};
   }
 }
@@ -2997,9 +2968,12 @@ void PianoRollComponent::mouseDoubleClick(const juce::MouseEvent &e)
     const auto handleType = handle >= 0
         ? pitchToolHandles->getHandle(handle).type
         : PitchToolHandles::HandleType::None;
+    // (A green square takes the double-click and does nothing with it:
+    // neither the note under it nor the transport gets it.)
     const bool sibilantHandle =
         handleType == PitchToolHandles::HandleType::SibilantBalance ||
-        handleType == PitchToolHandles::HandleType::FinePitch;
+        handleType == PitchToolHandles::HandleType::FinePitch ||
+        PitchToolController::isKeepHandle(handleType);
     if (sibilantHandle || (!findNoteAt(adjustedX, adjustedY) &&
                            findBreathAt(adjustedX, adjustedY) >= 0))
     {
@@ -4394,7 +4368,8 @@ void PianoRollComponent::updatePitchToolHandlesFromSelection()
     if (auto *note = pitchToolController->getActiveHandleNote())
     {
       pitchToolHandles->updateHandles({note}, *coordMapper,
-                                      getNoteHoverShadowBounds(*note));
+                                      getNoteHoverShadowBounds(*note),
+                                      keepMarksFor(*note));
       hoveredPitchToolHandle = -1;
       const auto &handles = pitchToolHandles->getHandles();
       for (int h = 0; h < static_cast<int>(handles.size()); ++h)
@@ -4429,13 +4404,36 @@ void PianoRollComponent::updatePitchToolHandlesFromSelection()
 
   const auto hoverBounds = hoveredNote ? getNoteHoverShadowBounds(*hoveredNote)
                                        : juce::Rectangle<float>();
-  pitchToolHandles->updateHandles(targetNotes, *coordMapper, hoverBounds);
+  pitchToolHandles->updateHandles(targetNotes, *coordMapper, hoverBounds,
+                                  hoveredNote ? keepMarksFor(*hoveredNote)
+                                              : PitchToolHandles::KeepMarks{});
   if (hoveredPitchToolHandle >=
       static_cast<int>(pitchToolHandles->getHandles().size()))
   {
     hoveredPitchToolHandle = -1;
     pitchToolHandles->setHoveredHandleIndex(-1);
   }
+}
+
+// Where the note's two green squares stand (the stretches it keeps as
+// recorded, fry::shownRange), as x on the roll: through the note's own time
+// map, so that on a stretched note they stay on the sound.
+PitchToolHandles::KeepMarks PianoRollComponent::keepMarksFor(const Note &note) const
+{
+  if (!project || note.isRest() || note.getSrcEndFrame() <= note.getSrcStartFrame())
+    return {};
+  const auto &audioData = project->getAudioData();
+  // On every hover and drag step: the detection is kept between calls.
+  thread_local fry::Cache found;
+  const auto shown =
+      fry::shownRange(note, project->getNotes(), audioData.rawF0, found.of(audioData));
+  const auto map = notetiming::forNoteOnScreen(audioData, note);
+  const auto xAt = [&](int sourceFrame)
+  {
+    return framesToSeconds(static_cast<float>(map.destinationAt(sourceFrame))) *
+           pixelsPerSecond;
+  };
+  return {true, xAt(shown.headUntil), xAt(shown.tailFrom)};
 }
 
 Note *PianoRollComponent::findNoteForSplitAt(float x, float y, float *top,
@@ -4549,6 +4547,11 @@ PianoRollComponent::getNoteHoverShadowBounds(const Note &note) const
     shadowBounds.setX(centreX - PitchToolHandles::buttonGroupWidth * 0.5f);
     shadowBounds.setWidth(PitchToolHandles::buttonGroupWidth);
   }
+  // Tall enough for the squares on its upper and lower corners to clear
+  // each other: a quiet note's blob is thinner than two of them.
+  if (shadowBounds.getHeight() < PitchToolHandles::minHoverHeight)
+    shadowBounds = shadowBounds.withSizeKeepingCentre(
+        shadowBounds.getWidth(), PitchToolHandles::minHoverHeight);
 
   return shadowBounds;
 }
@@ -4953,17 +4956,28 @@ void PianoRollComponent::showSynthMenu(Note &note)
                      [notePtr](const Note& candidate)
                      { return &candidate == notePtr; }))
       return;
-    const auto engine = result == 2 ? Note::SynthEngine::RubberBand
-                        : result == 3 ? Note::SynthEngine::Auto
-                        : result == 4 ? Note::SynthEngine::VocoderRecordedHighsFry
-                                      : Note::SynthEngine::VocoderRecordedHighs;
-    auto targets = safeThis->getResetTargetNotes(*notePtr);
-    if (std::all_of(targets.begin(), targets.end(),
-                    [engine](const Note* n) { return !n || n->getSynthEngine() == engine; }))
-      return;
-    safeThis->applyRestoreAction(
-        std::make_unique<SetSynthEngineAction>(*safeThis->project, targets, engine));
+    safeThis->chooseSynthEngine(
+        *notePtr, result == 2   ? Note::SynthEngine::RubberBand
+                  : result == 3 ? Note::SynthEngine::Auto
+                  : result == 4 ? Note::SynthEngine::VocoderRecordedHighsFry
+                                : Note::SynthEngine::VocoderRecordedHighs);
   });
+}
+
+void PianoRollComponent::chooseSynthEngine(Note &note, Note::SynthEngine engine)
+{
+  if (!project)
+    return;
+  const auto targets = getResetTargetNotes(note);
+  const auto before = SynthChoiceAction::current(targets);
+  std::vector<SynthChoice> after;
+  for (const auto *target : targets)
+    after.push_back(target != nullptr ? SynthChoice::ofMenu(*target, engine)
+                                      : SynthChoice{});
+  if (before == after)
+    return;
+  applyRestoreAction(std::make_unique<SynthChoiceAction>(
+      *project, targets, before, after, "Set Synthesis Engine"));
 }
 
 std::unique_ptr<UndoableAction>

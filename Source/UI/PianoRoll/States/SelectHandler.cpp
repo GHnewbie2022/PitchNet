@@ -634,12 +634,16 @@ bool SelectHandler::mouseUp(const juce::MouseEvent &e, float worldX,
     const bool amplitudeEdit =
         handleType == PitchToolHandles::HandleType::Amplitude ||
         handleType == PitchToolHandles::HandleType::SibilantBalance;
+    // A green square (the stretch kept as recorded by hand) goes through
+    // the history like a choice of the synthesis menu, which refreshes and
+    // renders by itself (PianoRollComponent::applyRestoreAction).
+    const bool keepEdit = PitchToolController::isKeepHandle(handleType);
     owner_.pitchToolController->mouseUp(e, owner_.undoManager,
                                         nullptr);
     owner_.updatePitchToolHandlesFromSelection();
-    if (owner_.onPitchEdited)
+    if (!keepEdit && owner_.onPitchEdited)
       owner_.onPitchEdited();
-    if (!amplitudeEdit && owner_.onPitchEditFinished)
+    if (!amplitudeEdit && !keepEdit && owner_.onPitchEditFinished)
       owner_.onPitchEditFinished();
     owner_.repaint();
     return true;
@@ -1077,6 +1081,17 @@ void SelectHandler::mouseDoubleClick(const juce::MouseEvent &e,
   auto *project = owner_.project;
   if (!project)
     return;
+
+  // A green square (the stretch kept as recorded by hand) is dragged, not
+  // double-clicked: the click stops here, short of the note under it (a
+  // double-click on a note moves its pitch).
+  if (owner_.pitchToolHandles)
+  {
+    const int hitIndex = owner_.pitchToolHandles->hitTest(worldX, worldY);
+    if (hitIndex >= 0 && PitchToolController::isKeepHandle(
+                             owner_.pitchToolHandles->getHandle(hitIndex).type))
+      return;
+  }
 
   // Sibilant balance, as in Melodyne: double-click mutes the sibilants
   // (-100%); double-click again restores the note (0%). It acts on the

@@ -254,7 +254,8 @@ public:
     // as recorded: the vocoder with recorded highs, and the recording itself
     // where the note holds fry at the end of a phrase or as a word starts
     // (FryDetector.h) - all of the note where the detector finds none in it,
-    // for fry it misses. A note the user has not chosen for is on Auto: the
+    // for fry it misses, or just the stretches the user marks by hand
+    // (setKeptRange below). A note the user has not chosen for is on Auto: the
     // detector decides between the first and the third (fry::shownAs), and
     // the menu shows which. Auto is not an entry of its own; "Back to
     // Automatic" returns a note to it. The
@@ -270,7 +271,40 @@ public:
         VocoderRecordedHighsFry
     };
     SynthEngine getSynthEngine() const { return synthEngine; }
-    void setSynthEngine(SynthEngine engine) { synthEngine = engine; }
+    // Any way but VocoderRecordedHighsFry drops the stretches kept by hand
+    // (below): they belong to that way alone.
+    void setSynthEngine(SynthEngine engine)
+    {
+        synthEngine = engine;
+        if (engine != SynthEngine::VocoderRecordedHighsFry)
+            clearKeptRange();
+    }
+
+    // The stretches of the note the user keeps as recorded by hand (the two
+    // green squares on its lower corners, spec Q12): from the note's start
+    // up to `keptHeadUntil`, and from `keptTailFrom` to its end. Frames of
+    // the recording, like srcStartFrame, so a stretch, a split or a moved
+    // edge leaves them on the same sound; kKeepsNone on a side that keeps
+    // nothing. Once set the note is on VocoderRecordedHighsFry and the
+    // detector no longer decides inside it (FryDetector.h): there is no note
+    // with a range kept by hand and another way of rendering.
+    static constexpr int kKeepsNone = -1;
+    bool hasKeptRange() const { return keptRangeSet; }
+    int getKeptHeadUntil() const { return keptHeadUntil; }
+    int getKeptTailFrom() const { return keptTailFrom; }
+    void setKeptRange(int headUntil, int tailFrom)
+    {
+        keptRangeSet = true;
+        keptHeadUntil = headUntil < 0 ? kKeepsNone : headUntil;
+        keptTailFrom = tailFrom < 0 ? kKeepsNone : tailFrom;
+        synthEngine = SynthEngine::VocoderRecordedHighsFry;
+    }
+    void clearKeptRange()
+    {
+        keptRangeSet = false;
+        keptHeadUntil = kKeepsNone;
+        keptTailFrom = kKeepsNone;
+    }
 
     // True after this note has contributed to the rendered composite waveform.
     // This lightweight state replaces the former per-note audio cache and lets
@@ -386,6 +420,9 @@ private:
     std::vector<SourceSpan> analysisSpans;
     bool renderedEdit = false; // Audio for this note is present in the composite
     SynthEngine synthEngine = SynthEngine::Auto;
+    bool keptRangeSet = false;        // kept by hand, see setKeptRange()
+    int keptHeadUntil = kKeepsNone;   // source frame, or kKeepsNone
+    int keptTailFrom = kKeepsNone;    // source frame, or kKeepsNone
     // Timeline bounds represented by the current composite waveform. These can
     // differ from both the immutable source bounds and the next pending edit.
     int renderedStartFrame = 0;

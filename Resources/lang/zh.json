@@ -130,6 +130,8 @@
   "handle.amplitude": "振幅",
   "handle.fine_pitch": "音高微调（音分）",
   "handle.formant": "共振峰偏移",
+  "handle.keep_head": "开头保留录音（向右拖）",
+  "handle.keep_tail": "结尾保留录音（向左拖）",
   "handle.pitch_drift": "音高漂移",
   "handle.sibilant_balance": "齿音平衡",
   "handle.tilt_left": "左侧倾斜（按 Option 旋转）",

@@ -301,7 +301,7 @@ void olderStretchedProjectsKeepTheirReference()
   Project project;
   project.getAudioData() = audio;
   auto json = ProjectSerializer::toJson(project);
-  CHECK(static_cast<int>(json.getProperty("formatVersion", 0)) == 9);
+  CHECK(static_cast<int>(json.getProperty("formatVersion", 0)) == ProjectSerializer::FORMAT_VERSION);
   CHECK(!static_cast<bool>(json.getProperty("warp", juce::var())
                                .getProperty("referenceFromRecording", true)));
   CHECK(static_cast<int>(json.getProperty("warp", juce::var()).getProperty("stretch", 0)) == 2);

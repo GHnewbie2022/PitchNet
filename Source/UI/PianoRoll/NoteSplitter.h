@@ -27,8 +27,12 @@ public:
     /**
      * Split a note at the given frame position.
      * Returns true if split was successful.
+     * Each piece is centred on its own voiced pitch. With `keepCentre` both
+     * keep the note's centre instead: for a cut that is not the user's
+     * (FryNoteCuts.h), where the piece that starts in fry would be centred
+     * 2 semitones under the voice it goes on with by those few low frames.
      */
-    bool splitNoteAtFrame(Note* note, int splitFrame);
+    bool splitNoteAtFrame(Note* note, int splitFrame, bool keepCentre = false);
 
     /**
      * Split note at world X coordinate.

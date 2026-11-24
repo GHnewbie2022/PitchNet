@@ -384,6 +384,7 @@ private:
   void resetBreathLevel(int key);
   juce::Rectangle<float> getPreviewButtonBounds(const Note &note) const;
   juce::Rectangle<float> getNoteHoverShadowBounds(const Note &note) const;
+  PitchToolHandles::KeepMarks keepMarksFor(const Note &note) const;
   // The scissors' target: the note whose coloured blob (or row) is under
   // (x, y), within the note's own time span. `top`/`bottom` get the blob's
   // vertical extent, for the guide line.
@@ -597,6 +598,10 @@ public:
   // draws it (WarpRender --synth-menu-shot): a popup closes by itself when
   // the App is driven in the background, so it cannot be captured there.
   juce::PopupMenu synthMenuFor(Note &note);
+  // What choosing an entry of that menu does: the way of rendering for this
+  // note (and the selected notes), as one history step (SynthChoiceAction.h).
+  // Public so that the tests and the tools make the choice the App makes.
+  void chooseSynthEngine(Note &note, Note::SynthEngine engine);
   void beginMacroCurvePreview(const std::vector<Note*>& notes);
   void endMacroCurvePreview();
   std::function<std::vector<TrackPitchMacroTarget>()> getTrackEditTargets;

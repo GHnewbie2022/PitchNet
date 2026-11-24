@@ -130,6 +130,8 @@
   "handle.amplitude": "Amplitude",
   "handle.fine_pitch": "Afinação fina (cents)",
   "handle.formant": "Deslocamento de formante",
+  "handle.keep_head": "Manter a gravação desde o início (arrastar para a direita)",
+  "handle.keep_tail": "Manter a gravação até o fim (arrastar para a esquerda)",
   "handle.pitch_drift": "Deriva de afinação",
   "handle.sibilant_balance": "Equilíbrio de sibilantes",
   "handle.tilt_left": "Inclinação esquerda",

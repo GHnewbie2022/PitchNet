@@ -403,10 +403,19 @@ if(APPLE)
     list(APPEND PITCHNET_CORE_SOURCES
         "Source/Audio/CoreMLVocoderBackend.mm")
 endif()
+# The note edits of the piano roll (split, merge, resize) are made on the
+# model, and a split is also made as a project is analysed or read
+# (Source/Utils/FryNoteCuts.h): they are built with the models. The roll's
+# coordinate mapper they take is a header alone.
+list(APPEND PITCHNET_CORE_SOURCES
+    "Source/UI/PianoRoll/NoteSplitter.cpp"
+    "Source/UI/PianoRoll/NoteSplitter.h"
+    "Source/UI/PianoRoll/CoordinateMapper.h")
 
 file(GLOB_RECURSE PITCHNET_UI_SOURCES CONFIGURE_DEPENDS
     "Source/UI/*.cpp" "Source/UI/*.h" "Source/UI/*.mm"
     "Source/Utils/UI/*.cpp" "Source/Utils/UI/*.h")
+list(FILTER PITCHNET_UI_SOURCES EXCLUDE REGEX "Source/UI/PianoRoll/NoteSplitter\\.cpp$")
 list(APPEND PITCHNET_UI_SOURCES
     "Source/UI/PianoRoll/PianoRollInteractionContext.cpp"
     "Source/UI/PianoRoll/PianoRollInteractionContext.h"

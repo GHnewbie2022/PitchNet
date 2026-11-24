@@ -378,8 +378,13 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
                                  renderedWidth, maxSample * waveHeight);
     }
 
-    return shadowVisualBounds.expanded(4.0f, 4.0f)
-        .getSmallestIntegerContainer();
+    // As PianoRollComponent::getNoteHoverShadowBounds, which lays the
+    // handles out: tall enough for the corner squares of both edges.
+    auto shadowBounds = shadowVisualBounds.expanded(4.0f, 4.0f);
+    if (shadowBounds.getHeight() < PitchToolHandles::minHoverHeight)
+      shadowBounds = shadowBounds.withSizeKeepingCentre(
+          shadowBounds.getWidth(), PitchToolHandles::minHoverHeight);
+    return shadowBounds.getSmallestIntegerContainer();
   };
 
   // Calculate visible time range for culling
@@ -815,10 +820,27 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
     const bool isFinePitchDragged = shouldShowPitchTip &&
         ((isSingleDragged && selectHandler->isFinePitchDragging()) ||
          (isMultiDragged && pitchEditor->isFineMultiDragging()));
-    if (drawOverlays && (shouldShowPitchTip || isVibratoDragged || isTiltDragged || isFormantDragged || isDriftDragged || isAmplitudeDragged || isSibilantDragged))
+    // A green square (the stretch kept as recorded by hand).
+    const bool isKeepDragged = pitchToolController &&
+        pitchToolController->isDraggingKeep() &&
+        pitchToolController->getActiveHandleNote() == &note;
+    if (drawOverlays && (shouldShowPitchTip || isVibratoDragged || isTiltDragged || isFormantDragged || isDriftDragged || isAmplitudeDragged || isSibilantDragged || isKeepDragged))
     {
       juce::String label;
-      if (isFinePitchDragged)
+      if (isKeepDragged)
+      {
+        // How much of the recording the dragged side keeps, as recorded
+        // (a stretched note plays it longer or shorter).
+        const auto shown = fry::shownRange(note, project->getNotes(), audioData.rawF0,
+                                           fryCache.of(audioData));
+        const int frames =
+            pitchToolController->getActiveHandleType() ==
+                    PitchToolHandles::HandleType::KeepHead
+                ? shown.headUntil - note.getSrcStartFrame()
+                : note.getSrcEndFrame() - shown.tailFrom;
+        label = juce::String(juce::roundToInt(framesToSeconds(frames) * 1000.0f)) + " ms";
+      }
+      else if (isFinePitchDragged)
       {
         // Nearest note and the cents from it, e.g. "C#4 +12 ct".
         static const char *names[] = {"C", "C#", "D", "D#", "E", "F",

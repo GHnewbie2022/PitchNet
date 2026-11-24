@@ -895,7 +895,9 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
 
   // Vocal fry at the end of a phrase, and as a word starts, stays the
   // recording in notes left on Auto (FryDetector.h): no engine tried kept
-  // its pulses. Timeline frames of this range that play it; they hand over
+  // its pulses. So do the notes told to keep fry the detector misses
+  // (whole), and the stretches the user marks by hand. Timeline frames of
+  // this range that play it; they hand over
   // as a restored note does (lined up with the render next to them, then
   // crossfaded where the two agree best). Kept through the blend mask with
   // a 6 ms fade, the voice crossfaded with itself out of phase, which was
@@ -903,14 +905,10 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   std::vector<std::pair<int, int>> fryKeptFrames;
   fry::Ranges onsetHeld; // the onsets kept, for what the vocoder sings under them
   {
-    const auto fryFound = fry::find(audioData);
-    auto fryKept = fry::kept(project->getNotes(), audioData.rawF0, fryFound.ends);
-    const auto onsetKept = fry::keptOnsets(project->getNotes(), fryFound.onsets);
-    fryKept.insert(fryKept.end(), onsetKept.begin(), onsetKept.end());
-    onsetHeld = onsetKept;
-    // Notes the user told to keep fry the detector does not find: whole.
-    const auto toldKept = fry::keptAsTold(project->getNotes(), fryFound);
-    fryKept.insert(fryKept.end(), toldKept.begin(), toldKept.end());
+    auto keptNow = fry::keptAsRecorded(project->getNotes(), audioData.rawF0,
+                                       fry::find(audioData));
+    const auto &fryKept = keptNow.all;
+    onsetHeld = std::move(keptNow.heads);
     if (!fryKept.empty())
       for (int frame = std::max(0, startFrame); frame < endFrame; ++frame) {
         const int source = warp::sourceFrameAt(audioData, frame);
@@ -988,7 +986,17 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
       }
       if (from < 0)
         continue;
-      if (!edited(*vowel)) {
+      // A vowel whose end the user keeps as recorded (the right green
+      // square, Note::setKeptRange) ends on the pitch it was recorded on:
+      // what it leaves under the consonant is its own, as in the recording,
+      // and the run stays the recording like after a vowel put back. (Taken
+      // out, the kept end ran into a run with its harmonics gone - 2e-3 off
+      // the recording from the note's end on, and over the last 500 samples
+      // of the kept stretch: 煙幕 at 37.2 s.) Only for a note marked by
+      // hand: what the detector keeps runs on over the unvoiced frames after
+      // the note, the run among them.
+      const bool endsAsRecorded = fry::byHand(*vowel) && keptAsFry(tail.voiceFrame);
+      if (!edited(*vowel) || endsAsRecorded) {
         // The vowel goes back to the recording: so does what a pass before
         // this one took from under the consonant, past the vowel's note and
         // short of a note this pass renders with an edit.

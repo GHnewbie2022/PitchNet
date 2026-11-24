@@ -128,6 +128,8 @@
   "handle.amplitude": "진폭",
   "handle.fine_pitch": "피치 미세 조정 (센트)",
   "handle.formant": "포먼트 시프트",
+  "handle.keep_head": "시작 부분 녹음 유지 (오른쪽으로 드래그)",
+  "handle.keep_tail": "끝 부분 녹음 유지 (왼쪽으로 드래그)",
   "handle.pitch_drift": "피치 드리프트",
   "handle.sibilant_balance": "치찰음 밸런스",
   "handle.tilt_left": "왼쪽 기울기",

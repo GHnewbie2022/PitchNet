@@ -1,4 +1,5 @@
 #include "PitchToolHandles.h"
+#include "../SynthEngineColours.h"
 #include "BinaryData.h"
 
 #include <algorithm>
@@ -30,7 +31,8 @@ PitchToolHandles::PitchToolHandles()
 
 void PitchToolHandles::updateHandles(const std::vector<Note*>& selectedNotes,
                                      const CoordinateMapper& mapper,
-                                     const juce::Rectangle<float>& hoverBounds) {
+                                     const juce::Rectangle<float>& hoverBounds,
+                                     const KeepMarks& keep) {
   handles.clear();
   pivotGuide = {};
 
@@ -99,7 +101,7 @@ void PitchToolHandles::updateHandles(const std::vector<Note*>& selectedNotes,
   // pivot itself.
   if (targetNote)
   {
-    constexpr float corner = 9.0f, diamond = 11.0f;
+    constexpr float corner = cornerSize, diamond = 11.0f;
     const float bodyTop = hoverBounds.isEmpty() ? topY - hoverPadding : hoverBounds.getY();
     const float bodyLeft = hoverBounds.isEmpty() ? leftX - hoverPadding : hoverBounds.getX();
     const float bodyRight = hoverBounds.isEmpty() ? rightX + hoverPadding : hoverBounds.getRight();
@@ -115,6 +117,29 @@ void PitchToolHandles::updateHandles(const std::vector<Note*>& selectedNotes,
     addHandle(HandleType::TiltPivot, pivotX, diamondY, targetNote);
     handles.back().bounds = {pivotX - diamond * 0.5f, diamondY, diamond, diamond};
     pivotGuide = {pivotX, diamondY + diamond, pivotX, bottom};
+
+    // The stretches kept as recorded by hand: a square on the body's lower
+    // edge at each of the two places, centred on it - with nothing kept, on
+    // the note's own two corners, under the tilt squares. Where the two
+    // would overlap they stand side by side about the middle instead, so
+    // that they touch when the stretches meet (all of the note is kept) and
+    // each can still be taken hold of.
+    if (keep.shown)
+    {
+      const float y = bottom - corner;
+      float headLeft = keep.headX - corner * 0.5f;
+      float tailLeft = keep.tailX - corner * 0.5f;
+      if (tailLeft < headLeft + corner)
+      {
+        const float middle = (keep.headX + keep.tailX) * 0.5f;
+        headLeft = middle - corner;
+        tailLeft = middle;
+      }
+      addHandle(HandleType::KeepHead, headLeft, y, targetNote);
+      handles.back().bounds = {headLeft, y, corner, corner};
+      addHandle(HandleType::KeepTail, tailLeft, y, targetNote);
+      handles.back().bounds = {tailLeft, y, corner, corner};
+    }
   }
 }
 
@@ -129,6 +154,17 @@ void PitchToolHandles::draw(juce::Graphics& g) const {
       g.setColour(hovered ? juce::Colour(0xFF8A8A8Au) : juce::Colour(0xFF2E2E2Du));
       g.fillRect(bounds);
       g.setColour(juce::Colour(0xFF9A9A9Au));
+      g.drawRect(bounds, 1.0f);
+      continue;
+    }
+    if (handle.type == HandleType::KeepHead || handle.type == HandleType::KeepTail)
+    {
+      // The green of what they keep (NoteRenderer's fill), dark-edged so
+      // they stand out on it.
+      const auto green = synthEngineColour::keptFry();
+      g.setColour(hovered ? green.brighter(0.6f) : green);
+      g.fillRect(bounds);
+      g.setColour(juce::Colour(0xFF1E3A0Au));
       g.drawRect(bounds, 1.0f);
       continue;
     }
@@ -186,6 +222,11 @@ PitchToolHandles::getIconForType(HandleType type) const {
 
 int PitchToolHandles::hitTest(float worldX, float worldY, float tolerance) const {
   for (int i = 0; i < static_cast<int>(handles.size()); ++i) {
+    if (handles[i].bounds.contains(worldX, worldY)) {
+      return i;
+    }
+  }
+  for (int i = 0; i < static_cast<int>(handles.size()); ++i) {
     if (handles[i].bounds.expanded(tolerance * 0.25f).contains(worldX, worldY)) {
       return i;
     }
@@ -201,7 +242,8 @@ bool PitchToolHandles::containsLayoutPoint(float worldX, float worldY) const
   const auto standsAlone = [](HandleType type)
   {
     return type == HandleType::TiltLeft || type == HandleType::TiltRight ||
-           type == HandleType::TiltPivot;
+           type == HandleType::TiltPivot || type == HandleType::KeepHead ||
+           type == HandleType::KeepTail;
   };
   for (const auto& handle : handles)
   {

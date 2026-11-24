@@ -391,6 +391,194 @@ void theUsersChoiceOfKeptFry()
   CHECK(shown.size() == 1 && shown[0].first == 54 && shown[0].second == 80);
 }
 
+// The stretches a note keeps as recorded by hand (the two green squares):
+// what the synthesizer and the piano roll are told (fry::keptAsRecorded, the
+// call both make), and where the squares stand (fry::shownRange).
+void stretchesKeptByHand()
+{
+  const auto told = Note::SynthEngine::VocoderRecordedHighsFry;
+  const int none = Note::kKeepsNone;
+  // The voice at 200 Hz from frame 20, fry from 60 to 68, silence after it
+  // but for one frame, and a voice again at 80.
+  std::vector<float> curve(100, 0.0f);
+  for (int i = 20; i < 68; ++i)
+    curve[static_cast<size_t>(i)] = 200.0f;
+  curve[69] = 100.0f;
+  curve[80] = 200.0f;
+  const fry::Found nothing{{}, {}};
+  const fry::Found atTheEnd{{{60, 68}}, {}};
+  const fry::Found asItStarts{{}, {{34, 43}}};
+  const auto frames = [](const fry::Ranges &ranges)
+  {
+    std::vector<int> all;
+    for (const auto &[from, to] : ranges)
+      for (int frame = from; frame < to; ++frame)
+        all.push_back(frame);
+    std::sort(all.begin(), all.end());
+    all.erase(std::unique(all.begin(), all.end()), all.end());
+    return all;
+  };
+
+  // 1. The start, the end, or both: just the frames marked. Marking a note
+  //    puts it on "keep the fry", the user's own choice.
+  {
+    std::vector<Note> notes{Note(20, 50, 55.0f), Note(50, 70, 55.0f)};
+    notes[0].setKeptRange(25, none);
+    CHECK(notes[0].getSynthEngine() == told);
+    CHECK(fry::shownAs(notes[0], nothing) == told);
+    CHECK(fry::resolved(notes[0]) == Note::SynthEngine::VocoderRecordedHighs);
+    auto kept = fry::keptAsRecorded(notes, curve, nothing);
+    CHECK((kept.all == fry::Ranges{{20, 25}}));
+    CHECK((kept.heads == fry::Ranges{{20, 25}}));
+    notes[0].setKeptRange(none, 44);
+    kept = fry::keptAsRecorded(notes, curve, nothing);
+    CHECK((kept.all == fry::Ranges{{44, 50}}));
+    CHECK(kept.heads.empty());
+    notes[0].setKeptRange(25, 44);
+    kept = fry::keptAsRecorded(notes, curve, nothing);
+    CHECK((kept.all == fry::Ranges{{20, 25}, {44, 50}}));
+    CHECK((kept.heads == fry::Ranges{{20, 25}}));
+    // Not all of the note, as it would be told from the menu.
+    CHECK(!fry::toldWithoutFry(notes[0], nothing));
+    CHECK(!fry::wholeAsRecorded(notes[0], nothing));
+    // Any other way of rendering drops the marks.
+    notes[0].setSynthEngine(Note::SynthEngine::RubberBand);
+    CHECK(!notes[0].hasKeptRange());
+    CHECK(fry::keptAsRecorded(notes, curve, nothing).all.empty());
+  }
+
+  // 2. The two meeting is all of the note: as a note told to keep fry the
+  //    detector misses, it plays the recording and is not rendered (listed
+  //    for the display only) until it has a volume edit.
+  {
+    std::vector<Note> notes{Note(20, 50, 55.0f), Note(50, 70, 55.0f)};
+    notes[0].setKeptRange(30, 30);
+    CHECK(fry::wholeByHand(notes[0]));
+    CHECK(fry::wholeAsRecorded(notes[0], nothing));
+    CHECK(fry::playsRecording(notes[0], nothing));
+    CHECK(fry::keptAsRecorded(notes, curve, nothing).all.empty());
+    CHECK((fry::keptAsRecorded(notes, curve, nothing, true).all == fry::Ranges{{20, 50}}));
+    notes[0].setVolumeDb(3.0f);
+    CHECK(!fry::playsRecording(notes[0], nothing));
+    CHECK((fry::keptAsRecorded(notes, curve, nothing).all == fry::Ranges{{20, 50}}));
+    notes[0].setKeptRange(50, none); // the start's stretch alone, to the end
+    CHECK(fry::wholeByHand(notes[0]));
+    notes[0].setKeptRange(49, none);
+    CHECK(!fry::wholeByHand(notes[0]));
+  }
+
+  // 3. Inside a marked note the detector's rules are off: not from where the
+  //    fry starts on to the end of the note, and not the whole note for the
+  //    short voice before its fry.
+  {
+    std::vector<Note> notes{Note(20, 50, 55.0f), Note(50, 70, 55.0f)};
+    CHECK((fry::keptAsRecorded(notes, curve, atTheEnd).all == fry::Ranges{{60, 80}}));
+    notes[1].setKeptRange(none, 64);
+    CHECK((frames(fry::keptAsRecorded(notes, curve, atTheEnd).all) ==
+           frames(fry::Ranges{{64, 80}})));
+    std::vector<Note> shortLead{Note(20, 54, 55.0f), Note(54, 70, 55.0f)};
+    CHECK(fry::keepsWhole(shortLead[1], atTheEnd.ends));
+    shortLead[1].setKeptRange(none, 62);
+    CHECK(!fry::keepsWhole(shortLead[1], atTheEnd.ends));
+    CHECK(!fry::wholeAsRecorded(shortLead[1], atTheEnd));
+    CHECK((frames(fry::keptAsRecorded(shortLead, curve, atTheEnd).all) ==
+           frames(fry::Ranges{{62, 80}})));
+  }
+
+  // 4. Marked exactly where the detector found it, a note keeps what it keeps
+  //    left to the detector - outside the note too: the unvoiced frames after
+  //    its end, the lead before its start (in the note before, or in no note).
+  {
+    std::vector<Note> notes{Note(20, 50, 55.0f), Note(50, 70, 55.0f)};
+    const auto automatic = fry::keptAsRecorded(notes, curve, atTheEnd);
+    const auto shown = fry::shownRange(notes[1], notes, curve, atTheEnd);
+    CHECK(shown.headUntil == 50 && shown.tailFrom == 60);
+    notes[1].setKeptRange(none, shown.tailFrom);
+    const auto byHand = fry::keptAsRecorded(notes, curve, atTheEnd);
+    CHECK(frames(byHand.all) == frames(automatic.all));
+    CHECK(byHand.heads == automatic.heads);
+
+    std::vector<Note> words{Note(10, 38, 55.0f), Note(38, 70, 55.0f)};
+    const auto onset = fry::keptAsRecorded(words, curve, asItStarts);
+    CHECK((onset.heads == fry::Ranges{{34, 43}}));
+    const auto at = fry::shownRange(words[1], words, curve, asItStarts);
+    CHECK(at.headUntil == 43 && at.tailFrom == 70);
+    words[1].setKeptRange(at.headUntil, none);
+    auto marked = fry::keptAsRecorded(words, curve, asItStarts);
+    CHECK(frames(marked.all) == frames(onset.all));
+    CHECK(marked.heads == onset.heads); // the lead and the stretch after it as one
+
+    // The lead of the word, kept by the right square of the note before it:
+    // still one onset to the vocoder, with what the word's own note keeps.
+    std::vector<Note> lead{Note(10, 38, 55.0f), Note(38, 70, 55.0f)};
+    const auto before = fry::shownRange(lead[0], lead, curve, asItStarts);
+    CHECK(before.headUntil == 10 && before.tailFrom == 34);
+    lead[0].setKeptRange(none, before.tailFrom);
+    marked = fry::keptAsRecorded(lead, curve, asItStarts);
+    CHECK(frames(marked.all) == frames(onset.all));
+    CHECK(marked.heads == onset.heads);
+
+    std::vector<Note> alone{Note(38, 70, 55.0f)}; // its lead in no note
+    const auto gap = fry::keptAsRecorded(alone, curve, asItStarts);
+    CHECK((gap.heads == fry::Ranges{{34, 43}}));
+    alone[0].setKeptRange(43, none);
+    marked = fry::keptAsRecorded(alone, curve, asItStarts);
+    CHECK(frames(marked.all) == frames(gap.all));
+    CHECK(marked.heads == gap.heads);
+  }
+
+  // 5. A side that keeps nothing takes nothing along outside the note.
+  {
+    std::vector<Note> notes{Note(20, 50, 55.0f), Note(50, 70, 55.0f)};
+    notes[1].setKeptRange(55, none);
+    CHECK((fry::keptAsRecorded(notes, curve, atTheEnd).all == fry::Ranges{{50, 55}}));
+    std::vector<Note> alone{Note(38, 70, 55.0f)};
+    alone[0].setKeptRange(none, 60);
+    CHECK((fry::keptAsRecorded(alone, curve, asItStarts).all == fry::Ranges{{60, 70}}));
+    // Where the detector found nothing, nothing is added outside.
+    alone[0].setKeptRange(45, 60);
+    CHECK((fry::keptAsRecorded(alone, curve, nothing).all ==
+           fry::Ranges{{38, 45}, {60, 70}}));
+  }
+
+  // 6. The notes next to a marked one stay the detector's, and what it
+  //    decides for them stops at the marked note.
+  {
+    // (The second note, with no voice before its fry, plays the recording
+    // whole and is not listed: the first one's run stops at the voiced frame
+    // 69.)
+    std::vector<Note> notes{Note(40, 64, 55.0f), Note(64, 70, 55.0f)};
+    CHECK((fry::keptAsRecorded(notes, curve, atTheEnd).all == fry::Ranges{{60, 69}}));
+    notes[1].setKeptRange(none, none); // marked, keeping nothing
+    CHECK(notes[1].hasKeptRange());
+    CHECK((fry::keptAsRecorded(notes, curve, atTheEnd).all == fry::Ranges{{60, 64}}));
+  }
+
+  // 7. Where the squares stand on a note not marked by hand.
+  {
+    std::vector<Note> notes{Note(20, 50, 55.0f), Note(50, 70, 55.0f)};
+    auto shown = fry::shownRange(notes[0], notes, curve, atTheEnd);
+    CHECK(shown.headUntil == 20 && shown.tailFrom == 50); // nothing kept
+    // Told to keep fry the detector misses: all of it, the left square at
+    // the far right.
+    notes[0].setSynthEngine(told);
+    shown = fry::shownRange(notes[0], notes, curve, atTheEnd);
+    CHECK(shown.headUntil == 50 && shown.tailFrom == 50);
+    // Whole for the short voice before its fry: the two meet where it starts.
+    std::vector<Note> shortLead{Note(20, 54, 55.0f), Note(54, 70, 55.0f)};
+    shown = fry::shownRange(shortLead[1], shortLead, curve, atTheEnd);
+    CHECK(shown.headUntil == 60 && shown.tailFrom == 60);
+    // An onset in the middle of a note has no square.
+    std::vector<Note> middle{Note(30, 70, 55.0f)};
+    shown = fry::shownRange(middle[0], middle, curve, asItStarts);
+    CHECK(shown.headUntil == 30 && shown.tailFrom == 70);
+    // Marked by hand: where the user put them.
+    middle[0].setKeptRange(36, 66);
+    shown = fry::shownRange(middle[0], middle, curve, asItStarts);
+    CHECK(shown.headUntil == 36 && shown.tailFrom == 66);
+  }
+}
+
 int main()
 {
   theEndOfAPhraseIsFound();
@@ -406,6 +594,7 @@ int main()
   autoKeepsTheOnset();
   theVoiceArrivesWithTheSungCurve();
   theUsersChoiceOfKeptFry();
+  stretchesKeptByHand();
   std::printf("FryDetectorTests passed\n");
   return 0;
 }

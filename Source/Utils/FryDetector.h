@@ -381,6 +381,47 @@ inline Note::SynthEngine resolved(const Note& note)
     return keepsFry(note) ? Note::SynthEngine::VocoderRecordedHighs : note.getSynthEngine();
 }
 
+// ---- stretches kept by hand (Note::setKeptRange, the two green squares) ------
+//
+// Inside a note marked by hand nothing is the detector's: what stays the
+// recording there is the stretch at its start and the stretch at its end the
+// user dragged, and no more - not on to the end of the note, not the whole
+// note for a short voice before its fry. Outside the note the detector's own
+// decision stands (keptAsRecorded below).
+
+/** The note's stretches are marked by hand. */
+inline bool byHand(const Note& note) { return !note.isRest() && note.hasKeptRange(); }
+
+/** Left to the detector: on Auto, or told to keep its fry with nothing
+ *  marked by hand. */
+inline bool followsDetector(const Note& note)
+{
+    return keepsFry(note) && !note.hasKeptRange();
+}
+
+/** The [first, last) frames kept by hand at the note's start. */
+inline std::pair<int, int> handHead(const Note& note)
+{
+    const int start = note.getSrcStartFrame();
+    const int until = note.getKeptHeadUntil();
+    return {start, until < 0 ? start : std::clamp(until, start, std::max(start, note.getSrcEndFrame()))};
+}
+
+/** The [first, last) frames kept by hand at the note's end. */
+inline std::pair<int, int> handTail(const Note& note)
+{
+    const int end = std::max(note.getSrcStartFrame(), note.getSrcEndFrame());
+    const int from = note.getKeptTailFrom();
+    return {from < 0 ? end : std::clamp(from, note.getSrcStartFrame(), end), end};
+}
+
+/** The two stretches meet: all of the note is kept by hand. */
+inline bool wholeByHand(const Note& note)
+{
+    return byHand(note) && note.getSrcEndFrame() > note.getSrcStartFrame() &&
+           handHead(note).second >= handTail(note).first;
+}
+
 /** The frames of the recording that notes on Auto keep as recorded: each
  *  run of fry such a note holds, on to the end of that note (the pulses go
  *  on past what the detector calls voiced, and it calls some of them voiced
@@ -409,7 +450,7 @@ constexpr int kWholeUnder = 9; // 100 ms
  *  the fry alone kept. */
 inline bool keepsWhole(const Note& note, const Ranges& ranges)
 {
-    if (note.isRest() || !keepsFry(note))
+    if (note.isRest() || !followsDetector(note))
         return false;
     for (const auto& [a, b] : ranges)
         if (holds(note, Ranges{{a, b}}) && a - note.getSrcStartFrame() < kWholeUnder)
@@ -428,7 +469,7 @@ inline Ranges kept(const Notes& notes, const std::vector<float>& rawF0, const Ra
         int start = a;
         int end = b;
         for (const auto& note : notes)
-            if (!note.isRest() && keepsFry(note) && holds(note, Ranges{{a, b}}) &&
+            if (!note.isRest() && followsDetector(note) && holds(note, Ranges{{a, b}}) &&
                 (listPlaying || !playsRecording(note, Ranges{{a, b}})))
             {
                 onAuto = true;
@@ -498,7 +539,7 @@ inline Ranges keptOnsets(const Notes& notes, const Ranges& ranges)
             const int to = std::min(b, note.getSrcEndFrame());
             if (to <= from)
                 continue;
-            if (keepsFry(note))
+            if (followsDetector(note))
             {
                 onAuto = true;
                 continue;
@@ -540,14 +581,15 @@ inline bool toldWithoutFry(const Note& note, const Found& found)
 {
     return !note.isRest() &&
            note.getSynthEngine() == Note::SynthEngine::VocoderRecordedHighsFry &&
-           !holdsAny(note, found);
+           !note.hasKeptRange() && !holdsAny(note, found);
 }
 
 /** All of the note stays the recording: for the fry it holds with next to
- *  no voice before it (keepsWhole), or because it was told so. */
+ *  no voice before it (keepsWhole), because it was told so, or because the
+ *  stretches marked by hand cover it. */
 inline bool wholeAsRecorded(const Note& note, const Found& found)
 {
-    return keepsWhole(note, found.ends) || toldWithoutFry(note, found);
+    return keepsWhole(note, found.ends) || toldWithoutFry(note, found) || wholeByHand(note);
 }
 
 /** playsRecording() with the notes told to keep fry the detector misses. */
@@ -582,6 +624,184 @@ inline Note::SynthEngine shownAs(const Note& note, const Found& found)
                                  : Note::SynthEngine::VocoderRecordedHighs;
 }
 
+// ---- everything that stays the recording, in one place -----------------------
+
+/** `ranges` less the frames [from, to). */
+inline Ranges without(const Ranges& ranges, int from, int to)
+{
+    Ranges left;
+    for (const auto& [first, last] : ranges)
+    {
+        if (first < from)
+            left.emplace_back(first, std::min(last, from));
+        if (last > to)
+            left.emplace_back(std::max(first, to), last);
+    }
+    return left;
+}
+
+/** `ranges` in order, the ones that touch or overlap as one. */
+inline Ranges joined(Ranges ranges)
+{
+    std::sort(ranges.begin(), ranges.end());
+    Ranges out;
+    for (const auto& [first, last] : ranges)
+    {
+        if (last <= first)
+            continue;
+        if (!out.empty() && first <= out.back().second)
+            out.back().second = std::max(out.back().second, last);
+        else
+            out.emplace_back(first, last);
+    }
+    return out;
+}
+
+/** What stays the recording for its fry: every stretch (`all`), and of
+ *  those the ones a voice follows (`heads`), under which the vocoder is
+ *  given that voice's pitch (voiceArrivesAt). Frames of the recording. */
+struct Kept
+{
+    Ranges all;
+    Ranges heads;
+};
+
+/**
+ * The one place that says what stays the recording: the synthesizer renders
+ * by it and the piano roll paints it (`listPlaying`: with the notes that
+ * play the recording anyway, which the synthesizer does not render at all).
+ *
+ * For the notes left to the detector, what it decides (kept, keptOnsets,
+ * keptAsTold) - with no note marked by hand that is all, in that order. A
+ * note marked by hand keeps its two stretches and nothing else of its own
+ * frames. Outside it the detector's decision stands on the side where the
+ * note keeps something: the unvoiced frames after a note whose end is kept
+ * (the pulses go on past it, kKeepAfter), the lead of an onset before a note
+ * whose start is kept. So a square nudged from where the detector put it
+ * changes that edge and nothing else - marked exactly as the detector found,
+ * a note renders as it does on Auto. Where the detector found nothing,
+ * nothing is added outside the note.
+ */
+template <typename Notes>
+inline Kept keptAsRecorded(const Notes& notes, const std::vector<float>& rawF0,
+                           const Found& found, bool listPlaying = false)
+{
+    Kept result;
+    result.all = kept(notes, rawF0, found.ends, listPlaying);
+    result.heads = keptOnsets(notes, found.onsets);
+    result.all.insert(result.all.end(), result.heads.begin(), result.heads.end());
+    const auto told = keptAsTold(notes, found, listPlaying);
+    result.all.insert(result.all.end(), told.begin(), told.end());
+
+    bool anyByHand = false;
+    for (const auto& note : notes)
+        anyByHand = anyByHand || byHand(note);
+    if (!anyByHand)
+        return result;
+
+    const int total = static_cast<int>(rawF0.size());
+    const auto outsideByHand = [&notes](Ranges ranges)
+    {
+        for (const auto& note : notes)
+            if (byHand(note))
+                ranges = without(ranges, note.getSrcStartFrame(), note.getSrcEndFrame());
+        return ranges;
+    };
+    const auto inNoNote = [&notes](int from, int to)
+    {
+        Ranges ranges{{from, to}};
+        for (const auto& note : notes)
+            if (!note.isRest())
+                ranges = without(ranges, note.getSrcStartFrame(), note.getSrcEndFrame());
+        return ranges;
+    };
+    const auto add = [](Ranges& to, const Ranges& more)
+    {
+        to.insert(to.end(), more.begin(), more.end());
+    };
+    // A run that another note left to the detector keeps can reach into a
+    // note marked by hand: not there.
+    result.all = outsideByHand(std::move(result.all));
+
+    for (const auto& note : notes)
+    {
+        const int noteStart = note.getSrcStartFrame();
+        const int noteEnd = note.getSrcEndFrame();
+        if (!byHand(note) || noteEnd <= noteStart)
+            continue;
+        const bool whole = wholeByHand(note);
+        // Whole and with no other edit it plays the recording as an unedited
+        // note does: not rendered, so not listed, like a note told whole.
+        if (whole && !listPlaying && playsRecording(note, found))
+            continue;
+        const auto head = handHead(note);
+        const auto tail = handTail(note);
+        const bool keepsHead = whole || head.second > head.first;
+        const bool keepsTail = whole || tail.second > tail.first;
+        if (whole)
+            result.all.emplace_back(noteStart, noteEnd);
+        else
+        {
+            if (keepsHead)
+            {
+                result.all.push_back(head);
+                result.heads.push_back(head);
+            }
+            if (keepsTail)
+                result.all.push_back(tail);
+        }
+
+        // Outside the note, as the detector has it.
+        for (const auto& [a, b] : found.ends)
+        {
+            if (!holds(note, Ranges{{a, b}}))
+                continue;
+            if (keepsHead && a < noteStart)
+                add(result.all, outsideByHand(Ranges{{a, noteStart}}));
+            if (keepsTail)
+            {
+                int end = std::max(b, std::min(total, noteEnd));
+                const int from = end;
+                while (end < total && end < from + kKeepAfter &&
+                       rawF0[static_cast<size_t>(end)] <= 0.0f)
+                    ++end;
+                if (end > noteEnd)
+                    add(result.all, outsideByHand(Ranges{{noteEnd, end}}));
+            }
+        }
+        for (const auto& [a, b] : found.onsets)
+        {
+            if (std::min(b, noteEnd) <= std::max(a, noteStart))
+                continue;
+            // What the note keeps of the onset is still that onset to the
+            // vocoder, whichever square keeps it: the lead of a word in the
+            // end of the note before it, kept by that note's right square,
+            // is sung at the voice's pitch as when the detector keeps it.
+            for (const auto& piece : whole ? Ranges{{noteStart, noteEnd}} : Ranges{head, tail})
+                if (std::min(piece.second, b) > std::max(piece.first, a))
+                    result.heads.emplace_back(std::max(piece.first, a),
+                                              std::min(piece.second, b));
+            // The frames of other notes are theirs to keep or not: only
+            // what no note holds is this one's to take along.
+            if (keepsHead && a < noteStart)
+            {
+                const auto lead = inNoNote(a, noteStart);
+                add(result.all, lead);
+                add(result.heads, lead);
+            }
+            if (keepsTail && b > noteEnd)
+            {
+                const auto rest = inNoNote(noteEnd, b);
+                add(result.all, rest);
+                add(result.heads, rest);
+            }
+        }
+    }
+    // A lead and the stretch kept after it are one onset to the vocoder.
+    result.heads = joined(std::move(result.heads));
+    return result;
+}
+
 /** Every frame of the recording that stays as recorded for its fry, as the
  *  piano roll paints them: what the notes keep now or would keep once
  *  edited - the notes that play the recording anyway included. */
@@ -589,11 +809,60 @@ template <typename Notes>
 inline Ranges keptForDisplay(const Notes& notes, const std::vector<float>& rawF0,
                              const Found& found)
 {
-    auto shown = kept(notes, rawF0, found.ends, true);
-    const auto starts = keptOnsets(notes, found.onsets);
-    shown.insert(shown.end(), starts.begin(), starts.end());
-    const auto told = keptAsTold(notes, found, true);
-    shown.insert(shown.end(), told.begin(), told.end());
-    return shown;
+    return keptAsRecorded(notes, rawF0, found, true).all;
+}
+
+/** Where a note's two squares stand: it keeps [its start, headUntil) and
+ *  [tailFrom, its end), frames of the recording, headUntil <= tailFrom; the
+ *  two equal with everything between them kept means all of the note. */
+struct Shown
+{
+    int headUntil = 0;
+    int tailFrom = 0;
+};
+
+/**
+ * The squares of `note`: where the user put them, or - for a note not marked
+ * by hand - what the detector's decision amounts to at its start and at its
+ * end, which is where a drag starts from. A note told to keep fry the
+ * detector misses shows all of it as a head (the left square at the far
+ * right); one kept whole for the short voice before its fry shows the two
+ * meeting where the fry starts. A stretch kept in the middle of a note has
+ * no square: it is the detector's until the user drags one.
+ */
+template <typename Notes>
+inline Shown shownRange(const Note& note, const Notes& notes,
+                        const std::vector<float>& rawF0, const Found& found)
+{
+    const int start = note.getSrcStartFrame();
+    const int end = std::max(start, note.getSrcEndFrame());
+    if (byHand(note))
+    {
+        const int tailFrom = handTail(note).first;
+        return {std::min(handHead(note).second, tailFrom), tailFrom};
+    }
+    if (note.isRest() || end <= start)
+        return {start, end};
+    if (toldWithoutFry(note, found))
+        return {end, end};
+    for (const auto& [a, b] : found.ends)
+        if (keepsWhole(note, Ranges{{a, b}}))
+        {
+            const int at = std::clamp(a, start, end);
+            return {at, at};
+        }
+
+    std::vector<char> keptFrames(static_cast<size_t>(end - start), 0);
+    for (const auto& [from, to] : keptAsRecorded(notes, rawF0, found, true).all)
+        for (int frame = std::max(from, start); frame < std::min(to, end); ++frame)
+            keptFrames[static_cast<size_t>(frame - start)] = 1;
+    const int frames = end - start;
+    int head = 0;
+    while (head < frames && keptFrames[static_cast<size_t>(head)] != 0)
+        ++head;
+    int tail = 0;
+    while (tail < frames - head && keptFrames[static_cast<size_t>(frames - 1 - tail)] != 0)
+        ++tail;
+    return {start + head, end - tail};
 }
 } // namespace fry

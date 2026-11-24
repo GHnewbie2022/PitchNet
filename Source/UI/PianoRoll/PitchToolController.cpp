@@ -1,4 +1,6 @@
 #include "PitchToolController.h"
+#include "../../Audio/NoteTiming.h"
+#include "../../Utils/Constants.h"
 #include "../../Utils/PitchToolOperations.h"
 #include "../../Audio/ProjectGain.h"
 #include "../../Undo/AmplitudeAction.h"
@@ -73,6 +75,39 @@ bool PitchToolController::mouseDown(const juce::MouseEvent& e,
   activeHandleType = handle.type;
   activeHandleNote = handle.note;
 
+  // A green square: the stretch of this one note kept as recorded by hand.
+  // The drag starts from where the squares stand - the user's own marks, or
+  // on a note left to the detector what it decided - and nothing changes
+  // until the square moves to another frame.
+  if (isKeepHandle(handle.type))
+  {
+    if (!project || !handle.note || handle.note->isRest())
+    {
+      activeHandleType = PitchToolHandles::HandleType::None;
+      activeHandleNote = nullptr;
+      return false;
+    }
+    const auto& audio = project->getAudioData();
+    thread_local fry::Cache found;
+    keepBefore = SynthChoice::of(*handle.note);
+    keepStart = fry::shownRange(*handle.note, project->getNotes(), audio.rawF0,
+                                found.of(audio));
+    const auto map = notetiming::forNoteOnScreen(audio, *handle.note);
+    const int at = handle.type == PitchToolHandles::HandleType::KeepHead
+                       ? keepStart.headUntil
+                       : keepStart.tailFrom;
+    keepStartX = mapper.timeToX(
+        framesToSeconds(static_cast<float>(map.destinationAt(at))));
+    affectedNotes.assign(1, handle.note);
+    originalParams.clear();
+    dragStartPos = e.position;
+    dragging = true;
+    gainPreviewValid = false;
+    rotating = false;
+    pivotReset = false;
+    return true;
+  }
+
   // The visible top controls belong to the hovered note. When it is part of a
   // multi-note selection, slopes and vibrato are group edits, so capture the
   // complete selection. Hovering an unselected note must still only affect
@@ -141,12 +176,50 @@ bool PitchToolController::mouseDrag(const juce::MouseEvent& e,
   const float deltaX = e.position.x - dragStartPos.x;
   const float deltaY = e.position.y - dragStartPos.y;
 
+  if (isKeepHandle(activeHandleType))
+  {
+    dragKeep(deltaX, mapper);
+    return true;
+  }
   if (pivotReset)
     return true;
   rotating = e.mods.isAltDown();
   applyOperation(affectedNotes, activeHandleType, deltaX, deltaY, mapper);
   gainPreviewValid = false;
   return true;
+}
+
+// A green square follows the pointer along the note, one frame of the
+// recording at a time (through the note's time map: a stretched note's
+// frames are wider on screen). The left one keeps from the note's start up
+// to where it stands, the right one from where it stands to the note's end;
+// neither passes the other, and the two meeting is all of the note.
+void PitchToolController::dragKeep(float dragDeltaX, const CoordinateMapper& mapper)
+{
+  Note* note = activeHandleNote;
+  if (!project || !note)
+    return;
+  const auto map = notetiming::forNoteOnScreen(project->getAudioData(), *note);
+  const double frame = mapper.xToTime(keepStartX + dragDeltaX) * SAMPLE_RATE / HOP_SIZE;
+  const int source = static_cast<int>(std::lround(map.sourceAt(frame)));
+  const int start = note->getSrcStartFrame();
+  const int end = std::max(start, note->getSrcEndFrame());
+  int headUntil = keepStart.headUntil;
+  int tailFrom = keepStart.tailFrom;
+  if (activeHandleType == PitchToolHandles::HandleType::KeepHead)
+    headUntil = std::clamp(source, start, tailFrom);
+  else
+    tailFrom = std::clamp(source, headUntil, end);
+
+  // Back where the squares stood, the note is as it was: one left to the
+  // detector is not marked by a drag that ends where it began.
+  if (headUntil == keepStart.headUntil && tailFrom == keepStart.tailFrom)
+    keepBefore.applyTo(*note);
+  else
+    note->setKeptRange(headUntil > start ? headUntil : Note::kKeepsNone,
+                       tailFrom < end ? tailFrom : Note::kKeepsNone);
+  // (The piano roll repaints after every drag step: the green fill and the
+  // squares follow from the note.)
 }
 
 bool PitchToolController::mouseUp(const juce::MouseEvent& e,
@@ -157,6 +230,38 @@ bool PitchToolController::mouseUp(const juce::MouseEvent& e,
 
   if (!dragging)
     return false;
+
+  // A green square let go: one history step, shared with the synthesis menu
+  // (SynthChoiceAction). The note goes back to how it was first - applying
+  // the action is what changes it, so that it sees the note become whole (or
+  // stop being so) and moves the pitch curve with it.
+  if (isKeepHandle(activeHandleType))
+  {
+    Note* note = activeHandleNote;
+    std::unique_ptr<UndoableAction> action;
+    if (project && note)
+    {
+      const auto after = SynthChoice::of(*note);
+      keepBefore.applyTo(*note);
+      if (after != keepBefore)
+        action = std::make_unique<SynthChoiceAction>(
+            *project, std::vector<Note*>{note}, std::vector<SynthChoice>{keepBefore},
+            std::vector<SynthChoice>{after}, "Set Kept Range");
+    }
+    dragging = false;
+    activeHandleType = PitchToolHandles::HandleType::None;
+    activeHandleNote = nullptr;
+    affectedNotes.clear();
+    originalParams.clear();
+    if (action && onSynthChoice)
+      onSynthChoice(std::move(action));
+    else if (action)
+    {
+      action->redo();
+      if (undoManager) undoManager->addAction(std::move(action));
+    }
+    return true;
+  }
 
   if (activeHandleType == PitchToolHandles::HandleType::SibilantBalance && project)
   {
@@ -459,6 +564,9 @@ void PitchToolController::cancel()
 {
   if (!dragging)
     return;
+
+  if (isKeepHandle(activeHandleType) && activeHandleNote)
+    keepBefore.applyTo(*activeHandleNote);
 
   // Restore original transformation parameters
   for (size_t i = 0; i < affectedNotes.size(); ++i)

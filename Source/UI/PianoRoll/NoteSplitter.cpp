@@ -1,6 +1,7 @@
 #include "NoteSplitter.h"
 #include "../../Undo/NoteActions.h"
 #include "../../Audio/NoteTiming.h"
+#include "../../Utils/FryDetector.h"
 #include "../../Utils/NoteAmplitude.h"
 #include "../../Utils/PitchCurveProcessor.h"
 #include "../../Utils/Constants.h"
@@ -674,7 +675,7 @@ Note* NoteSplitter::findNoteAt(float x, float y) {
     return nullptr;
 }
 
-bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
+bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame, bool keepCentre) {
     if (!note || !project)
         return false;
 
@@ -749,6 +750,14 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
     secondNote.setDeltaScale(note->getDeltaScale());
     secondNote.setDeltaOffset(note->getDeltaOffset());
     secondNote.setPitchOffset(0.0f);
+    // Both halves are rendered the way the note was (it used to be the left
+    // half only: the right one of a Rubber Band note went back to Auto), and
+    // the stretches kept by hand go with them. Those are frames of the
+    // recording (Note::setKeptRange), so each half keeps what of them lies
+    // in it with nothing to work out.
+    secondNote.setSynthEngine(note->getSynthEngine());
+    if (note->hasKeptRange())
+        secondNote.setKeptRange(note->getKeptHeadUntil(), note->getKeptTailFrom());
 
     // Split originalDeltaPitch if available.
     // Each curve stored with the note divides where the recorded frame at the
@@ -832,10 +841,11 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
 
     // Recalculate each half's center from its own voiced pitch frames. Rebase
     // its deviation curve by the opposite amount so splitting is pitch-neutral.
+    // (keepCentre: both stay on the note's, and nothing is rebased.)
     const auto& audioData = project->getAudioData();
-    const float leftPitchCenter = calculatePitchCenter(
+    const float leftPitchCenter = keepCentre ? previousPitchCenter : calculatePitchCenter(
         audioData, startFrame, splitFrame, previousPitchCenter);
-    const float rightPitchCenter = calculatePitchCenter(
+    const float rightPitchCenter = keepCentre ? previousPitchCenter : calculatePitchCenter(
         audioData, splitFrame, endFrame, previousPitchCenter);
 
     rebasePitchDeviation(*note, previousPitchCenter - leftPitchCenter);
@@ -1031,6 +1041,31 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
         const auto& more = secondNote.getAnalysisSpans();
         spans.insert(spans.end(), more.begin(), more.end());
         mergedNote.setAnalysisSpans(std::move(spans));
+    }
+    // The stretches kept by hand (Note::setKeptRange). The merged note is
+    // rendered the way its first half was. Where that keeps fry and either
+    // half was marked by hand, the merged note is marked too: with what the
+    // two halves show kept from its start on, and up to its end. A stretch
+    // that ends up in the middle goes - there are two squares to say it with.
+    if (fry::keepsFry(firstNote) &&
+        (firstNote.hasKeptRange() || secondNote.hasKeptRange()))
+    {
+        const auto& data = project->getAudioData();
+        const auto found = fry::find(data);
+        const auto left =
+            fry::shownRange(firstNote, project->getNotes(), data.rawF0, found);
+        const auto right =
+            fry::shownRange(secondNote, project->getNotes(), data.rawF0, found);
+        const int start = firstNote.getSrcStartFrame();
+        const int end = secondNote.getSrcEndFrame();
+        const bool leftWhole = left.headUntil >= left.tailFrom;
+        const bool rightWhole = right.headUntil >= right.tailFrom;
+        const int headUntil =
+            leftWhole ? (rightWhole ? end : right.headUntil) : left.headUntil;
+        const int tailFrom =
+            rightWhole ? (leftWhole ? start : left.tailFrom) : right.tailFrom;
+        mergedNote.setKeptRange(headUntil > start ? headUntil : Note::kKeepsNone,
+                                tailFrom < end ? tailFrom : Note::kKeepsNone);
     }
 
     NoteAmplitude::update(mergedNote, project->getAudioData());
