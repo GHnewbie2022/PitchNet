@@ -1183,6 +1183,11 @@ bool ProjectSerializer::fromBinaryArchive(Project& project, const void* data,
     return true;
 }
 
+bool ProjectSerializer::writtenAlike(const Note& a, const Note& b) {
+    return juce::JSON::toString(noteToJson(a, true, true), true) ==
+           juce::JSON::toString(noteToJson(b, true, true), true);
+}
+
 juce::var ProjectSerializer::noteToJson(const Note& note,
                                         bool includeAnalysisCache,
                                         bool includePitchData) {

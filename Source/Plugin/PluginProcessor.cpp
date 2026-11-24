@@ -4,9 +4,12 @@
 #include "../Utils/AudioResampler.h"
 #include "../Audio/BreathSibilanceAnalysis.h"
 #include "../Audio/EditorController.h"
+#include "../Audio/RecordingChange.h"
+#include "../Utils/FryNoteCuts.h"
 #include "../Undo/PitchUndoManager.h"
 #include "../Models/ProjectModificationRanges.h"
 #include "../Models/ProjectSerializer.h"
+#include "../Models/RenderMarks.h"
 #include "../Models/ProjectTimelineOffset.h"
 #include "../UI/IMainView.h"
 #include "../UI/Components/StyledMessageBox.h"
@@ -32,15 +35,29 @@ namespace {
 // device setting.
 // Reads (and on first run may write) the config file: message thread only,
 // never the audio thread.
+// The pitch detector and the synthesis engine come from the user's settings
+// too, as MainComponent gives them to the controller it works with: left at
+// EditorController's defaults, a region was analysed and rendered with those
+// whatever the settings said.
 std::unique_ptr<EditorController> makeAnalysisController() {
   auto controller = std::make_unique<EditorController>(false);
   SettingsManager settings;
+  controller->setPitchDetectorType(settings.getPitchDetectorType());
+  controller->setSynthesisEngineType(settings.getSynthesisEngineType());
   controller->setDeviceConfig(settings.getDevice(), settings.getGPUDeviceId());
   if (auto *vocoder = controller->getVocoder()) {
     vocoder->setExecutionDevice(settings.getDevice());
     vocoder->setExecutionDeviceId(settings.getGPUDeviceId());
   }
   return controller;
+}
+
+// The detector can be changed while the plug-in is open: a controller made
+// before that asks again before it detects pitch. (The engine is set once,
+// as above: EditorController changes it itself when the vocoder cannot run.)
+void useChosenPitchDetector(EditorController &controller) {
+  SettingsManager settings;
+  controller.setPitchDetectorType(settings.getPitchDetectorType());
 }
 
 // The project is stored in modification time and spans the whole modification.
@@ -1690,6 +1707,9 @@ void PitchNetAudioProcessor::requestPluginProjectRender(
   auto &pendingRerun =
       target != nullptr ? modificationRenders[targetKey].pending
       : renderActiveAraRegion ? regionCanvasRenderPendingRerun : araRenderPendingRerun;
+  // The marks this render answers, cleared on the project shown as it lands
+  // (RenderMarks.h).
+  const auto renderMarks = rendermarks::of(projectToRender);
 
   controller->resynthesizeIncrementalAsync(
       *backendProject,
@@ -1702,7 +1722,7 @@ void PitchNetAudioProcessor::requestPluginProjectRender(
       [this, controller, renderActiveAraRegion, renderRegionKey, renderRegionRevision,
        renderModification, renderStartSampleInModification,
        renderRegionStartSeconds, renderRegionEndSeconds,
-       renderChangedSampleRanges, target](bool success) {
+       renderChangedSampleRanges, target, renderMarks](bool success) {
         if (renderActiveAraRegion) {
           const auto current = araRegions.find(renderRegionKey);
           if (current == araRegions.end() ||
@@ -1735,9 +1755,10 @@ void PitchNetAudioProcessor::requestPluginProjectRender(
             if (persistentProject == nullptr)
               persistentProject = araRegions[renderRegionKey].project.get();
 
-            if (persistentProject != nullptr)
+            if (persistentProject != nullptr) {
               mergeRenderedState(*persistentProject, *renderedProject);
-            else
+              rendermarks::clearAnswered(*persistentProject, *renderedProject, renderMarks);
+            } else
               araRegions[renderRegionKey].project =
                   std::make_unique<Project>(*renderedProject);
             if (renderRegionKey == activeRegionKey)
@@ -3200,6 +3221,7 @@ void PitchNetAudioProcessor::analyzeAraRegionForCanvas(
   // JUCE's ARAPluginDemo/VocalNet.
   if (!regionCanvasController)
     regionCanvasController = makeAnalysisController();
+  useChosenPitchDetector(*regionCanvasController);
 
   const bool backgroundAnalysis = regionKey != activeRegionKey;
   const auto analysisGeneration =
@@ -3514,6 +3536,16 @@ bool PitchNetAudioProcessor::araRegionProjectNeedsSourceHydration(
 }
 
 
+bool PitchNetAudioProcessor::shownOnCanvas(const Project &project) const {
+  return mainComponent != nullptr && mainComponent->getProject() == &project;
+}
+
+void PitchNetAudioProcessor::forgetRegionHistory(const juce::String &regionKey) {
+  const auto it = araRegions.find(regionKey);
+  if (it != araRegions.end() && it->second.undoManager)
+    it->second.undoManager->clear();
+}
+
 bool PitchNetAudioProcessor::hydrateAraRegionProject(
     const juce::String &regionKey,
     const juce::AudioBuffer<float> &sourceBuffer,
@@ -3661,9 +3693,12 @@ bool PitchNetAudioProcessor::hydrateAraRegionProject(
     }
   }
 
-  // Breath/sibilance labels are not archived; derive them from the source
-  // just restored, like the mel spectrogram above.
-  breathsibilance::ensure(audioData);
+  // The frames are known now: what the standalone gives a linked project
+  // once it has read its recording (recordingchange::settle) - the breath
+  // and sibilance labels, which are not archived, among it. The notes are
+  // cut only while no piano roll shows this project.
+  if (recordingchange::settle(*project, !shownOnCanvas(*project)) > 0)
+    forgetRegionHistory(regionKey);
 
   // Spec Q11: a state from before the fingerprint learns it now; a
   // recording edited since is analysed again where it changed.
@@ -3695,6 +3730,7 @@ void PitchNetAudioProcessor::applyRecordingChange(
     PitchNetAudioModification *modification) {
   if (!regionCanvasController)
     regionCanvasController = makeAnalysisController();
+  useChosenPitchDetector(*regionCanvasController);
   auto *controller = regionCanvasController.get();
   const auto update = recordingchange::apply(
       project, saved, now,
@@ -3712,6 +3748,10 @@ void PitchNetAudioProcessor::applyRecordingChange(
            " detected=" + juce::String(update.detected ? 1 : 0));
   if (update.audioFrames.empty())
     return;
+  // The pitch detected again can start a word in fry where it did not: the
+  // note there is cut, as the standalone cuts it (recordingchange::openLinked).
+  if (!shownOnCanvas(project) && frycut::apply(project) > 0)
+    forgetRegionHistory(regionKey);
 
   // The stored composite held the old recording; it now holds the new one
   // where nothing is edited. Publish it at once so playback stops laying

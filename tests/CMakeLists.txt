@@ -34,6 +34,7 @@ set(PITCHNET_TEST_SOURCES
     HighBandRestoreTests.cpp
     FryDetectorTests.cpp
     FryNoteCutsTests.cpp
+    RenderMarksTests.cpp
     RubberBandShiftTests.cpp
     TiltPivotTests.cpp
     TimelineCoordinateTests.cpp

@@ -1871,12 +1871,20 @@ void PitchNetDocumentController::requestRegionCanvasAnalysis(
     return;
 
   const int numSamples = static_cast<int>(sourceSampleCount);
-  juce::AudioBuffer<float> buffer(1, numSamples);
-  buffer.clear();
-
-  juce::ARAAudioSourceReader reader(source);
-  if (!reader.read(&buffer, 0, numSamples, 0, true, false))
-    return;
+  // What is analysed is mono: channels 0 and 1 averaged, as the standalone
+  // analyses a file (recordingchange::monoOf). The left channel alone was
+  // read here, so a recording whose two channels differ was analysed
+  // differently in a host.
+  juce::AudioBuffer<float> buffer;
+  {
+    const bool stereo = source->getChannelCount() > 1;
+    juce::AudioBuffer<float> channels(stereo ? 2 : 1, numSamples);
+    channels.clear();
+    juce::ARAAudioSourceReader reader(source);
+    if (!reader.read(&channels, 0, numSamples, 0, true, stereo))
+      return;
+    buffer = recordingchange::monoOf(channels);
+  }
 
   // The recording as the host reads it now, every channel (spec Q11): the
   // saved state tells from it whether the file was edited since.

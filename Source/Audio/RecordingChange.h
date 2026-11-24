@@ -44,6 +44,12 @@ changedSamples(const recording::Fingerprint &before, const recording::Fingerprin
  *  (EditorController::loadAudioFileAsync). */
 juce::AudioBuffer<float> analysisCopy(const juce::AudioBuffer<float> &source, int sampleRate);
 
+/** The mono of it, at the recording's own rate: one channel as it is, else
+ *  channels 0 and 1 averaged. What the plug-in hands to the analysis from
+ *  its host's audio, so that a recording whose channels differ is analysed
+ *  the same in a host as from its file. */
+juce::AudioBuffer<float> monoOf(const juce::AudioBuffer<float> &source);
+
 /** The composite's rendered edits: the runs where it differs from the
  *  reference (the recording laid out by the warp map), exactly. */
 std::vector<recording::Piece> editPieces(const AudioData &audioData);
@@ -55,6 +61,20 @@ std::vector<recording::Piece> editPieces(const AudioData &audioData);
  * amplitudes and breath labels, and untouched curves fitted to the pitch.
  */
 bool hydrate(Project &project);
+
+/**
+ * What a project is given once its recording is attached and its frames are
+ * known, the same wherever that happens: each note's level in the recording,
+ * the breath and sibilance labels, untouched curves fitted to the pitch, and
+ * the notes cut where the fry a word starts with begins (FryNoteCuts.h).
+ * hydrate() ends with it, and the plug-in calls it when it gives a restored
+ * project its host's audio: written out in each place, the plug-in's had
+ * only the labels. `cutNotes` false leaves the note list as it is, for a
+ * project a piano roll is showing (it holds its notes by address).
+ * Returns how many notes were cut: steps of an undo history made before
+ * hold those notes whole, so a caller that keeps one forgets it then.
+ */
+int settle(Project &project, bool cutNotes);
 
 /**
  * An embedded project linked to its recording for the first time: the

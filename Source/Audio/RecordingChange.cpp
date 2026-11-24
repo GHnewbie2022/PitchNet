@@ -194,10 +194,11 @@ changedSamples(const recording::Fingerprint &before, const recording::Fingerprin
   return ranges;
 }
 
-juce::AudioBuffer<float> analysisCopy(const juce::AudioBuffer<float> &source, int sampleRate)
+juce::AudioBuffer<float> monoOf(const juce::AudioBuffer<float> &source)
 {
   const int samples = source.getNumSamples();
   juce::AudioBuffer<float> mono(1, std::max(0, samples));
+  mono.clear();
   if (samples <= 0 || source.getNumChannels() <= 0)
     return mono;
   if (source.getNumChannels() == 1)
@@ -210,6 +211,14 @@ juce::AudioBuffer<float> analysisCopy(const juce::AudioBuffer<float> &source, in
     for (int i = 0; i < samples; ++i)
       out[i] = (left[i] + right[i]) * 0.5f;
   }
+  return mono;
+}
+
+juce::AudioBuffer<float> analysisCopy(const juce::AudioBuffer<float> &source, int sampleRate)
+{
+  auto mono = monoOf(source);
+  if (mono.getNumSamples() <= 0 || source.getNumChannels() <= 0)
+    return mono;
   if (sampleRate != SAMPLE_RATE)
     return AudioResampler::resample(mono, sampleRate, SAMPLE_RATE);
   return mono;
@@ -328,6 +337,13 @@ bool hydrate(Project &project)
   // again as it is opened.
   audioData.warpLayoutPending = stretchedTheOldWay;
 
+  settle(project, true);
+  return true;
+}
+
+int settle(Project &project, bool cutNotes)
+{
+  auto &audioData = project.getAudioData();
   for (auto &note : project.getNotes())
     NoteAmplitude::update(note, audioData);
   audioData.breathSibilance.clear();
@@ -336,8 +352,7 @@ bool hydrate(Project &project)
   PitchCurveProcessor::refitUntouchedCurves(project, 0, audioData.getNumFrames());
   // ...and a note is cut where the fry a word starts with begins
   // (FryNoteCuts.h): a project saved before that was done opens cut.
-  frycut::apply(project);
-  return true;
+  return cutNotes ? frycut::apply(project) : 0;
 }
 
 Update apply(Project &project, const recording::Fingerprint &saved, const Detect &detect)

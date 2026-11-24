@@ -212,6 +212,27 @@ void aCurveBetweenTheNotesStaysAsRead()
   CHECK(noteFrom(project, 44) != nullptr && noteFrom(project, 42)->getSrcEndFrame() == 44);
 }
 
+// What a project is given once its frames are known is one call wherever it
+// happens (recordingchange::settle): the standalone's hydrate() ends with
+// it, and the plug-in makes it when it gives a restored project its host's
+// audio. It cuts the notes - unless told to leave the note list alone, for
+// a project a piano roll is showing; a later call then cuts them.
+void settlingAProjectCutsItsNotesWhenAsked()
+{
+  Project project;
+  lay(project, 140);
+  CHECK(recordingchange::settle(project, false) == 0);
+  CHECK(notesIn(project) == 2);
+  CHECK(frycut::wanted(project).size() == 1);
+  // It tells how many it cut: the plug-in forgets the region's undo history
+  // then, whose steps hold the note whole.
+  CHECK(recordingchange::settle(project, true) == 1);
+  CHECK(notesIn(project) == 3);
+  CHECK(noteFrom(project, 44) != nullptr);
+  CHECK(recordingchange::settle(project, true) == 0);
+  CHECK(notesIn(project) == 3);
+}
+
 // An edited note keeps its edit on both pieces, and what it sang: moved a
 // semitone up before the cut, the line over the voice is where it was.
 void theEditStaysOnBothPieces()
@@ -485,6 +506,7 @@ int main()
   theFryIsInTheMiddleOfTheNote();
   theNoteIsCutWhereTheFryStarts();
   aCurveBetweenTheNotesStaysAsRead();
+  settlingAProjectCutsItsNotesWhenAsked();
   theEditStaysOnBothPieces();
   aNoteThatStartsWithItsFryIsLeft();
   thePiecesAreAnalysedNotes();

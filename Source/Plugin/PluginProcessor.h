@@ -264,6 +264,14 @@ public:
   // modification plays the new recording at once where nothing is edited,
   // and the edited notes there render when the region is shown
   // (finishRecordingChange).
+  // True while the editor's piano roll shows this very project: its note
+  // list is then left as it is (the piano roll holds notes by address).
+  bool shownOnCanvas(const Project &project) const;
+  // A region's notes were cut where their fry begins (FryNoteCuts.h) as its
+  // project was given its audio: the steps of its undo history hold those
+  // notes whole, and undoing one would put a whole note back over the pieces.
+  // The standalone cuts as a file is opened, with no history yet.
+  void forgetRegionHistory(const juce::String &regionKey);
   bool hydrateAraRegionProject(const juce::String &regionKey,
                                const juce::AudioBuffer<float> &sourceBuffer,
                                double sourceSampleRate,

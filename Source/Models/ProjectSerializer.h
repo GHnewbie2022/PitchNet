@@ -120,6 +120,10 @@ public:
     static bool fromBinaryArchive(Project& project, const void* data,
                                   size_t sizeInBytes);
 
+    /** True when the two notes would be saved the same: every field a
+     *  project file holds for a note, its curves included. */
+    static bool writtenAlike(const Note& a, const Note& b);
+
 private:
     // Note serialization
     static juce::var noteToJson(const Note& note, bool includeAnalysisCache,
