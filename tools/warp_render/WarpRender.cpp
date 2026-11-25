@@ -1928,6 +1928,18 @@ int main(int argc, char **argv)
     for (size_t f = 0; f < recorded.size(); ++f)
       recorded[f] = white(static_cast<int>(f));
     std::map<std::string, int> counts;
+    // GUIDE_FIX_TARGETS=<file>: every note the guide gave a target, one a
+    // line - what was sung, the target, and what decided it - for measuring
+    // how far a target found without the guide would differ.
+    std::FILE *targetsFile = nullptr;
+    if (const char *path = std::getenv("GUIDE_FIX_TARGETS"); path != nullptr && !probe)
+      targetsFile = std::fopen(path, "w");
+    const auto noteTarget = [&](const char *kind, const Note &n, float sungPitch, float targetPitch,
+                                int heldFrames, const juce::String &why) {
+      if (targetsFile != nullptr)
+        std::fprintf(targetsFile, "%s\t%d\t%d\t%.3f\t%.3f\t%d\t%s\n", kind, n.getStartFrame(),
+                     n.getEndFrame(), sungPitch, targetPitch, heldFrames, why.trim().toRawUTF8());
+    };
     // A one-sided tilt turning from pivot (absolute frame) to the note's end,
     // by the amount that brings what follows closest to level (least squares).
     auto tiltTail = [&](Note &target, int start, int frames, int pivot, float level) {
@@ -2889,6 +2901,9 @@ int main(int argc, char **argv)
       if (extreme < 0 && consonantEdge && std::abs(sung - target) <= consonantTolerance && !flatten)
       {
         ++counts["consonant-small"];
+        noteTarget("consonant-small", note, sung, target, h1 - h0,
+                   juce::String(fromNeighbours ? "neighbour-target " : "") +
+                       (snapped ? "snapped-to-key " : ""));
         continue;
       }
       if (extreme < 0 && std::abs(sung - target) <= tolerance && !flatten)
@@ -2898,6 +2913,9 @@ int main(int argc, char **argv)
         for (int i : measured)
           frames.push_back(s + i);
         inTune.push_back({&note, target, sung, centre, frames});
+        noteTarget("in-tune", note, sung, target, h1 - h0,
+                   juce::String(fromNeighbours ? "neighbour-target " : "") +
+                       (snapped ? "snapped-to-key " : ""));
         continue;
       }
       // The held part moves by the note's deviation (the tilt's own lift of
@@ -2947,7 +2965,10 @@ int main(int argc, char **argv)
       note.markDirty();
       plans.push_back(plan);
       ++counts[("fix-" + plan.how).toStdString()];
+      noteTarget(("fix-" + plan.how).toRawUTF8(), note, sung, target, h1 - h0, plan.review);
     }
+    if (targetsFile != nullptr)
+      std::fclose(targetsFile);
     if (probe)
       return 0;
     // One vowel cut into two notes of the same pitch: when one is corrected,
