@@ -16,6 +16,8 @@
 #include "../../Utils/PlatformPaths.h"
 #include "../../Utils/SHA256Utils.h"
 
+#include <cmath>
+
 void MainComponent::openProjectFile(const juce::File &file) {
   if (isLoadingAudio.load())
     return;
@@ -222,6 +224,7 @@ void MainComponent::openLoadedProject(const juce::File &file,
                                            loopRange.endSeconds);
                     engine->setLoopEnabled(loopRange.enabled);
                     engine->setVolumeDb(project->getVolume());
+                    safeThis->syncMixerWithProject();
                   } catch (...) {
                   }
                 }
@@ -403,6 +406,7 @@ void MainComponent::showOpenedProject(const juce::File &file,
       } catch (...) {
       }
     }
+    syncMixerWithProject();
   }
 
   if (hasAnalyzedProject())
@@ -708,8 +712,16 @@ void MainComponent::loadAudioFile(const juce::File &file,
   showAnalysisProgress(0.0);
 
   juce::Component::SafePointer<MainComponent> safeThis(this);
+  // The wizard goes on from here (afterAudioLoaded), once.
+  const auto tellWaiting = [safeThis](bool shown) {
+    if (safeThis == nullptr)
+      return;
+    if (auto waiting = std::exchange(safeThis->afterAudioLoaded, nullptr))
+      waiting(shown);
+  };
   if (!editorController) {
     isLoadingAudio = false;
+    tellWaiting(false);
     return;
   }
 
@@ -724,7 +736,7 @@ void MainComponent::loadAudioFile(const juce::File &file,
         const juce::ScopedLock sl(safeThis->loadingMessageLock);
         safeThis->loadingMessage = msg;
       },
-      [safeThis, loadingParameters](const juce::AudioBuffer<float> &original) {
+      [safeThis, loadingParameters, tellWaiting](const juce::AudioBuffer<float> &original) {
         if (safeThis == nullptr)
           return;
 
@@ -733,8 +745,10 @@ void MainComponent::loadAudioFile(const juce::File &file,
           safeThis->undoManager->clear();
 
         auto *project = safeThis->getProject();
-        if (!project)
+        if (!project) {
+          tellWaiting(false);
           return;
+        }
         if (loadingParameters)
           project->setMidiReference(loadingParameters->midiReference);
         if (!safeThis->isPluginMode())
@@ -765,6 +779,7 @@ void MainComponent::loadAudioFile(const juce::File &file,
             engine->setVolumeDb(project->getVolume());
           } catch (...) {
           }
+          safeThis->syncMixerWithProject();
         }
 
         safeThis->fitAnalyzedPitchRangeToView(*project);
@@ -782,6 +797,7 @@ void MainComponent::loadAudioFile(const juce::File &file,
                   TR("error.vocoder_load_failed") + "\n" +
                       modelPath.getFullPathName() + "\n\n" +
                       TR("error.check_model_install"));
+              tellWaiting(false);
               return;
             }
           } else {
@@ -790,6 +806,7 @@ void MainComponent::loadAudioFile(const juce::File &file,
                 TR("error.vocoder_not_found") + "\n" +
                     modelPath.getFullPathName() + "\n\n" +
                     TR("error.install_models"));
+            tellWaiting(false);
             return;
           }
         }
@@ -799,11 +816,13 @@ void MainComponent::loadAudioFile(const juce::File &file,
 
         if (safeThis->isPluginMode())
           safeThis->notifyProjectDataChanged();
+        tellWaiting(true);
       },
-      [safeThis]() {
+      [safeThis, tellWaiting]() {
         if (safeThis == nullptr)
           return;
         safeThis->isLoadingAudio = false;
+        tellWaiting(false);
       });
 }
 
@@ -844,4 +863,191 @@ void MainComponent::clearProjectForNewLoad(std::optional<MidiReference::State> r
   toolbar.setLoopEnabled(false);
   toolbar.setTransportEnabled(isPluginMode());
   pianoRoll.setCursorTime(0.0);
+  syncMixerWithProject(); // the project before it had its accompaniment: gone
+}
+
+// ---------------------------------------------------------------------------
+// The accompaniment (spec section 15)
+
+void MainComponent::refreshMixerPanel() {
+  if (isPluginMode())
+    return;
+  MixerPanel::State state;
+  if (const auto *project = getProject()) {
+    const auto &backing = project->getBacking();
+    state.hasProject = hasAnalyzedProject();
+    state.voiceDb = project->getVocalGainDb();
+    state.hasBacking = backing.isSet();
+    state.backingName = backing.file.getFileName();
+    state.backingAudible = backing.audible;
+    state.backingDb = backing.gainDb;
+  }
+  state.backingMissing = backingMissing;
+  state.backingLoading = backingLoading;
+  mixerPanel.setState(state);
+}
+
+void MainComponent::syncMixerWithProject() {
+  auto *engine = editorController ? editorController->getAudioEngine() : nullptr;
+  if (isPluginMode() || engine == nullptr)
+    return;
+  const auto *project = getProject();
+  const auto backing = project != nullptr ? project->getBacking() : BackingTrack{};
+  engine->setVoiceGainDb(project != nullptr ? project->getVocalGainDb() : 0.0f);
+  engine->setBackingGainDb(backing.gainDb);
+  engine->setBackingAudible(backing.audible);
+  if (!backing.isSet()) {
+    ++backingLoadGeneration; // a load on its way is for a project that is gone
+    engine->clearBacking();
+    loadedBackingFile = juce::File{};
+    backingMissing = false;
+    backingLoading = false;
+    refreshMixerPanel();
+    return;
+  }
+  if (backing.file == loadedBackingFile && engine->hasBacking() && !backingLoading) {
+    refreshMixerPanel();
+    return;
+  }
+  loadBackingAudio(backing.file, false);
+}
+
+void MainComponent::chooseProjectBacking() {
+  if (isPluginMode() || getProject() == nullptr || fileChooser != nullptr)
+    return;
+  // UI tests only: PITCHNET_BACKING_FILE names the file, so the choice runs
+  // without the system's Open panel (which cannot be driven in the
+  // background). Everything after the choice is the same.
+  if (const char *named = std::getenv("PITCHNET_BACKING_FILE")) {
+    setProjectBacking(juce::File(juce::String::fromUTF8(named)));
+    return;
+  }
+  const auto *project = getProject();
+  const auto start = project->getBacking().isSet() ? project->getBacking().file.getParentDirectory()
+                                                   : project->getFilePath().getParentDirectory();
+  fileChooser = std::make_unique<juce::FileChooser>(TR("dialog.select_backing"), start,
+                                                    "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a;*.ogg");
+  juce::Component::SafePointer<MainComponent> safeThis(this);
+  fileChooser->launchAsync(
+      juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+      [safeThis](const juce::FileChooser &fc) {
+        if (safeThis == nullptr)
+          return;
+        const auto selected = fc.getResult();
+        safeThis->fileChooser.reset();
+        if (selected.existsAsFile())
+          safeThis->setProjectBacking(selected);
+      });
+}
+
+void MainComponent::setProjectBacking(const juce::File &file) {
+  if (isPluginMode() || getProject() == nullptr)
+    return;
+  loadBackingAudio(file, true);
+}
+
+void MainComponent::removeProjectBacking() {
+  auto *project = getProject();
+  if (isPluginMode() || project == nullptr)
+    return;
+  // The level stays for the next one; the file, and what was said of it, go.
+  BackingTrack none;
+  none.gainDb = project->getBacking().gainDb;
+  project->setBacking(none);
+  syncMixerWithProject();
+}
+
+void MainComponent::loadBackingAudio(const juce::File &file, bool chosenByUser,
+                                     std::function<void(bool)> whenDone) {
+  const int generation = ++backingLoadGeneration;
+  backingLoading = true;
+  if (!chosenByUser)
+    backingMissing = false;
+  refreshMixerPanel();
+
+  juce::Component::SafePointer<MainComponent> safeThis(this);
+  juce::Thread::launch([safeThis, file, chosenByUser, generation, whenDone]() {
+    // Read off the message thread: a song's accompaniment is some 100 MB.
+    auto audio = std::make_shared<juce::AudioBuffer<float>>();
+    int rate = 0, channels = 0;
+    juce::int64 samples = 0;
+    {
+      juce::AudioFormatManager formats;
+      formats.registerBasicFormats();
+      std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+      if (reader != nullptr && reader->lengthInSamples > 0 && reader->sampleRate > 0.0) {
+        rate = static_cast<int>(std::lround(reader->sampleRate));
+        channels = static_cast<int>(reader->numChannels);
+        samples = reader->lengthInSamples;
+        audio->setSize(juce::jlimit(1, 2, channels), static_cast<int>(samples));
+        reader->read(audio.get(), 0, static_cast<int>(samples), 0, true, true);
+      }
+    }
+    juce::MessageManager::callAsync([safeThis, file, chosenByUser, generation, audio, rate, channels,
+                                     samples, whenDone]() {
+      if (safeThis == nullptr || generation != safeThis->backingLoadGeneration)
+        return;
+      safeThis->backingLoading = false;
+      auto *project = safeThis->getProject();
+      auto *engine =
+          safeThis->editorController ? safeThis->editorController->getAudioEngine() : nullptr;
+      if (project == nullptr || engine == nullptr) {
+        safeThis->refreshMixerPanel();
+        if (whenDone)
+          whenDone(false);
+        return;
+      }
+      if (audio->getNumSamples() <= 0) {
+        if (chosenByUser) {
+          // The project keeps what it had.
+          if (!whenDone)
+            StyledMessageBox::show(safeThis.getComponent(), TR("dialog.open_failed"),
+                                   TR("dialog.backing_unreadable") + "\n" + file.getFullPathName(),
+                                   StyledMessageBox::WarningIcon);
+        } else {
+          safeThis->backingMissing = true;
+          safeThis->loadedBackingFile = juce::File{};
+          engine->clearBacking();
+          safeThis->askForProjectBacking(file);
+        }
+        safeThis->refreshMixerPanel();
+        if (whenDone)
+          whenDone(false);
+        return;
+      }
+      engine->setBacking(*audio, rate);
+      safeThis->loadedBackingFile = file;
+      safeThis->backingMissing = false;
+      // What the project says of the file. A file chosen now, or one that
+      // no longer reads as it did when it was linked (edited, or another
+      // file under the name), is not known to be aligned: the wizard asks.
+      auto backing = project->getBacking();
+      const bool asLinked = backing.file == file && backing.sampleRate == rate &&
+                            backing.channels == channels && backing.samples == samples;
+      if (!asLinked) {
+        backing.file = file;
+        backing.sampleRate = rate;
+        backing.channels = channels;
+        backing.samples = samples;
+        backing.aligned = false;
+        project->setBacking(backing);
+      }
+      engine->setBackingGainDb(backing.gainDb);
+      engine->setBackingAudible(backing.audible);
+      safeThis->refreshMixerPanel();
+      if (whenDone)
+        whenDone(true);
+    });
+  });
+}
+
+void MainComponent::askForProjectBacking(const juce::File &missing) {
+  juce::Component::SafePointer<MainComponent> safeThis(this);
+  juce::AlertWindow::showOkCancelBox(
+      juce::AlertWindow::WarningIcon, TR("dialog.backing_missing_title"),
+      TR("dialog.backing_missing") + "\n" + missing.getFullPathName(), TR("dialog.locate_audio"),
+      TR("dialog.skip_backing"), this, juce::ModalCallbackFunction::create([safeThis](int result) {
+        if (safeThis != nullptr && result != 0)
+          safeThis->chooseProjectBacking();
+      }));
 }

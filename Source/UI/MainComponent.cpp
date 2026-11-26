@@ -19,6 +19,7 @@
 #include "../Utils/SHA256Utils.h"
 #include "../Utils/UI/WindowSizing.h"
 #include "BinaryData.h"
+#include <cstdlib>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -780,8 +781,50 @@ MainComponent::MainComponent(bool enableAudioDevice)
   workspace.addPanel("parameters", TR("panel.parameters"), &parameterPanel,
                      false);
 
-  // Left side panel (slides in from the left, same width as the right panel).
-  workspace.setLeftPanelContent("tracks", TR("panel.tracks"), &trackListPanel);
+  // Left side panel (slides in from the left, same width as the right panel):
+  // the host's tracks in the plug-in, the voice and the accompaniment in the
+  // standalone (MixerPanel).
+  if (isPluginMode())
+  {
+    workspace.setLeftPanelContent("tracks", TR("panel.tracks"), &trackListPanel);
+  }
+  else
+  {
+    workspace.setLeftPanelContent("mixer", TR("panel.tracks"), &mixerPanel);
+    toolbar.setLeftPanelAvailable(true);
+    mixerPanel.onVoiceGainChanged = [this](float dB)
+    {
+      if (auto *project = getProject())
+        project->setVocalGainDb(dB);
+      if (auto *engine = editorController ? editorController->getAudioEngine() : nullptr)
+        engine->setVoiceGainDb(dB);
+    };
+    mixerPanel.onBackingGainChanged = [this](float dB)
+    {
+      if (auto *project = getProject())
+      {
+        auto backing = project->getBacking();
+        backing.gainDb = dB;
+        project->setBacking(std::move(backing));
+      }
+      if (auto *engine = editorController ? editorController->getAudioEngine() : nullptr)
+        engine->setBackingGainDb(dB);
+    };
+    mixerPanel.onBackingAudibleChanged = [this](bool audible)
+    {
+      if (auto *project = getProject())
+      {
+        auto backing = project->getBacking();
+        backing.audible = audible;
+        project->setBacking(std::move(backing));
+      }
+      if (auto *engine = editorController ? editorController->getAudioEngine() : nullptr)
+        engine->setBackingAudible(audible);
+    };
+    mixerPanel.onChooseBacking = [this]() { chooseProjectBacking(); };
+    mixerPanel.onRemoveBacking = [this]() { removeProjectBacking(); };
+    mixerPanel.onOpenWizard = [this]() { showWizard(); };
+  }
   trackListPanel.onPreferredHeightChanged = [this]()
   {
     workspace.refreshLeftPanelContentHeight();
@@ -916,6 +959,29 @@ MainComponent::MainComponent(bool enableAudioDevice)
   { onZoomChanged(pps); };
   pianoRoll.onEditModeRequested = [this](EditMode mode)
   { setEditMode(mode); };
+  // A flag on the ruler edited the key (spec section 15): the toolbar shows
+  // the first stretch's, and the host is told the project changed.
+  toolbar.onStretchRootChosen = [this](int stretch, int root)
+  {
+    pianoRoll.setStretchKey(stretch, root); // one history step, as from the flag's menu
+  };
+  pianoRoll.onKeyChangesEdited = [this]()
+  {
+    if (auto *edited = getProject())
+      edited->setKeyConfirmed(true);
+    toolbar.setProject(getProject());
+    refreshToolbarKey();
+    parameterPanel.updateGlobalSliders();
+    notifyProjectDataChanged();
+    if (commandManager)
+      commandManager->commandStatusChanged();
+  };
+  pianoRoll.onLockChanged = [this]()
+  {
+    notifyProjectDataChanged();
+    if (commandManager)
+      commandManager->commandStatusChanged();
+  };
   toolbar.onEditModeChanged = [this](EditMode mode)
   { setEditMode(mode); };
   toolbar.onScaleRootChanged = [this](int)
@@ -1207,6 +1273,10 @@ MainComponent::MainComponent(bool enableAudioDevice)
     if (id == "parameters")
       toolbar.setParametersVisible(visible);
   };
+  // The standalone opens with its left panel (the two tracks and the
+  // wizard's door) showing.
+  if (!isPluginMode())
+    workspace.showLeftPanel(true);
   toolbar.setLeftPanelVisible(workspace.isLeftPanelVisible());
   workspace.onLeftPanelVisibilityChanged = [this](bool visible)
   {
@@ -1677,6 +1747,10 @@ void MainComponent::resized()
 
   if (settingsOverlay)
     settingsOverlay->setBounds(getLocalBounds());
+  if (welcomeOverlay)
+    layOutStartScreen(*welcomeOverlay);
+  if (wizardOverlay)
+    layOutStartScreen(*wizardOverlay);
 
   analysisBackdrop.setBounds(getLocalBounds());
   analysisProgressPopup.setBounds(getLocalBounds().withSizeKeepingCentre(399, 98));
@@ -1711,6 +1785,7 @@ void MainComponent::mouseDoubleClick(const juce::MouseEvent &e)
 
 void MainComponent::timerCallback()
 {
+  refreshToolbarKey();
   dispatchPendingDragAudition();
 
   // Debug recording: a new render swapped in while playing (AudioEngine).
@@ -1963,6 +2038,13 @@ void MainComponent::saveProject(bool saveAs, std::function<void(bool)> onComplet
   };
 
   auto target = saveAs ? juce::File{} : project->getProjectFilePath();
+  // UI tests only: PITCHNET_SAVE_FILE names the file a project is saved to
+  // when it has none yet (or is saved as another), so the save runs without
+  // the system's Save panel (which cannot be driven in the background).
+  // What is written is the same.
+  if (target == juce::File{})
+    if (const char *named = std::getenv("PITCHNET_SAVE_FILE"))
+      target = juce::File(juce::String::fromUTF8(named));
   if (target == juce::File{})
   {
     // Prevent re-triggering while dialog is open
@@ -2074,6 +2156,8 @@ void MainComponent::saveProject(bool saveAs, std::function<void(bool)> onComplet
 
   ensureAudioSha();
   const bool ok = ProjectSerializer::saveToFile(*project, target);
+  if (ok)
+    project->setProjectFilePath(target); // its own file already, or the one just named
   if (ok) savedProjectSnapshot = projectSaveSnapshot();
 
   toolbar.hideProgress();
@@ -2120,6 +2204,7 @@ void MainComponent::openFile()
           if (safeThis->isPluginMode() && !isProject)
             return;
           safeThis->addRecentFile(file);
+          safeThis->dismissStartScreens();
           if (isProject)
             safeThis->openProjectFile(file);
           else
@@ -2231,9 +2316,12 @@ void MainComponent::openRecentFile(const juce::File &file)
       settingsManager->saveConfig();
     }
     refreshRecentFilesMenu();
+    if (welcomeOverlay != nullptr && welcomeOverlay->isVisible())
+      welcomeOverlay->setRecentFiles(recentFiles);
     return;
   }
 
+  dismissStartScreens();
   if (file.hasFileExtension("pitchnet") || file.hasFileExtension(".pitchnet"))
     openProjectFile(file);
   else
@@ -2380,6 +2468,9 @@ void MainComponent::exportFile()
                                   ? exportAudio.sourceSampleRate
                                   : exportAudio.sampleRate;
   juce::Component::SafePointer<MainComponent> safeThis(this);
+  // With an accompaniment linked (the standalone), the dialog asks which
+  // track: the voice, the accompaniment, or the two together.
+  const bool offerTracks = !isPluginMode() && project->getBacking().isSet();
   ExportHelper::showExportSettingsDialogAsync(
       this, inputSampleRate, settingsManager->getExportSettings(),
       [safeThis](std::optional<ExportHelper::ExportSettings> exportSettings)
@@ -2406,24 +2497,42 @@ void MainComponent::exportFile()
 
           // The recording at its own rate with the edits in (spec Q5), so
           // exporting at the recording's rate converts nothing unedited.
-          auto playback = sourceaudio::build(activeProject->getAudioData());
-          juce::AudioBuffer<float> sourceBuffer = std::move(playback.audio);
-          const int sourceRate = playback.sampleRate;
+          // (Not needed for the accompaniment alone.)
+          juce::AudioBuffer<float> sourceBuffer;
+          int sourceRate = 0;
+          if (exportSettings->track != ExportHelper::ExportTrack::backing)
+          {
+            auto playback = sourceaudio::build(activeProject->getAudioData());
+            sourceBuffer = std::move(playback.audio);
+            sourceRate = playback.sampleRate;
+          }
+          // The accompaniment and the two faders, for it alone or the whole.
+          const auto backing = activeProject->getBacking();
+          const float voiceDb = activeProject->getVocalGainDb();
 
           safeThis->toolbar.showProgress(TR("progress.exporting_audio"));
           safeThis->toolbar.setProgress(-1.0f);
           safeThis->toolbar.setEnabled(false);
 
           std::thread([safeThis, settings = *exportSettings, file = std::move(file),
-                       sourceBuffer = std::move(sourceBuffer), sourceRate]() mutable
+                       sourceBuffer = std::move(sourceBuffer), sourceRate, backing, voiceDb]() mutable
                       {
             juce::String error;
             bool success = false;
+            float mixPeak = 0.0f;
 
             do {
-              juce::AudioBuffer<float> exportBuffer =
-                  ExportHelper::convertChannels(sourceBuffer, settings.channels);
-              exportBuffer = ExportHelper::resampleAudio(exportBuffer, sourceRate, settings.sampleRate);
+              // The track asked for, at the channels and rate asked for
+              // (ExportHelper::buildExportAudio).
+              auto built = ExportHelper::buildExportAudio(settings, sourceBuffer, sourceRate,
+                                                          backing, voiceDb);
+              if (built.error.isNotEmpty())
+              {
+                error = built.error;
+                break;
+              }
+              juce::AudioBuffer<float> exportBuffer = std::move(built.audio);
+              mixPeak = built.mixPeak;
 
               if (file.existsAsFile() && !file.deleteFile()) {
                 error = TR("dialog.failed_delete") + "\n" + file.getFullPathName();
@@ -2473,7 +2582,7 @@ void MainComponent::exportFile()
               }
             } while (false);
 
-            juce::MessageManager::callAsync([safeThis, success, error]() {
+            juce::MessageManager::callAsync([safeThis, success, error, mixPeak]() {
               if (safeThis == nullptr)
                 return;
               safeThis->toolbar.setEnabled(true);
@@ -2481,6 +2590,14 @@ void MainComponent::exportFile()
               if (!success) {
                 StyledMessageBox::show(
                     safeThis.getComponent(), TR("dialog.export_failed"), error,
+                    StyledMessageBox::WarningIcon);
+              } else if (mixPeak > 1.0f) {
+                // Written as it is: the levels are the user's. Said, so that
+                // a fixed-point file's clipping is no surprise.
+                StyledMessageBox::show(
+                    safeThis.getComponent(), TR("export.mix_over_title"),
+                    TR("export.mix_over")
+                        .replace("{peak}", juce::String(juce::Decibels::gainToDecibels(mixPeak), 1)),
                     StyledMessageBox::WarningIcon);
               }
             }); })
@@ -2499,9 +2616,17 @@ void MainComponent::exportFile()
 
             // Save dialogs need a full file path to initialise both the folder
             // and filename consistently across native platform backends.
-            if (defaultFile != juce::File{})
-              defaultFile = defaultFile.withFileExtension(
-                  ExportHelper::getFormatExtension(exportSettings->format));
+            // The accompaniment and the whole go under their own names, not
+            // offered over the voice's export.
+            const auto extension = ExportHelper::getFormatExtension(exportSettings->format);
+            if (defaultFile != juce::File{} &&
+                exportSettings->track != ExportHelper::ExportTrack::voice)
+              defaultFile = defaultFile.getSiblingFile(
+                  defaultFile.getFileNameWithoutExtension() +
+                  (exportSettings->track == ExportHelper::ExportTrack::mix ? "_mix." : "_backing.") +
+                  extension);
+            else if (defaultFile != juce::File{})
+              defaultFile = defaultFile.withFileExtension(extension);
           }
         }
 
@@ -2523,7 +2648,8 @@ void MainComponent::exportFile()
               if (file == juce::File{})
                 return;
               performExport(file); });
-      });
+      },
+      offerTracks);
 }
 
 void MainComponent::exportMidiFile()
@@ -3429,6 +3555,7 @@ void MainComponent::afterHistoryChange(bool requiresResynthesis)
 {
   parameterPanel.updateFromNote();
   pianoRoll.invalidateBasePitchCache(); // Refresh cache after note split etc.
+  refreshKeyDisplays(); // the key the wizard confirmed is a step of the history
   pianoRoll.repaint();
   pianoRollView.refreshOverview();
 
@@ -3683,13 +3810,19 @@ bool MainComponent::isInterestedInFileDrag(const juce::StringArray &files)
   return false;
 }
 
-void MainComponent::filesDropped(const juce::StringArray &files, int /*x*/,
-                                 int /*y*/)
+void MainComponent::filesDropped(const juce::StringArray &files, int x, int y)
 {
   if (files.isEmpty())
     return;
 
-  openFileFromPath(juce::File(files[0]));
+  // On the wizard's files page a recording is for the wizard: the row it is
+  // dropped on, or the first one empty. A project is opened, as anywhere.
+  const juce::File first(files[0]);
+  if (wizardIsShowing() && !first.hasFileExtension("pitchnet") &&
+      wizardOverlay->takeDroppedFile(first, wizardOverlay->getLocalPoint(this, juce::Point<int>(x, y))))
+    return;
+
+  openFileFromPath(first);
 }
 
 void MainComponent::openFileFromPath(const juce::File &file)
@@ -3710,6 +3843,7 @@ void MainComponent::openFileFromPath(const juce::File &file)
     return;
   }
 
+  dismissStartScreens();
   if (file.hasFileExtension("pitchnet") || file.hasFileExtension(".pitchnet"))
     openProjectFile(file);
   else
@@ -4267,6 +4401,7 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID> &commands)
       CommandIDs::saveProject,
       CommandIDs::saveProjectAs,
       CommandIDs::relinkRecording,
+      CommandIDs::showWizard,
       CommandIDs::exportAudio,
       CommandIDs::exportMidi,
       CommandIDs::quit,
@@ -4346,6 +4481,11 @@ void MainComponent::getCommandInfo(juce::CommandID commandID,
     // The plug-in's recording is the host's.
     result.setActive(project != nullptr && !isPluginMode() &&
                      project->getRecordingFingerprint().isValid());
+    break;
+  case CommandIDs::showWizard:
+    result.setInfo(TR("command.wizard"), TR("command.wizard.desp"), TR("menu.file"), 0);
+    // The plug-in has no wizard (spec section 15).
+    result.setActive(!isPluginMode() && !isLoadingAudio.load());
     break;
 
   case CommandIDs::exportAudio:
@@ -4545,6 +4685,29 @@ void MainComponent::getCommandInfo(juce::CommandID commandID,
 
 bool MainComponent::perform(const ApplicationCommandTarget::InvocationInfo &info)
 {
+  // While the wizard shows, the project under it is not edited: only the
+  // commands that open, save, set up or leave get through, and the space bar
+  // is the key check's.
+  if (wizardIsShowing())
+  {
+    switch (info.commandID)
+    {
+    case CommandIDs::openFile:
+    case CommandIDs::saveProject:
+    case CommandIDs::saveProjectAs:
+    case CommandIDs::showSettings:
+    case CommandIDs::showAbout:
+    case CommandIDs::quit:
+      break;
+    case CommandIDs::playPause:
+      if (wizardModel.page == wizard::Page::keyCheck)
+        wizardPlayStop();
+      return true;
+    default:
+      return true;
+    }
+  }
+
   switch (info.commandID)
   {
   case CommandIDs::debugMark:
@@ -4566,6 +4729,10 @@ bool MainComponent::perform(const ApplicationCommandTarget::InvocationInfo &info
 
   case CommandIDs::relinkRecording:
     relinkProjectRecording();
+    return true;
+
+  case CommandIDs::showWizard:
+    showWizard();
     return true;
 
   case CommandIDs::exportAudio:

@@ -17,6 +17,7 @@ namespace CommandIDs
         saveProject         = 0x2002,
         saveProjectAs       = 0x2006,
         relinkRecording     = 0x2007,
+        showWizard          = 0x2008,
         exportAudio         = 0x2003,
         exportMidi          = 0x2004,
         quit                = 0x2005,

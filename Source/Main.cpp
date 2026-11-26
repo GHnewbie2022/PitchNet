@@ -180,10 +180,14 @@ public:
       splashWindow = nullptr;
       LOG("MainWindow created and visible");
 
+      // Opened by itself, with no file: the two ways to begin (spec
+      // section 15). A file Finder hands over later takes the screen away.
       if (fileToOpen != juce::File{})
         mainWindow->openFile(fileToOpen);
       else if (pendingOpenFile != juce::File{})
         mainWindow->openFile(pendingOpenFile);
+      else
+        mainWindow->showWelcome();
       pendingOpenFile = juce::File{};
     });
   }
@@ -312,6 +316,11 @@ public:
     void openFile(const juce::File &file) {
       if (mainComponent != nullptr)
         mainComponent->openFileFromPath(file);
+    }
+
+    void showWelcome() {
+      if (mainComponent != nullptr)
+        mainComponent->showWelcome();
     }
 
   private:

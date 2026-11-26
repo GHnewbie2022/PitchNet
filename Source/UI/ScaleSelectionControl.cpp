@@ -79,7 +79,8 @@ void ScaleSelectionControl::showPopup()
     modeMenu.setLookAndFeel(lookAndFeel);
     menu.setLookAndFeel(lookAndFeel);
 
-    const int selectedRoot = projectKeyScope ? project->getProjectKeyRoot() : project->getScaleRootNote();
+    const int selectedRoot = stretchIndex > 0 ? stretchRoot
+                             : projectKeyScope ? project->getProjectKeyRoot() : project->getScaleRootNote();
     for (int i = 0; i < static_cast<int>(kRootLabels.size()); ++i)
     {
         const juce::String label = kRootLabels[static_cast<size_t>(i)];
@@ -168,7 +169,9 @@ void ScaleSelectionControl::refreshLocalisedText()
 
 void ScaleSelectionControl::refreshLabel()
 {
-    const int root = project != nullptr ? (projectKeyScope ? project->getProjectKeyRoot() : project->getScaleRootNote()) : 0;
+    const int root = project == nullptr ? 0
+                     : stretchIndex > 0 ? stretchRoot
+                     : (projectKeyScope ? project->getProjectKeyRoot() : project->getScaleRootNote());
     ScaleMode mode =
         project != nullptr ? (projectKeyScope ? project->getProjectKeyMode() : project->getPreferredScaleMode()) : ScaleMode::Major;
     if (mode == ScaleMode::None || mode == ScaleMode::Chromatic)
@@ -196,6 +199,13 @@ void ScaleSelectionControl::setScaleRoot(int rootNote)
     if (project == nullptr)
         return;
     const int normalized = juce::jlimit(0, 11, rootNote);
+    if (stretchIndex > 0)
+    {
+        // A later stretch's key is a change of key: the piano roll edits it.
+        if (onStretchRootChosen)
+            onStretchRootChosen(stretchIndex, normalized);
+        return;
+    }
     if (projectKeyScope)
         project->setProjectKey(normalized, project->getProjectKeyMode());
     else {
@@ -227,6 +237,9 @@ void ScaleSelectionControl::setScaleMode(ScaleMode mode)
 
 void ScaleSelectionControl::previewScaleRoot(std::optional<int> rootNote)
 {
+    // The preview is of the project's own key (the first stretch).
+    if (stretchIndex > 0 && rootNote.has_value())
+        return;
     if (onScaleRootPreviewChanged)
         onScaleRootPreviewChanged(rootNote);
 }
@@ -235,4 +248,13 @@ void ScaleSelectionControl::previewScaleMode(std::optional<ScaleMode> mode)
 {
     if (onScaleModePreviewChanged)
         onScaleModePreviewChanged(mode);
+}
+
+void ScaleSelectionControl::setStretch(int index, int root)
+{
+    if (stretchIndex == index && stretchRoot == root)
+        return;
+    stretchIndex = index;
+    stretchRoot = root;
+    refreshLabel();
 }

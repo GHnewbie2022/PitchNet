@@ -17,6 +17,12 @@ public:
     void setProjectKeyScope(bool value) { projectKeyScope = value; refreshLabel(); }
     Project* getProject() const { return project; }
     void setScaleRoot(int rootNote);
+    /** In a song that changes key (spec section 15): the stretch the
+     *  playhead is in, and its root. The label shows that root, and a root
+     *  chosen from the menu is that stretch's (said through
+     *  onStretchRootChosen). 0: the first stretch, the project's own key. */
+    void setStretch(int index, int root);
+    std::function<void(int stretch, int root)> onStretchRootChosen;
     void setScaleMode(ScaleMode mode);
     int getPreferredWidth() const;
 
@@ -37,6 +43,7 @@ private:
 
     Project* project = nullptr;
     bool projectKeyScope = false;
+    int stretchIndex = 0, stretchRoot = 0;
 
     LocalisationWatcher languageWatcher{[this] { refreshLocalisedText(); }};
 

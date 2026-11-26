@@ -13,6 +13,7 @@
 #   ctest --test-dir build --output-on-failure
 
 set(PITCHNET_TEST_SOURCES
+    AudioEngineBackingTests.cpp
     AudioEngineSwapTests.cpp
     AraRegionMergeTests.cpp
     AraRegionSliceTests.cpp
@@ -20,8 +21,10 @@ set(PITCHNET_TEST_SOURCES
     BreathSibilanceTests.cpp
     FormantShiftTests.cpp
     HostSyncTempoTests.cpp
+    KeyFinderTests.cpp
     KindStretchTests.cpp
     MidiReferenceTests.cpp
+    MixdownTests.cpp
     NoteGainCurveTests.cpp
     NonAraLifecycleTests.cpp
     OriginalWaveformRestoreTests.cpp
@@ -42,7 +45,8 @@ set(PITCHNET_TEST_SOURCES
     SourceAudioTests.cpp
     SpliceAlignmentTests.cpp
     VisualWaveformEnvelopeTests.cpp
-    WarpLayerTests.cpp)
+    WarpLayerTests.cpp
+    WizardModelTests.cpp)
 
 foreach(test_source IN LISTS PITCHNET_TEST_SOURCES)
     get_filename_component(test_name ${test_source} NAME_WE)
@@ -100,6 +104,26 @@ add_executable(KeptRangeTests KeptRangeTests.cpp)
 target_link_libraries(KeptRangeTests PRIVATE pitchnet_ui)
 target_compile_features(KeptRangeTests PRIVATE cxx_std_17)
 add_test(NAME KeptRangeTests COMMAND KeptRangeTests)
+
+add_executable(MixerPanelTests MixerPanelTests.cpp)
+target_link_libraries(MixerPanelTests PRIVATE pitchnet_ui)
+target_compile_features(MixerPanelTests PRIVATE cxx_std_17)
+add_test(NAME MixerPanelTests COMMAND MixerPanelTests)
+
+add_executable(WizardOverlayTests WizardOverlayTests.cpp)
+target_link_libraries(WizardOverlayTests PRIVATE pitchnet_ui)
+target_compile_features(WizardOverlayTests PRIVATE cxx_std_17)
+add_test(NAME WizardOverlayTests COMMAND WizardOverlayTests)
+
+add_executable(KeyFlagGestureTests KeyFlagGestureTests.cpp)
+target_link_libraries(KeyFlagGestureTests PRIVATE pitchnet_ui)
+target_compile_features(KeyFlagGestureTests PRIVATE cxx_std_17)
+add_test(NAME KeyFlagGestureTests COMMAND KeyFlagGestureTests)
+
+add_executable(KeyChangeTests KeyChangeTests.cpp)
+target_link_libraries(KeyChangeTests PRIVATE pitchnet_ui)
+target_compile_features(KeyChangeTests PRIVATE cxx_std_17)
+add_test(NAME KeyChangeTests COMMAND KeyChangeTests)
 
 add_executable(PitchMacroRenderTests PitchMacroRenderTests.cpp)
 target_link_libraries(PitchMacroRenderTests PRIVATE pitchnet_ui)

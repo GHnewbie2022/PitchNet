@@ -13,6 +13,9 @@
 // --snapshot draws the piano roll in the Warp and Timing tools to
 // <prefix>_*.png, with a drag of the first anchor pushed past its limit.
 #include "../../Source/Audio/SourceAudio.h"
+#include "../../Source/Audio/AudioEngine.h"
+#include "../../Source/Audio/KeyFinder/KeyFinder.h"
+#include "../../Source/Audio/KeyFinder/ScaleTone.h"
 #include "../../Source/Utils/FryDetector.h"
 #include "../../Source/Utils/FryNoteCuts.h"
 #include "../../Source/Audio/RecordingChange.h"
@@ -32,10 +35,16 @@
 #include "../../Source/Undo/NoteActions.h"
 #include "../../Source/Undo/PitchUndoManager.h"
 #include "../../Source/Undo/SynthChoiceAction.h"
+#include "../../Source/Undo/KeyChangeAction.h"
+#include "../../Source/Undo/LockAction.h"
 #include "../../Source/UI/PianoRollComponent.h"
 #include "../../Source/Audio/NoteTiming.h"
 #include "../../Source/UI/ParameterPanel.h"
 #include "../../Source/UI/ToolbarComponent.h"
+#include "../../Source/UI/MixerPanel.h"
+#include "../../Source/UI/Wizard/WelcomeOverlay.h"
+#include "../../Source/UI/Wizard/WizardOverlay.h"
+#include "../../Source/UI/Main/ExportHelper.h"
 #include "../../Source/UI/PianoRoll/NoteSplitter.h"
 #include "../../Source/UI/PianoRoll/PianoRollInteractionContext.h"
 
@@ -1474,6 +1483,27 @@ int main(int argc, char **argv)
     sourceaudio::attachRecording(project, input);
     PitchCurveProcessor::rebuildBaseFromNotes(project);
     const juce::String op = juce::String::fromUTF8(argv[4]);
+    if (op == "key")
+    {
+      // ... --app-op key <root 0-11> [<frame>:<root>[,<frame>:<root>...]]:
+      // the key as the wizard sets it when the user confirms it
+      // (KeyState::confirmed): the major scale on the root, then the changes
+      // of key at those frames of the recording. Saved as the App saves.
+      std::vector<KeyChange> changes;
+      if (argc >= 7)
+        for (const auto &item : juce::StringArray::fromTokens(juce::String::fromUTF8(argv[6]), ",", ""))
+          changes.push_back({item.upToFirstOccurrenceOf(":", false, false).getIntValue(),
+                             item.fromFirstOccurrenceOf(":", false, false).getIntValue()});
+      const auto before = KeyState::of(project);
+      const auto after =
+          KeyState::confirmed(project, juce::String::fromUTF8(argv[5]).getIntValue(), std::move(changes));
+      KeyChangeAction(project, before, after, "Confirm Key").redo();
+      if (!ProjectSerializer::saveToFile(project, output))
+        return 1;
+      std::printf("key ok: root %d, %d changes\n", project.getScaleRootNote(),
+                  (int)project.getKeyChanges().size());
+      return 0;
+    }
     const int start = juce::String::fromUTF8(argv[5]).getIntValue();
     auto noteAt = [&](int frame) -> Note * {
       for (auto &n : project.getNotes())
@@ -1510,6 +1540,14 @@ int main(int argc, char **argv)
       SynthChoiceAction(project, one, SynthChoiceAction::current(one),
                         {SynthChoice::ofMenu(*note, engine)}, "Set Synthesis Engine")
           .redo();
+      ok = true;
+    }
+    else if (op == "lock")
+    {
+      // ... --app-op lock <noteStart>: a press of the lock on that note
+      // (LockAction): locked, or unlocked when it was.
+      const std::vector<Note *> one{note};
+      LockAction(one, LockAction::wanted(one), "Lock Notes").redo();
       ok = true;
     }
     else if (op == "delete")
@@ -3362,7 +3400,17 @@ int main(int argc, char **argv)
     Project project;
     if (!ProjectSerializer::loadFromFile(project, input))
       return 1;
-    sourceaudio::attachRecording(project, input);
+    {
+      // --recording <wav>: the project's recording, when it is no longer
+      // where the project says (the view cannot scroll past a recording
+      // that was not found).
+      juce::File recording;
+      for (int k = 5; k + 1 < argc; ++k)
+        if (juce::String::fromUTF8(argv[k]) == "--recording")
+          recording = juce::File::getCurrentWorkingDirectory().getChildFile(juce::String::fromUTF8(argv[k + 1]));
+      if (!sourceaudio::attachRecording(project, input, recording))
+        std::printf("recording not found: the view stays at the start\n");
+    }
     if (argc >= 6 && !juce::String::fromUTF8(argv[5]).startsWith("--"))
     {
       juce::StringArray indices;
@@ -3383,6 +3431,33 @@ int main(int argc, char **argv)
       const juce::String value = juce::String::fromUTF8(argv[k + 1]);
       if (arg == "--hover")
         hoverIndex = value.getIntValue();
+      else if (arg == "--keys")
+      {
+        // --keys <root>,<frame>:<root>,...: the key as the wizard confirms
+        // it (the major scale on the root, then the changes of key at those
+        // frames of the recording).
+        const auto items = juce::StringArray::fromTokens(value, ",", "");
+        std::vector<KeyChange> changes;
+        for (int item = 1; item < items.size(); ++item)
+          changes.push_back({items[item].upToFirstOccurrenceOf(":", false, false).getIntValue(),
+                             items[item].fromFirstOccurrenceOf(":", false, false).getIntValue()});
+        KeyState::confirmed(project, items[0].getIntValue(), std::move(changes)).applyTo(project);
+      }
+      else if (arg == "--lock")
+      {
+        // --lock <noteStart>,...: those notes locked.
+        for (const auto &start : juce::StringArray::fromTokens(value, ",", ""))
+          for (auto &note : project.getNotes())
+            if (!note.isRest() && note.getStartFrame() == start.getIntValue())
+              note.setLocked(true);
+      }
+      else if (arg == "--scale")
+      {
+        // --scale on: the rows shaded by the scale, as with the toolbar's
+        // switch (off in a new project) - what a change of key is seen by.
+        if (value == "on")
+          project.setScaleMode(project.getPreferredScaleMode());
+      }
       else if (arg == "--told")
         project.getNotes()[static_cast<size_t>(value.getIntValue())].setSynthEngine(
             Note::SynthEngine::VocoderRecordedHighsFry);
@@ -3405,6 +3480,16 @@ int main(int argc, char **argv)
     PianoRollComponent roll;
     roll.setSize(1400, 700);
     roll.setProject(&project);
+    roll.refreshScaleFromProject();
+    {
+      // What the ruler shows of the key (spec section 15).
+      const auto flags = roll.keyFlags();
+      int locked = 0;
+      for (const auto &note : project.getNotes())
+        locked += note.isLocked() ? 1 : 0;
+      std::printf("key changes %d, flags %d, locked notes %d\n",
+                  static_cast<int>(project.getKeyChanges().size()), static_cast<int>(flags.size()), locked);
+    }
     const float pps = static_cast<float>(1200.0 / std::max(0.05, to - from));
     roll.setPixelsPerSecond(pps);
     roll.setScrollX(from * pps);
@@ -3442,6 +3527,20 @@ int main(int argc, char **argv)
                       handle.type == PitchToolHandles::HandleType::KeepHead ? "left" : "right",
                       handle.bounds.getX(), handle.bounds.getRight(), handle.bounds.getY(),
                       handle.bounds.getBottom());
+    }
+    {
+      // How long the whole view takes to draw (20 times, the median): to
+      // compare a song with changes of key against one without.
+      std::vector<double> times;
+      for (int k = 0; k < 20; ++k)
+      {
+        const double began = juce::Time::getMillisecondCounterHiRes();
+        const auto image = roll.createComponentSnapshot(roll.getLocalBounds(), true, 2.0f);
+        times.push_back(juce::Time::getMillisecondCounterHiRes() - began);
+        juce::ignoreUnused(image);
+      }
+      std::sort(times.begin(), times.end());
+      std::printf("draw %.2f ms (median of 20, 1400 x 700 at 2x)\n", times[times.size() / 2]);
     }
     std::printf("shot %s\n", writePng(roll, output) ? "ok" : "FAILED");
     return 0;
@@ -4266,6 +4365,398 @@ int main(int argc, char **argv)
         std::printf("note %d-%d midi %.3f tiltR %.3f\n", n.getStartFrame(), n.getEndFrame(),
                     n.getMidiNote(), n.getTiltRight());
     controller.requestShutdown();
+    return 0;
+  }
+  // WarpRender - <out.png> --mixer-shot none|set|on|missing|loading [width]:
+  // the standalone's left panel (MixerPanel) in one of its states, in the
+  // language of the settings.
+  if (argc >= 5 && juce::String::fromUTF8(argv[3]) == "--mixer-shot")
+  {
+    Localization::loadFromSettings();
+    if (const char *language = std::getenv("PITCHNET_LANG"))
+      Localization::getInstance().setLanguage(language);
+    const juce::String which = juce::String::fromUTF8(argv[4]);
+    MixerPanel panel;
+    MixerPanel::State state;
+    state.hasProject = true;
+    if (which != "none")
+    {
+      state.hasBacking = true;
+      state.backingName = juce::String::fromUTF8("晚餐歌_伴奏.wav");
+      state.backingAudible = which == "on";
+      state.backingDb = which == "on" ? -9.5f : -6.0f;
+      state.voiceDb = which == "on" ? -2.0f : 0.0f;
+      state.backingMissing = which == "missing";
+      state.backingLoading = which == "loading";
+    }
+    panel.setState(state);
+    const int width = argc >= 6 ? juce::String::fromUTF8(argv[5]).getIntValue() : 141;
+    panel.setSize(width, panel.getPreferredHeight());
+    std::printf("mixer %s (%s): %d x %d, shot %s\n", which.toRawUTF8(),
+                Localization::getInstance().getLanguage().toRawUTF8(), width, panel.getPreferredHeight(),
+                writePng(panel, output) ? "ok" : "FAILED");
+    return 0;
+  }
+  // WarpRender - <out.png> --export-shot voice|tracks [rate]: the export
+  // dialog's content, without and with the row that asks which track.
+  if (argc >= 5 && juce::String::fromUTF8(argv[3]) == "--export-shot")
+  {
+    Localization::loadFromSettings();
+    if (const char *language = std::getenv("PITCHNET_LANG"))
+      Localization::getInstance().setLanguage(language);
+    const bool tracks = juce::String::fromUTF8(argv[4]) == "tracks";
+    const int rate = argc >= 6 ? juce::String::fromUTF8(argv[5]).getIntValue() : 48000;
+    auto content = ExportHelper::makeExportSettingsContent(rate, tracks);
+    std::printf("export dialog %d x %d, shot %s\n", content->getWidth(), content->getHeight(),
+                writePng(*content, output) ? "ok" : "FAILED");
+    return 0;
+  }
+  // WarpRender <notes.txt | in.pitchnet | -> <out.png> --wizard-shot <page>
+  // [--backing <wav>] [--size <w> <h>] [--recent <path>]... [--at <seconds>]
+  // [--add <seconds>]: the welcome screen or a page of the wizard as the
+  // window shows it. Pages: welcome, files, files-ready, files-project,
+  // analysing, keys, next. `keys` with notes (and an accompaniment) is the
+  // song's own answer, found by the calls the App makes; with "-" it is one
+  // stretch, C before G. --at: the playhead; --add: a change of key added
+  // there by hand.
+  if (argc >= 5 && juce::String::fromUTF8(argv[3]) == "--wizard-shot")
+  {
+    Localization::loadFromSettings();
+    if (const char *language = std::getenv("PITCHNET_LANG"))
+      Localization::getInstance().setLanguage(language);
+    const juce::String page = juce::String::fromUTF8(argv[4]);
+    juce::File backingFile;
+    juce::StringArray recent;
+    int width = 1280, height = 800;
+    double at = 0.0, add = -1.0;
+    for (int i = 5; i < argc; ++i)
+    {
+      const juce::String arg = juce::String::fromUTF8(argv[i]);
+      const auto next = [&] { return i + 1 < argc ? juce::String::fromUTF8(argv[++i]) : juce::String(); };
+      if (arg == "--backing")
+        backingFile = juce::File::getCurrentWorkingDirectory().getChildFile(next());
+      else if (arg == "--recent")
+        recent.add(juce::File::getCurrentWorkingDirectory().getChildFile(next()).getFullPathName());
+      else if (arg == "--at")
+        at = next().getDoubleValue();
+      else if (arg == "--add")
+        add = next().getDoubleValue();
+      else if (arg == "--size")
+      {
+        width = next().getIntValue();
+        height = next().getIntValue();
+      }
+    }
+    if (page == "welcome")
+    {
+      WelcomeOverlay welcome;
+      welcome.setRecentFiles(recent);
+      welcome.setSize(width, height);
+      std::printf("welcome (%s): %d recent, card %s, shot %s\n",
+                  Localization::getInstance().getLanguage().toRawUTF8(), welcome.recentCount(),
+                  welcome.cardBounds().toString().toRawUTF8(), writePng(welcome, output) ? "ok" : "FAILED");
+      return 0;
+    }
+    wizard::Model model;
+    WizardOverlay overlay(model);
+    const juce::File voice = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                 .getChildFile(juce::String::fromUTF8("晚餐歌_LeadVocal 1.wav"));
+    const juce::File backing = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                   .getChildFile(juce::String::fromUTF8("晚餐歌_伴奏.wav"));
+    if (page == "files-ready")
+    {
+      model.setVoice(voice);
+      model.setBacking(backing);
+      model.aligned = true;
+    }
+    else if (page == "files-project")
+    {
+      model.existingProject = true;
+      overlay.setVoiceName(voice.getFileName());
+    }
+    else if (page == "analysing")
+      model.page = wizard::Page::analysing;
+    else if (page == "next")
+      model.page = wizard::Page::nextStep;
+    else if (page == "keys")
+    {
+      keyfinder::Result found;
+      if (input.getFileName() == "-")
+      {
+        found.hasBacking = true;
+        found.stretches.push_back({0.0, 215.0, 0, 7, 3.0});
+      }
+      else
+      {
+        std::vector<keyfinder::VocalNote> notes;
+        if (input.hasFileExtension("pitchnet"))
+        {
+          Project project;
+          if (!ProjectSerializer::loadFromFile(project, input))
+            return 1;
+          notes = keyfinder::vocalNotes(project);
+        }
+        else
+        {
+          juce::StringArray lines;
+          input.readLines(lines);
+          for (const auto &line : lines)
+          {
+            int a = 0, b = 0, c = 0, d = 0;
+            float midi = 0.0f;
+            if (std::sscanf(line.toRawUTF8(), "note src [%d, %d) -> [%d, %d) midi %f", &a, &b, &c, &d,
+                            &midi) != 5 ||
+                line.endsWith("rest") || b - a < keyfinder::kMinNoteFrames)
+              continue;
+            keyfinder::VocalNote note;
+            note.startSeconds = static_cast<double>(c) * HOP_SIZE / SAMPLE_RATE;
+            note.weight = b - a;
+            note.pitch = midi;
+            notes.push_back(note);
+          }
+        }
+        keyfinder::Chroma chroma;
+        if (backingFile != juce::File{})
+        {
+          juce::AudioFormatManager formats;
+          formats.registerBasicFormats();
+          std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(backingFile));
+          if (reader == nullptr)
+            return 1;
+          juce::AudioBuffer<float> audio(juce::jlimit(1, 2, static_cast<int>(reader->numChannels)),
+                                         static_cast<int>(reader->lengthInSamples));
+          reader->read(&audio, 0, audio.getNumSamples(), 0, true, true);
+          chroma = keyfinder::analyse(audio, reader->sampleRate);
+        }
+        found = keyfinder::find(notes, chroma.empty() ? nullptr : &chroma);
+      }
+      model.setResult(found);
+      std::printf("mode: %s (fit major %.3f, minor %.3f)\n", found.minor ? "minor" : "major",
+                  found.majorFit, found.minorFit);
+      if (add >= 0.0)
+        std::printf("change added at %.1f s: %s\n", add, model.addChangeAt(add) ? "yes" : "no");
+      model.page = wizard::Page::keyCheck;
+      auto &keys = overlay.keyPage();
+      keys.setVoiceToo(!found.hasBacking, found.hasBacking);
+      keys.setScaleLevelDb(0.0f);
+      keys.setPlayback(at, at > 0.0);
+      if (at > 0.0 && !model.getStretches().empty())
+      {
+        const int sounding = model.stretchAt(at);
+        keys.setSounding(sounding, model.getStretches()[static_cast<size_t>(sounding)].chosen);
+      }
+      for (const auto &stretch : model.getStretches())
+        std::printf("stretch %.1f-%.1f: %s then %s\n", stretch.startSeconds, stretch.endSeconds,
+                    wizardui::noteName(stretch.first), wizardui::noteName(stretch.second));
+    }
+    overlay.setSize(width, height);
+    overlay.setVisible(true);
+    overlay.refresh();
+    std::printf("wizard %s (%s): card %s, shot %s\n", page.toRawUTF8(),
+                Localization::getInstance().getLanguage().toRawUTF8(),
+                overlay.cardBounds().toString().toRawUTF8(), writePng(overlay, output) ? "ok" : "FAILED");
+    return 0;
+  }
+  // WarpRender <voice.wav> <out.wav> --key-audition <backing.wav> <root 0-11>
+  // <startSeconds> [voice] [around <midi>]: what the key check plays, through
+  // the playback engine itself (AudioEngine): the accompaniment from
+  // startSeconds, and after 1 s the sine scale of the major key on `root`
+  // laid over it, 5.5 s in all, at the levels the App starts with
+  // (accompaniment -6 dB, scale -18 dBFS). `voice`: the voice is heard as
+  // well. `around`: the pitch the scale's octave is chosen by (default 64).
+  if (argc >= 7 && juce::String::fromUTF8(argv[3]) == "--key-audition")
+  {
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    const auto read = [&](const juce::File &file, juce::AudioBuffer<float> &audio, int &rate)
+    {
+      std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+      if (reader == nullptr)
+        return false;
+      audio.setSize(static_cast<int>(reader->numChannels), static_cast<int>(reader->lengthInSamples));
+      reader->read(&audio, 0, audio.getNumSamples(), 0, true, true);
+      rate = static_cast<int>(std::lround(reader->sampleRate));
+      return true;
+    };
+    juce::AudioBuffer<float> voice, backing;
+    int voiceRate = 0, backingRate = 0;
+    const juce::File backingFile =
+        juce::File::getCurrentWorkingDirectory().getChildFile(juce::String::fromUTF8(argv[4]));
+    if (!read(input, voice, voiceRate) || !read(backingFile, backing, backingRate))
+    {
+      std::fprintf(stderr, "cannot read the voice or the accompaniment\n");
+      return 1;
+    }
+    const int root = juce::String::fromUTF8(argv[5]).getIntValue();
+    const double start = juce::String::fromUTF8(argv[6]).getDoubleValue();
+    bool withVoice = false;
+    double around = 64.0;
+    for (int i = 7; i < argc; ++i)
+    {
+      const juce::String arg = juce::String::fromUTF8(argv[i]);
+      if (arg == "voice")
+        withVoice = true;
+      else if (arg == "around" && i + 1 < argc)
+        around = juce::String::fromUTF8(argv[++i]).getDoubleValue();
+    }
+    const double deviceRate = 48000.0;
+    const int block = 512;
+    const auto chroma = keyfinder::analyse(backing, backingRate);
+    AudioEngine engine;
+    engine.prepareToPlay(block, deviceRate);
+    engine.loadWaveform(voice, voiceRate, false);
+    engine.setBacking(backing, backingRate);
+    engine.setBackingAudible(true);
+    engine.setBackingGainDb(-6.0f);
+    engine.setVoiceAudible(withVoice);
+    engine.seek(start);
+    engine.play();
+    const int total = static_cast<int>(5.5 * deviceRate) / block;
+    const int scaleAt = static_cast<int>(1.0 * deviceRate) / block;
+    juce::AudioBuffer<float> out(2, total * block), one(2, block);
+    for (int k = 0; k < total; ++k)
+    {
+      if (k == scaleAt)
+        engine.playOverlay(keyfinder::scaleTone(keyfinder::scaleRootNear(root, around),
+                                                chroma.tuneSemitones, deviceRate),
+                           static_cast<int>(deviceRate));
+      juce::AudioSourceChannelInfo info(&one, 0, block);
+      engine.getNextAudioBlock(info);
+      for (int ch = 0; ch < 2; ++ch)
+        out.copyFrom(ch, k * block, one, ch, 0, block);
+    }
+    writeWav(output, out, deviceRate, 24);
+    std::printf("key audition: root %d from MIDI %d, tune %+.1f cents, peak %.2f dBFS\n", root,
+                keyfinder::scaleRootNear(root, around), 100.0 * chroma.tuneSemitones,
+                juce::Decibels::gainToDecibels(out.getMagnitude(0, out.getNumSamples())));
+    return 0;
+  }
+  // WarpRender <in.pitchnet | notes.txt> <out.txt> --key [--backing <wav>]
+  // [--change-cost <points>] [--scale <wav>]: the key of a song as the
+  // wizard finds it (KeyFinder.h), written out to compare with the Python it
+  // was tried in: the accompaniment's tuning and the share of its energy on
+  // each major scale, whole and by window; the singer's offset and the
+  // notes' distance to each scale; each window's cost and key on the
+  // cheapest path; the stretches and their two likeliest keys. The notes
+  // come from a project, or from the text --dump-notes prints (2 decimals).
+  // --scale writes the sine scale of the first stretch's key at 48 kHz.
+  if (argc >= 4 && juce::String::fromUTF8(argv[3]) == "--key")
+  {
+    juce::File backingFile, scaleFile;
+    double changeCost = keyfinder::kChangeCost;
+    for (int i = 4; i + 1 < argc; i += 2)
+    {
+      const juce::String arg = juce::String::fromUTF8(argv[i]);
+      const juce::String value = juce::String::fromUTF8(argv[i + 1]);
+      if (arg == "--backing")
+        backingFile = juce::File::getCurrentWorkingDirectory().getChildFile(value);
+      else if (arg == "--change-cost")
+        changeCost = value.getDoubleValue();
+      else if (arg == "--scale")
+        scaleFile = juce::File::getCurrentWorkingDirectory().getChildFile(value);
+    }
+    std::vector<keyfinder::VocalNote> notes;
+    if (input.hasFileExtension("pitchnet"))
+    {
+      Project project;
+      if (!ProjectSerializer::loadFromFile(project, input))
+        return 1;
+      notes = keyfinder::vocalNotes(project);
+    }
+    else
+    {
+      juce::StringArray lines;
+      input.readLines(lines);
+      for (const auto &line : lines)
+      {
+        int a = 0, b = 0, c = 0, d = 0;
+        float midi = 0.0f;
+        if (std::sscanf(line.toRawUTF8(), "note src [%d, %d) -> [%d, %d) midi %f", &a, &b, &c, &d,
+                        &midi) != 5 ||
+            line.endsWith("rest") || b - a < keyfinder::kMinNoteFrames)
+          continue;
+        keyfinder::VocalNote note;
+        note.startSeconds = static_cast<double>(c) * HOP_SIZE / SAMPLE_RATE;
+        note.weight = b - a;
+        note.pitch = midi;
+        notes.push_back(note);
+      }
+    }
+    keyfinder::Chroma chroma;
+    if (backingFile != juce::File{})
+    {
+      juce::AudioFormatManager formats;
+      formats.registerBasicFormats();
+      std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(backingFile));
+      if (reader == nullptr)
+      {
+        std::fprintf(stderr, "cannot read %s\n", backingFile.getFullPathName().toRawUTF8());
+        return 1;
+      }
+      juce::AudioBuffer<float> audio(static_cast<int>(reader->numChannels),
+                                     static_cast<int>(reader->lengthInSamples));
+      reader->read(&audio, 0, audio.getNumSamples(), 0, true, true);
+      chroma = keyfinder::analyse(audio, reader->sampleRate);
+    }
+    const auto result = keyfinder::find(notes, chroma.empty() ? nullptr : &chroma, changeCost);
+    static const char *names[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    juce::String out;
+    int placed = 0;
+    for (const auto &note : notes)
+      placed += note.placed ? 1 : 0;
+    out << "notes\t" << static_cast<int>(notes.size()) << "\tplaced\t" << placed << "\n";
+    out << "tune_cents\t" << juce::String(100.0 * result.tuneSemitones, 2) << "\n";
+    out << "offset_cents\t" << juce::String(100.0 * result.vocalOffsetSemitones, 2) << "\n";
+    const auto row = [&](const juce::String &label, const std::array<double, 12> &values, double scale,
+                         int decimals)
+    {
+      out << label;
+      for (const double value : values)
+        out << "\t" << juce::String(value * scale, decimals);
+      out << "\n";
+    };
+    out << "roots";
+    for (const char *name : names)
+      out << "\t" << name;
+    out << "\n";
+    if (!chroma.empty())
+      row("whole_backing_share", keyfinder::scaleShares(keyfinder::sum(
+                                     chroma, 0, static_cast<int>(chroma.frames.size()))), 100.0, 2);
+    std::array<double, 12> fit{};
+    if (keyfinder::vocalFit(notes, result.vocalOffsetSemitones, fit))
+      row("whole_voice_fit", fit, 100.0, 2);
+    for (const auto &window : result.windows)
+    {
+      const juce::String at = juce::String(window.startSeconds, 2);
+      if (window.hasBacking)
+        row("window_backing\t" + at, window.backingShare, 100.0, 2);
+      if (window.hasVoice)
+        row("window_voice\t" + at + "\t" + juce::String(window.notes), window.voiceFit, 100.0, 2);
+      row("window_cost\t" + at + "\t" + names[window.key], window.cost, 1.0, 2);
+    }
+    for (const auto &stretch : result.stretches)
+      out << "stretch\t" << juce::String(stretch.startSeconds, 2) << "\t"
+          << juce::String(stretch.endSeconds, 2) << "\t" << names[stretch.key] << "\t"
+          << names[stretch.second] << "\t" << juce::String(stretch.lead, 2) << "\n";
+    output.replaceWithText(out);
+    for (const auto &stretch : result.stretches)
+      std::printf("%7.2f - %7.2f  %-2s  then %-2s  lead %.2f\n", stretch.startSeconds, stretch.endSeconds,
+                  names[stretch.key], names[stretch.second], stretch.lead);
+    if (scaleFile != juce::File{} && !result.stretches.empty())
+    {
+      double weight = 0.0, mean = 0.0;
+      for (const auto &note : notes)
+      {
+        weight += note.weight;
+        mean += note.weight * note.pitch;
+      }
+      const int root = keyfinder::scaleRootNear(result.stretches.front().key,
+                                                weight > 0.0 ? mean / weight : 60.0);
+      writeWav(scaleFile,
+               keyfinder::scaleTone(root, result.hasBacking ? result.tuneSemitones
+                                                            : result.vocalOffsetSemitones, 48000.0),
+               48000, 24);
+    }
     return 0;
   }
   // WarpRender <project.pitchnet> - --notes [from:to]: the notes (index,

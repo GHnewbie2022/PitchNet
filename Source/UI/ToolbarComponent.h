@@ -108,6 +108,10 @@ public:
     void setLeftPanelAvailable(bool available);
     void setUndoRedoEnabled(bool undoEnabled, bool redoEnabled);
     void setProject(Project* project);
+    // The stretch of the song the playhead is in, for the key shown and
+    // edited (ScaleSelectionControl::setStretch).
+    void setKeyStretch(int index, int root) { scaleSelectionButton.setStretch(index, root); }
+    std::function<void(int stretch, int root)> onStretchRootChosen;
     bool isFollowPlayback() const { return followPlayback; }
     bool isLoopEnabled() const { return loopEnabled; }
 

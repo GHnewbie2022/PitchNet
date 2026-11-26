@@ -76,6 +76,11 @@ ToolbarComponent::ToolbarComponent()
         if (onScaleRootChanged)
             onScaleRootChanged(rootNote);
     };
+    scaleSelectionButton.onStretchRootChosen = [this](int stretch, int root)
+    {
+        if (onStretchRootChosen)
+            onStretchRootChosen(stretch, root);
+    };
     scaleSelectionButton.onScaleModeChanged = [this](ScaleMode mode)
     {
         if (onScaleModeChanged)

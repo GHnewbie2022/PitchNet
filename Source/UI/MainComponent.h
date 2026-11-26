@@ -14,10 +14,13 @@
 #include "Main/SettingsManager.h"
 #include "ParameterPanel.h"
 #include "TrackListPanel.h"
+#include "MixerPanel.h"
 #include "PianoRollComponent.h"
 #include "PianoRollWorkspaceView.h"
 #include "SettingsOverlay.h"
 #include "ToolbarComponent.h"
+#include "Wizard/WelcomeOverlay.h"
+#include "Wizard/WizardOverlay.h"
 #include "Workspace/WorkspaceComponent.h"
 
 #include <atomic>
@@ -126,6 +129,13 @@ public:
   // Opens a project or audio file chosen outside the UI (command line, file
   // manager). Ignored in plugin mode and for files that no longer exist.
   void openFileFromPath(const juce::File &file);
+
+  // The standalone opened by itself, with no file: the two ways to begin
+  // (spec section 15). Anything opened afterwards takes the screen away.
+  void showWelcome();
+  // The wizard: for the project that is open, or - with none - for the two
+  // files of a new one.
+  void showWizard(bool fromWelcome = false);
 
   // Plugin mode
   bool isPluginMode() const { return !enableAudioDeviceFlag; }
@@ -460,7 +470,8 @@ private:
   PianoRollComponent pianoRoll;
   PianoRollWorkspaceView pianoRollView;
   ParameterPanel parameterPanel;
-  TrackListPanel trackListPanel; // content of the left side panel
+  TrackListPanel trackListPanel; // content of the left side panel (the plug-in)
+  MixerPanel mixerPanel;         // content of the left side panel (the standalone)
   std::function<void()> onTrackColourModeChanged;
   float uiBrightnessFactor = 1.0f; // 1.0 = unchanged, see applyUiBrightness()
   AnalysisBackdrop analysisBackdrop;
@@ -478,6 +489,67 @@ private:
   bool attachProjectRecording(Project &project, const juce::File &projectFile,
                               const juce::File &chosen = {});
   void askForProjectRecording();
+
+  // The accompaniment (spec section 15, standalone only): the file the
+  // project links, read into the playback engine, and the two faders.
+  // syncMixerWithProject: after a project is shown - the engine and the
+  // panel take its levels, and its accompaniment is read (or asked for).
+  void syncMixerWithProject();
+  void refreshMixerPanel();
+  void chooseProjectBacking();
+  void setProjectBacking(const juce::File &file); // the user's choice
+  void removeProjectBacking();
+  // whenDone: told whether the engine has the file (and then it, not a
+  // message box, says so when the file cannot be read).
+  void loadBackingAudio(const juce::File &file, bool chosenByUser,
+                        std::function<void(bool)> whenDone = {});
+  void askForProjectBacking(const juce::File &missing);
+  juce::File loadedBackingFile; // what the engine holds
+  bool backingMissing = false;
+  bool backingLoading = false;
+  int backingLoadGeneration = 0; // a load answered after another began is dropped
+
+  // The welcome screen and the wizard (spec section 15, standalone only;
+  // Main/MainComponent_Wizard.cpp). The wizard's overlay shows wizardModel.
+  void hideWelcome();
+  // The welcome screen and the wizard fill the window, drawn larger in a
+  // large window (up to 1.6 times): their cards are small on a big display.
+  void layOutStartScreen(juce::Component &overlay);
+  void dismissStartScreens(); // a file is being opened by another road
+  void closeWizard(bool cancelled);
+  void showWizardPage(wizard::Page page, const juce::String &message = {});
+  void wizardChooseFile(bool forVoice);
+  void wizardTakeFile(const juce::File &file, bool forVoice);
+  void wizardStart();
+  void wizardLinkBacking();
+  void wizardAnalyse();
+  void wizardShowKeys(const keyfinder::Chroma &chroma);
+  void wizardEnterKeyCheck();
+  void wizardLeaveKeyCheck();
+  void wizardApplyMonitor();
+  void wizardPlayFrom(double seconds);
+  void wizardPlayStop();
+  void wizardAudition(int stretch, int root);
+  void wizardTick();
+  void wizardConfirm();
+  bool wizardIsShowing() const { return wizardOverlay != nullptr && wizardOverlay->isVisible(); }
+  // The toolbar's key and the piano roll's scale, after the project's key changed.
+  void refreshKeyDisplays();
+  // The toolbar's key is that of the stretch the playhead is in.
+  void refreshToolbarKey();
+  wizard::Model wizardModel;
+  std::unique_ptr<WelcomeOverlay> welcomeOverlay;
+  std::unique_ptr<WizardOverlay> wizardOverlay;
+  bool wizardFromWelcome = false;
+  bool wizardKeyCheckActive = false; // the engine is set up for the key check
+  bool wizardVoiceToo = false;       // the key check plays the voice as well
+  float wizardScaleDb = 0.0f;        // the scale's level over its -18 dBFS
+  double wizardAroundMidi = 64.0;    // the voice's average pitch: the scale's octave
+  bool wizardSounding = false;
+  int wizardGeneration = 0; // an answer for a wizard that was closed is dropped
+  // Once, when loadAudioFile has shown its project (true) or given up.
+  std::function<void(bool)> afterAudioLoaded;
+
   std::unique_ptr<juce::FileChooser> fileChooser;
   juce::StringArray recentFiles;
 
