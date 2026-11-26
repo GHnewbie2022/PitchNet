@@ -51,9 +51,37 @@ void GridRenderer::draw(juce::Graphics &g, const Params &params)
   const int endMidi = juce::jlimit(MIN_MIDI_NOTE, MAX_MIDI_NOTE,
                                    visibleTopMidi + 1);
 
-  const bool showScaleOverlay =
-      params.scaleMode != ScaleMode::None && params.scaleMode != ScaleMode::Chromatic &&
-      params.scaleRootNote >= 0;
+  // The stretches of one key across what is visible: one, unless the song
+  // changes key (Params::scaleSpans).
+  struct KeyRun
+  {
+    float x0, x1;
+    int root;
+  };
+  std::vector<KeyRun> keyRuns;
+  if (params.scaleSpans.empty())
+  {
+    keyRuns.push_back({visibleStartX, visibleEndX, params.scaleRootNote});
+  }
+  else
+  {
+    for (size_t i = 0; i < params.scaleSpans.size(); ++i)
+    {
+      const float x0 = i == 0 ? visibleStartX
+                              : std::max(visibleStartX, std::round(params.scaleSpans[i].first));
+      const float x1 = i + 1 < params.scaleSpans.size()
+                           ? std::min(visibleEndX, std::round(params.scaleSpans[i + 1].first))
+                           : visibleEndX;
+      if (x1 > x0)
+        keyRuns.push_back({x0, x1, params.scaleSpans[i].second});
+    }
+  }
+  const bool scaleModeShown =
+      params.scaleMode != ScaleMode::None && params.scaleMode != ScaleMode::Chromatic;
+  const auto overlayOn = [&](const KeyRun &run) { return scaleModeShown && run.root >= 0; };
+  bool showScaleOverlay = false;
+  for (const auto &run : keyRuns)
+    showScaleOverlay = showScaleOverlay || overlayOn(run);
   const auto whiteKeyRowColour = juce::Colour(0xFF1C1C1Bu);
   const auto blackKeyRowColour = juce::Colour(0xFF151515u);
 
@@ -76,17 +104,22 @@ void GridRenderer::draw(juce::Graphics &g, const Params &params)
     const auto inScaleRowColour = whiteKeyRowColour;
     const auto outOfScaleRowColour = blackKeyRowColour;
 
-    for (int midi = startMidi; midi <= endMidi; ++midi)
+    for (const auto &run : keyRuns)
     {
-      const int noteInOctave = (midi % 12 + 12) % 12;
-      const auto toneState = pianoRollView::getScaleToneState(
-          params.scaleMode, noteInOctave, params.scaleRootNote);
-      g.setColour(toneState == pianoRollView::ScaleToneState::OutOfScale
-                      ? outOfScaleRowColour
-                      : inScaleRowColour);
-      const float y = coordMapper->midiToY(
-          static_cast<float>(midi) + params.pitchAxisOffsetSemitones);
-      g.fillRect(visibleStartX, y, visibleEndX - visibleStartX, pixelsPerSemitone);
+      if (!overlayOn(run))
+        continue;
+      for (int midi = startMidi; midi <= endMidi; ++midi)
+      {
+        const int noteInOctave = (midi % 12 + 12) % 12;
+        const auto toneState = pianoRollView::getScaleToneState(
+            params.scaleMode, noteInOctave, run.root);
+        g.setColour(toneState == pianoRollView::ScaleToneState::OutOfScale
+                        ? outOfScaleRowColour
+                        : inScaleRowColour);
+        const float y = coordMapper->midiToY(
+            static_cast<float>(midi) + params.pitchAxisOffsetSemitones);
+        g.fillRect(run.x0, y, run.x1 - run.x0, pixelsPerSemitone);
+      }
     }
   }
 
@@ -100,28 +133,32 @@ void GridRenderer::draw(juce::Graphics &g, const Params &params)
         static_cast<float>(midi) + params.pitchAxisOffsetSemitones);
     const int noteInOctave = (midi % 12 + 12) % 12;
 
-    if (!showScaleOverlay)
+    for (const auto &run : keyRuns)
     {
-      g.setColour(noteInOctave == 0 ? APP_COLOR_GRID_BAR : APP_COLOR_GRID);
+      if (!overlayOn(run))
+      {
+        g.setColour(noteInOctave == 0 ? APP_COLOR_GRID_BAR : APP_COLOR_GRID);
+      }
+      else
+      {
+        const auto toneState = pianoRollView::getScaleToneState(
+            params.scaleMode, noteInOctave, run.root);
+        if (toneState == pianoRollView::ScaleToneState::Root)
+          g.setColour(APP_COLOR_GRID_BAR);
+        else if (toneState == pianoRollView::ScaleToneState::InScale)
+          g.setColour(APP_COLOR_GRID);
+        else
+          g.setColour(APP_COLOR_GRID.darker(0.25f));
+      }
+      g.drawHorizontalLine(static_cast<int>(y), run.x0, run.x1);
     }
-    else if (pianoRollView::getScaleToneState(params.scaleMode, noteInOctave,
-                                              params.scaleRootNote) ==
-             pianoRollView::ScaleToneState::Root)
-    {
-      g.setColour(APP_COLOR_GRID_BAR);
-    }
-    else if (pianoRollView::getScaleToneState(params.scaleMode, noteInOctave,
-                                              params.scaleRootNote) ==
-             pianoRollView::ScaleToneState::InScale)
-    {
-      g.setColour(APP_COLOR_GRID);
-    }
-    else
-    {
-      g.setColour(APP_COLOR_GRID.darker(0.25f));
-    }
+  }
 
-    g.drawHorizontalLine(static_cast<int>(y), visibleStartX, visibleEndX);
+  // Where the key changes: a line down the canvas, under the flag on the ruler.
+  for (size_t i = 1; i < keyRuns.size(); ++i)
+  {
+    g.setColour(juce::Colour(0xFF6FB6FFu).withAlpha(0.45f));
+    g.drawVerticalLine(static_cast<int>(keyRuns[i].x0), visibleTopY, visibleBottomY);
   }
 
   if (params.timelineDisplayMode == TimelineDisplayMode::Beats)

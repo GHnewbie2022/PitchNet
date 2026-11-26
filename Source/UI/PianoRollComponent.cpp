@@ -28,6 +28,7 @@
 #include "PianoRoll/States/WarpHandler.h"
 #include "Components/PitchPopupMenu.h"
 #include "Components/CanvasPopupMenu.h"
+#include "../Undo/KeyFlagEdits.h"
 #include "BinaryData.h"
 #include <array>
 #include <algorithm>
@@ -600,6 +601,44 @@ PianoRollComponent::PianoRollComponent()
   };
   addAndMakeVisible(synthButton);
 
+  // The lock (spec section 15): drawn here in the others' three states
+  // (resting, hovered, pressed), one above the other.
+  {
+    constexpr int side = 42;
+    juce::Image sheet(juce::Image::ARGB, side, side * 3, true);
+    juce::Graphics sg(sheet);
+    const juce::Colour grounds[3] = {juce::Colour(0xFF2E2E2Du), juce::Colour(0xFF5B5B5Bu),
+                                     juce::Colour(0xFF5B5B5Bu)};
+    const juce::Colour inks[3] = {juce::Colour(0xFFE6E6E6u), juce::Colour(0xFFF2F2F2u),
+                                  juce::Colour(0xFF151515u)};
+    for (int frame = 0; frame < 3; ++frame)
+    {
+      const auto cell = juce::Rectangle<float>(0.0f, static_cast<float>(frame * side),
+                                               static_cast<float>(side), static_cast<float>(side));
+      sg.setColour(grounds[frame]);
+      sg.fillRoundedRectangle(cell, 6.0f);
+      sg.setColour(inks[frame]);
+      const auto body = juce::Rectangle<float>(13.0f, 19.0f, 16.0f, 13.0f).translated(0.0f, cell.getY());
+      sg.fillRoundedRectangle(body, 2.5f);
+      juce::Path shackle;
+      shackle.addCentredArc(21.0f, cell.getY() + 19.0f, 5.5f, 7.0f, 0.0f,
+                            -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
+      sg.strokePath(shackle, juce::PathStrokeType(2.6f));
+    }
+    lockButton.setImage(sheet);
+    lockButtonWidth = std::max(1, lockButton.getWidth());
+    lockButtonHeight = std::max(1, lockButton.getHeight());
+  }
+  lockButton.setTooltip(TR("tooltip.lock"));
+  lockButton.setVisible(false);
+  lockButton.onClick = [this]()
+  {
+    // The selection, when the note under the pointer is part of one.
+    if (hoveredNote)
+      toggleLock(getResetTargetNotes(*hoveredNote));
+  };
+  addAndMakeVisible(lockButton);
+
 }
 
 PianoRollComponent::~PianoRollComponent()
@@ -767,6 +806,7 @@ void PianoRollComponent::paint(juce::Graphics &g)
   // Draw timeline (above grid, scrolls horizontally)
   drawTimeline(g);
   drawLoopTimeline(g);
+  drawKeyFlags(g);
   drawPlayheadMarker(g);
 
   {
@@ -914,6 +954,16 @@ void PianoRollComponent::drawGrid(juce::Graphics &g, bool drawRowBackgrounds,
   params.visibleContentHeight = getVisibleContentHeight();
   params.drawRowBackgrounds = drawRowBackgrounds;
   params.drawGridLines = drawGridLines;
+  // A song that changes key: each stretch in its own. The first is the
+  // project's key, which is what the toolbar's menu previews.
+  if (project != nullptr && !project->getKeyChanges().empty())
+  {
+    const auto stretches = keyflags::stretches(*project);
+    for (size_t i = 0; i < stretches.size(); ++i)
+      params.scaleSpans.push_back(
+          {static_cast<float>(stretches[i].startSeconds * pixelsPerSecond),
+           i == 0 ? params.scaleRootNote : stretches[i].root});
+  }
   gridRenderer->draw(g, params);
 }
 
@@ -1394,7 +1444,7 @@ float PianoRollComponent::getDoubleClickSnapTarget(const Note& note) const
   {
     case DoubleClickSnapMode::Scale:
       return ScaleUtils::snapMidiToScale(pitch, project->getPreferredScaleMode(),
-                                       project->getScaleRootNote(), pitchReferenceHz);
+                                       project->keyRootFor(note), pitchReferenceHz);
     case DoubleClickSnapMode::MidiReference:
     {
       const auto target = MidiReference::findSnapPitch(
@@ -1977,7 +2027,8 @@ void PianoRollComponent::drawPianoKeys(juce::Graphics &g)
         project != nullptr ? project->getPreferredScaleMode() : ScaleMode::Major;
     activeScaleMode = previewScaleMode.value_or(preferredMode);
   }
-  const int activeScaleRootNote = previewScaleRootNote.value_or(selectedScaleRootNote);
+  // In a song that changes key: the key of the stretch at the left edge.
+  const int activeScaleRootNote = previewScaleRootNote.value_or(keyRootAtViewLeft());
   const int horizontalScrollBarSize =
       showHorizontalScrollBar ? APP_SCROLLBAR_THICKNESS : 0;
   pianoKeysRenderer->draw(g, getHeight(), horizontalScrollBarSize,
@@ -2342,6 +2393,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e)
 {
   swallowGestureUntilMouseUp = false;
   playheadDragActive = false;
+  keyFlagDragIndex = -1;
 
   if (!project)
   {
@@ -2428,6 +2480,11 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e)
     previewPlayheadDrag(std::max(getTimelineStart(), xToTime(adjustedX)));
     return;
   }
+
+  // A flag on the ruler (a change of key) is dragged, and has a menu; so
+  // has the bare ruler, to add one.
+  if (keyFlagMouseDown(e))
+    return;
 
   // Pressing on the ruler grabs the playhead like Shift + Alt + click: it
   // follows the pointer while held and is set on release; running playback
@@ -2542,6 +2599,11 @@ void PianoRollComponent::mouseDrag(const juce::MouseEvent &e)
   if (trackGestureActive) { updateTrackGesture(e); return; }
   if (e.mods.isPopupMenu())
     return;
+  if (keyFlagDragIndex >= 0)
+  {
+    keyFlagMouseDrag(e);
+    return;
+  }
   if (playheadDragActive)
   {
     const float adjustedX = e.x - pianoKeysWidth + static_cast<float>(scrollX);
@@ -2603,6 +2665,11 @@ void PianoRollComponent::mouseUp(const juce::MouseEvent &e)
   if (trackGestureActive) { finishTrackGesture(); return; }
   if (e.mods.isPopupMenu())
     return;
+  if (keyFlagDragIndex >= 0)
+  {
+    keyFlagMouseUp();
+    return;
+  }
   if (playheadDragActive)
   {
     playheadDragActive = false;
@@ -2777,7 +2844,12 @@ void PianoRollComponent::mouseMove(const juce::MouseEvent &e)
 
   // Cycle handles take priority over every edit-mode cursor. Once the pointer
   // leaves a handle, the active tool immediately restores its canvas cursor.
-  if (loopDragHandler_ && loopDragHandler_->isHoveringHandle())
+  if (const int flag = keyFlagAt(e.position);
+      flag > 0 && keyFlags()[static_cast<size_t>(flag)].atOwnPlace)
+  {
+    setMouseCursor(juce::MouseCursor::LeftRightResizeCursor); // a change of key, to drag
+  }
+  else if (loopDragHandler_ && loopDragHandler_->isHoveringHandle())
   {
     setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
   }
@@ -2870,7 +2942,8 @@ void PianoRollComponent::mouseExit(const juce::MouseEvent &)
 
   if (previewButton.isMouseOverOrDragging() ||
       resetButton.isMouseOverOrDragging() ||
-      synthButton.isMouseOverOrDragging())
+      synthButton.isMouseOverOrDragging() ||
+      lockButton.isMouseOverOrDragging())
     return;
 
   setHoveredNote(nullptr);
@@ -3619,6 +3692,9 @@ bool PianoRollComponent::keyPressed(const juce::KeyPress &key)
   {
     return deleteSelectedNotes();
   }
+  // L locks the selection, or unlocks it when all of it is locked.
+  if ((keyCode == 'l' || keyCode == 'L') && !mods.isShiftDown())
+    return toggleLockOnSelection();
 
   return false;
 }
@@ -4566,7 +4642,7 @@ PianoRollComponent::getPreviewButtonBounds(const Note &note) const
   const float buttonHeight = static_cast<float>(previewButtonHeight);
   const float buttonGroupWidth =
       buttonWidth + buttonGap + static_cast<float>(resetButtonWidth) + buttonGap +
-      static_cast<float>(synthButtonWidth);
+      static_cast<float>(synthButtonWidth) + buttonGap + static_cast<float>(lockButtonWidth);
   const float buttonX = shadowBounds.getCentreX() - buttonGroupWidth * 0.5f;
   const float buttonY = shadowBounds.getBottom() + 7.0f +
       (editMode == EditMode::Select ? PitchToolHandles::buttonHeight + 10.0f : 0.0f);
@@ -4590,6 +4666,7 @@ PianoRollComponent::getPreviewHoverBounds(const Note &note) const
   return noteBounds.getUnion(getPreviewButtonBounds(note))
       .getUnion(getResetButtonBounds(note))
       .getUnion(getSynthButtonBounds(note))
+      .getUnion(getLockButtonBounds(note))
       .expanded(4.0f);
 }
 
@@ -4675,6 +4752,7 @@ void PianoRollComponent::updatePreviewButtonBounds()
     previewButton.setVisible(false);
     resetButton.setVisible(false);
     synthButton.setVisible(false);
+    lockButton.setVisible(false);
     return;
   }
 
@@ -4696,6 +4774,9 @@ void PianoRollComponent::updatePreviewButtonBounds()
   resetButton.setVisible(resetBounds.intersects(mainArea));
   synthButton.setBounds(synthBounds);
   synthButton.setVisible(synthBounds.intersects(mainArea));
+  const auto lockBounds = getLockButtonLocalBounds(*hoveredNote);
+  lockButton.setBounds(lockBounds);
+  lockButton.setVisible(lockBounds.intersects(mainArea));
 }
 
 Note *PianoRollComponent::findPreviewButtonNoteAt(float x, float y) const
@@ -4705,7 +4786,8 @@ Note *PianoRollComponent::findPreviewButtonNoteAt(float x, float y) const
 
   return (getPreviewButtonBounds(*hoveredNote).contains(x, y) ||
           getResetButtonBounds(*hoveredNote).contains(x, y) ||
-          getSynthButtonBounds(*hoveredNote).contains(x, y))
+          getSynthButtonBounds(*hoveredNote).contains(x, y) ||
+          getLockButtonBounds(*hoveredNote).contains(x, y))
              ? hoveredNote
              : nullptr;
 }
@@ -4826,6 +4908,7 @@ void PianoRollComponent::refreshLocalisedText()
   previewButton.setTooltip(TR("tooltip.context_audition"));
   resetButton.setTooltip(TR("tooltip.restore_original"));
   synthButton.setTooltip(TR("tooltip.synthesis"));
+  lockButton.setTooltip(TR("tooltip.lock"));
 }
 
 void PianoRollComponent::showResetMenu(Note &note)

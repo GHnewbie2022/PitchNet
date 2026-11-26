@@ -228,6 +228,8 @@ juce::Colour NoteRenderer::bodyColour(const Note &note) const
 {
   if (greyscale)
     return juce::Colour(0xFFCCCCCCu);
+  if (note.isLocked())
+    return juce::Colour(0xFF9C9C9Cu); // locked: grey, whatever its pitch (spec section 15)
   const int pitchReferenceHz = project ? project->getPitchReferenceHz() : 440;
   return getNoteGradientColours(note.getAdjustedMidiNote(), pitchReferenceHz)
       .centre;
@@ -453,8 +455,12 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
           greyscale
               ? NoteGradientColours{juce::Colour(0xFFCCCCCCu),
                                     juce::Colour(0xFF3A3A3Au)}
-              : getNoteGradientColours(note.getAdjustedMidiNote(),
-                                       pitchReferenceHz);
+              : note.isLocked()
+                    // Locked (the wizard leaves it alone): grey, with a lock
+                    // on its corner below.
+                    ? NoteGradientColours{juce::Colour(0xFF9C9C9Cu), juce::Colour(0xFF3A3A3Au)}
+                    : getNoteGradientColours(note.getAdjustedMidiNote(),
+                                             pitchReferenceHz);
       juce::Rectangle<float> noteVisualBounds(x, y, renderedWidth, h);
       // The shape that was filled, for the pinned-track outline.
       juce::Path bodyShape;
@@ -787,6 +793,24 @@ void NoteRenderer::draw(juce::Graphics &g, Pass pass, bool splitModeActive,
         const auto outlineBounds = noteVisualBounds.expanded(1.0f);
         g.setColour(juce::Colours::white.withAlpha(0.72f));
         g.drawRoundedRectangle(outlineBounds, 2.0f, 1.5f);
+      }
+
+      // The lock, on the upper right corner (a note too narrow shows the grey alone).
+      if (note.isLocked() && fillBodies && noteVisualBounds.getWidth() >= 12.0f)
+      {
+        const float lockRight = noteVisualBounds.getRight() - 2.0f;
+        const float lockTop = noteVisualBounds.getY() + 1.5f;
+        const juce::Rectangle<float> body(lockRight - 7.0f, lockTop + 3.5f, 7.0f, 5.0f);
+        juce::Path shackle;
+        shackle.addCentredArc(body.getCentreX(), body.getY(), 2.2f, 2.8f, 0.0f,
+                              -juce::MathConstants<float>::halfPi,
+                              juce::MathConstants<float>::halfPi, true);
+        g.setColour(juce::Colour(0xFF101010u).withAlpha(0.85f));
+        g.fillRoundedRectangle(body.expanded(1.0f), 1.5f);
+        g.strokePath(shackle, juce::PathStrokeType(2.6f));
+        g.setColour(juce::Colours::white);
+        g.fillRoundedRectangle(body, 1.0f);
+        g.strokePath(shackle, juce::PathStrokeType(1.2f));
       }
     }
 

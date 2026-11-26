@@ -29,6 +29,7 @@
 #include <optional>
 
 class PitchUndoManager;
+struct KeyState;
 class PianoRollInteractionContext;
 
 // Interaction handler forward declarations
@@ -144,6 +145,34 @@ public:
   void setScaleMode(ScaleMode mode);
   void setScaleRootNote(int noteInOctave);
   void refreshScaleFromProject();
+
+  // The changes of key on the time ruler (spec section 15; in
+  // PianoRoll/PianoRollKeyFlags.cpp): a flag for each stretch once the song
+  // has a change of key. A flag is dragged along the ruler; its menu
+  // (right-click) gives the stretch another key or takes the change away; a
+  // right-click on the bare ruler adds one. Each is one history step.
+  struct KeyFlag
+  {
+    int stretch = 0;               // 0: up to the first change of key
+    int root = 0;
+    juce::Rectangle<float> bounds; // its label, in the component
+    float x = 0.0f;                // where the stretch starts (the label is pinned
+    bool atOwnPlace = true;        //   to the left edge when that is out of view)
+  };
+  std::vector<KeyFlag> keyFlags() const;
+  int keyFlagAt(juce::Point<float> position) const; // the stretch, or -1
+  bool setStretchKey(int stretch, int root);
+  bool removeKeyChange(int changeIndex); // 0: the first change of key
+  bool addKeyChangeAt(double seconds, int root);
+  std::function<void()> onKeyChangesEdited; // also while a flag is dragged
+  std::function<void()> onLockChanged;
+
+  // A note locked: the wizard leaves it as it is (spec section 15). The
+  // lock under a note, or L, locks the selection - or unlocks it, when all
+  // of it is locked. One history step.
+  bool toggleLock(const std::vector<Note *> &notes);
+  bool toggleLockOnSelection();
+  juce::Button &lockButtonForTests() { return lockButton; }
   void setScaleRootPreview(std::optional<int> noteInOctave);
   void setScaleModePreview(std::optional<ScaleMode> mode);
   void setSnapToSemitoneDrag(bool enabled);
@@ -396,6 +425,8 @@ private:
   juce::Rectangle<int> getSynthButtonLocalBounds(const Note &note) const;
   juce::Rectangle<float> getPreviewHoverBounds(const Note &note) const;
   juce::Rectangle<int> getPreviewButtonLocalBounds(const Note &note) const;
+  juce::Rectangle<float> getLockButtonBounds(const Note &note) const;
+  juce::Rectangle<int> getLockButtonLocalBounds(const Note &note) const;
   juce::Rectangle<int> getResetButtonLocalBounds(const Note &note) const;
   void updatePreviewButtonBounds();
   void triggerPreviewForNote(Note &note);
@@ -521,6 +552,21 @@ private:
   Button previewButton;
   Button resetButton;
   Button synthButton;
+  Button lockButton;
+  int lockButtonWidth = 28;
+  int lockButtonHeight = 28;
+  // The flags on the ruler.
+  void drawKeyFlags(juce::Graphics &g);
+  bool keyFlagMouseDown(const juce::MouseEvent &e);
+  void keyFlagMouseDrag(const juce::MouseEvent &e);
+  void keyFlagMouseUp();
+  void showKeyFlagMenu(int stretch, juce::Point<int> screenPosition);
+  void showAddKeyChangeMenu(double seconds, juce::Point<int> screenPosition);
+  bool commitKeyEdit(const KeyState &before, const KeyState &after, const juce::String &name);
+  int keyRootAtViewLeft() const;
+  int keyFlagDragIndex = -1; // the change being dragged, or -1
+  float keyFlagDragGrab = 0.0f;
+  std::vector<KeyChange> keyFlagDragBefore;
   int previewButtonWidth = 28;
   int previewButtonHeight = 28;
   int resetButtonWidth = 28;

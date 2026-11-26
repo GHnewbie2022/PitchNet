@@ -4,6 +4,9 @@
 #include "../../Models/Project.h"
 #include "CoordinateMapper.h"
 
+#include <utility>
+#include <vector>
+
 /**
  * Draws the main scrollable grid (horizontal pitch lines + vertical beat/time
  * markers) with scale-aware light and dark row backgrounds.
@@ -18,6 +21,10 @@ public:
   {
     ScaleMode scaleMode;
     int scaleRootNote;
+    // A song that changes key (spec section 15): where each stretch starts
+    // (content x) and its root, in order; the first runs from the left
+    // edge. Empty: scaleRootNote throughout.
+    std::vector<std::pair<float, int>> scaleSpans;
     float pitchAxisOffsetSemitones;
     TimelineDisplayMode timelineDisplayMode;
     // Pre-computed timing values from the component (depend on tempo + signature).
