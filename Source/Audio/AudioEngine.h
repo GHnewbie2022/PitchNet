@@ -58,6 +58,42 @@ public:
   void endAuditionLoop();
   bool isAuditioning() const { return auditionActive.load(); }
 
+  // The accompaniment (spec section 15): heard beside the project's audio at
+  // the same place on the transport - through a seek, a loop, to the end.
+  // Shorter than the project's audio, it is silent from where it ends; the
+  // transport's length stays the project's. Converted to the device rate
+  // once, like the project's audio. Not for the audio thread.
+  void setBacking(const juce::AudioBuffer<float> &buffer, int sampleRate);
+  void clearBacking();
+  bool hasBacking() const { return backingPresent.load(); }
+  void setBackingAudible(bool audible) { backingAudible.store(audible); }
+  bool isBackingAudible() const { return backingAudible.load(); }
+  // dB, -60 (silent) to +12.
+  void setBackingGainDb(float dB);
+  float getBackingGainDb() const;
+
+  // The project's own audio beside it: its level, and whether it is heard
+  // at all (a key is checked against the accompaniment alone).
+  void setVoiceGainDb(float dB);
+  float getVoiceGainDb() const;
+  void setVoiceAudible(bool audible) { voiceAudible.store(audible); }
+  bool isVoiceAudible() const { return voiceAudible.load(); }
+
+  // A sound played once over the transport, from its start to its end, while
+  // the transport plays: the scale a key is confirmed with (ScaleTone.h). It
+  // moves no playhead, and is gone when it ends or the transport stops.
+  // (The audition loop above takes the transport's place; this is laid over.)
+  void playOverlay(const juce::AudioBuffer<float> &buffer, int sampleRate);
+  void stopOverlay();
+  bool isOverlayPlaying() const { return overlayActive.load(); }
+  void setOverlayGainDb(float dB);
+  float getOverlayGainDb() const;
+
+  // The device changed rate: what was loaded is converted to it again (the
+  // project's audio, the accompaniment). Called by the engine itself on the
+  // message thread; public for tests, which have no message loop.
+  void convertForDeviceRate();
+
   bool isPlaying() const { return playing; }
   double getPosition() const; // Returns position in seconds
   double getDuration() const;
@@ -216,6 +252,26 @@ private:
 
   // Volume control (linear gain, lock-free for audio thread)
   std::atomic<float> volumeGain{1.0f};
+
+  // The accompaniment: as given (converted again when the device changes
+  // rate), and at the device rate when that differs. Swapped in under
+  // waveformLock, read by the audio thread under it.
+  juce::AudioBuffer<float> backingSource;
+  int backingSourceRate = 0;
+  juce::AudioBuffer<float> backingConverted; // empty while the rates agree
+  int backingRate = 0;                       // of what the audio thread reads
+  std::atomic<bool> backingPresent{false};
+  std::atomic<bool> backingAudible{false};
+  std::atomic<float> backingGain{0.5f};
+  std::atomic<float> voiceGain{1.0f};
+  std::atomic<bool> voiceAudible{true};
+
+  // The sound laid over the transport once (playOverlay).
+  juce::AudioBuffer<float> overlayWaveform; // at the device rate
+  int overlayRate = 0;
+  int overlayPosition = 0;                  // audio thread, under waveformLock
+  std::atomic<bool> overlayActive{false};
+  std::atomic<float> overlayGain{1.0f};
 
   // Loop range (in waveform samples)
   std::atomic<bool> loopEnabled{false};

@@ -2,10 +2,12 @@
 #include "../Utils/AppLogger.h"
 #include "../Utils/AudioResampler.h"
 #include "SourceAudio.h"
+#include "Mixdown.h"
 #include "BufferHashes.h"
 #include <tuple>
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 
 AudioEngine::AudioEngine() {}
 
@@ -81,6 +83,11 @@ void AudioEngine::initializeAudio(const juce::String &savedStateXml,
   else
     LOG("AudioEngine: no output device could be opened");
 
+  // UI tests only: with PITCHNET_SILENT_OUTPUT set, everything plays at no
+  // level - the transport runs as it does, nothing is heard. For running a
+  // flow that plays (the wizard's key check) with nobody listening.
+  if (std::getenv("PITCHNET_SILENT_OUTPUT") != nullptr)
+    audioSourcePlayer.setGain(0.0f);
   deviceManager.addAudioCallback(&audioSourcePlayer);
   audioSourcePlayer.setSource(this);
 }
@@ -229,6 +236,7 @@ void AudioEngine::getNextAudioBlock(
   if (!loopActive && pos >= waveformLength) {
     bufferToFill.clearActiveBufferRegion();
     playing = false;
+    overlayActive.store(false);
     currentPosition.store(0);
     interpolator.reset();
 
@@ -247,6 +255,7 @@ void AudioEngine::getNextAudioBlock(
   // so it normally plays sample for sample. The interpolator only covers the
   // moment between a device rate change and that conversion.
   const bool unity = std::abs(activePlaybackRatio - 1.0) < 1.0e-9;
+  const int64_t blockStart = pos; // where this block starts reading
   const int sourceChannels = activeWaveform.getNumChannels();
   const float *inputData = activeWaveform.getReadPointer(0);
   float *outputData = outputBuffer->getWritePointer(0, startSample);
@@ -330,10 +339,65 @@ void AudioEngine::getNextAudioBlock(
     }
   }
 
-  // Apply volume gain (lock-free read)
-  float gain = volumeGain.load();
+  // Apply volume gain (lock-free read): the project's volume, and the
+  // voice's own level beside the accompaniment (silent when not heard).
+  float gain = volumeGain.load() * (voiceAudible.load() ? voiceGain.load() : 0.0f);
   if (std::abs(gain - 1.0f) > 0.0001f) // Only apply if not unity gain
     outputBuffer->applyGain(startSample, numOutputSamples, gain);
+
+  // The accompaniment, read at the places the block just read the project's
+  // audio at (the same walk through a loop). Only sample for sample: in the
+  // moment after a device rate change the two are not on one grid.
+  const auto &backing =
+      backingConverted.getNumSamples() > 0 ? backingConverted : backingSource;
+  if (unity && backingAudible.load() && backing.getNumSamples() > 0 &&
+      backingRate == activeSampleRate) {
+    const float backingLevel = backingGain.load();
+    const int64_t backingLength = backing.getNumSamples();
+    const int backingChannels = backing.getNumChannels();
+    int64_t at = blockStart;
+    int remaining = numOutputSamples;
+    int offset = 0;
+    while (remaining > 0 && backingLevel > 0.0f) {
+      const int64_t segmentEnd = loopActive ? loopEnd : waveformLength;
+      const int64_t available = segmentEnd - at;
+      if (available <= 0) {
+        if (!loopActive)
+          break;
+        at = loopStart;
+        continue;
+      }
+      const int count = static_cast<int>(std::min<int64_t>(remaining, available));
+      const int readable = static_cast<int>(
+          std::max<int64_t>(0, std::min<int64_t>(count, backingLength - at)));
+      if (readable > 0)
+        for (int ch = 0; ch < outputBuffer->getNumChannels(); ++ch)
+          outputBuffer->addFrom(ch, startSample + offset, backing,
+                                std::min(ch, backingChannels - 1),
+                                static_cast<int>(at), readable, backingLevel);
+      at += count;
+      remaining -= count;
+      offset += count;
+    }
+  }
+
+  // The sound laid over once (the scale a key is confirmed with): from where
+  // it had got to, whatever the transport did.
+  if (overlayActive.load()) {
+    const int overlayLength = overlayWaveform.getNumSamples();
+    const int count = std::min(numOutputSamples, overlayLength - overlayPosition);
+    if (count > 0 && overlayRate == static_cast<int>(std::lround(currentSampleRate))) {
+      const float overlayLevel = overlayGain.load();
+      const int overlayChannels = overlayWaveform.getNumChannels();
+      for (int ch = 0; ch < outputBuffer->getNumChannels(); ++ch)
+        outputBuffer->addFrom(ch, startSample, overlayWaveform,
+                              std::min(ch, overlayChannels - 1), overlayPosition,
+                              count, overlayLevel);
+    }
+    overlayPosition += std::max(0, count);
+    if (count <= 0 || overlayPosition >= overlayLength)
+      overlayActive.store(false);
+  }
 
   if (auditioning)
     auditionPosition.store(pos);
@@ -343,6 +407,7 @@ void AudioEngine::getNextAudioBlock(
 
   if (!loopActive && samplesRemaining > 0) {
     playing = false;
+    overlayActive.store(false);
     currentPosition.store(0);
     interpolator.reset();
     if (auto cb = std::atomic_load(&finishCallback))
@@ -489,11 +554,89 @@ void AudioEngine::loadProjectAudio(const AudioData &audioData,
   loadWaveform(playback.audio, playback.sampleRate, preservePosition);
 }
 
-void AudioEngine::handleAsyncUpdate() {
-  if (deviceSourceWaveform.getNumSamples() <= 0)
+void AudioEngine::handleAsyncUpdate() { convertForDeviceRate(); }
+
+void AudioEngine::convertForDeviceRate() {
+  if (deviceSourceWaveform.getNumSamples() > 0) {
+    const auto source = deviceSourceWaveform; // loadWaveform replaces it
+    loadWaveform(source, deviceSourceSampleRate, true);
+  }
+  if (backingSource.getNumSamples() > 0) {
+    const auto source = backingSource; // setBacking replaces it
+    setBacking(source, backingSourceRate);
+  }
+  // A scale half played is not worth converting: it is played again.
+  stopOverlay();
+}
+
+void AudioEngine::setBacking(const juce::AudioBuffer<float> &buffer, int sampleRate) {
+  if (buffer.getNumSamples() <= 0 || sampleRate <= 0) {
+    clearBacking();
     return;
-  const auto source = deviceSourceWaveform; // loadWaveform replaces it
-  loadWaveform(source, deviceSourceSampleRate, true);
+  }
+  int rate = sampleRate;
+  auto converted = toDeviceRate(buffer, rate); // before the lock: it takes a while
+  const bool differs = rate != sampleRate;
+  juce::AudioBuffer<float> source;
+  source.makeCopyOf(buffer);
+  if (!differs)
+    converted.setSize(0, 0);
+  {
+    const juce::SpinLock::ScopedLockType lock(waveformLock);
+    std::swap(backingSource, source);
+    std::swap(backingConverted, converted);
+    backingSourceRate = sampleRate;
+    backingRate = rate;
+    backingPresent.store(true);
+  }
+  // `source` and `converted` now hold what was there: freed here, not on
+  // the audio thread.
+}
+
+void AudioEngine::clearBacking() {
+  juce::AudioBuffer<float> source, converted;
+  {
+    const juce::SpinLock::ScopedLockType lock(waveformLock);
+    std::swap(backingSource, source);
+    std::swap(backingConverted, converted);
+    backingSourceRate = 0;
+    backingRate = 0;
+    backingPresent.store(false);
+  }
+}
+
+namespace {
+// The faders: -60 dB and under is silence, +12 at most (mixdown::faderGain,
+// shared with the export of the whole).
+float faderGain(float dB) { return mixdown::faderGain(dB); }
+float faderDb(float gain) { return juce::Decibels::gainToDecibels(gain, -60.0f); }
+} // namespace
+
+void AudioEngine::setBackingGainDb(float dB) { backingGain.store(faderGain(dB)); }
+float AudioEngine::getBackingGainDb() const { return faderDb(backingGain.load()); }
+void AudioEngine::setVoiceGainDb(float dB) { voiceGain.store(faderGain(dB)); }
+float AudioEngine::getVoiceGainDb() const { return faderDb(voiceGain.load()); }
+void AudioEngine::setOverlayGainDb(float dB) { overlayGain.store(faderGain(dB)); }
+float AudioEngine::getOverlayGainDb() const { return faderDb(overlayGain.load()); }
+
+void AudioEngine::playOverlay(const juce::AudioBuffer<float> &buffer, int sampleRate) {
+  if (buffer.getNumSamples() <= 0 || sampleRate <= 0) {
+    stopOverlay();
+    return;
+  }
+  int rate = sampleRate;
+  auto converted = toDeviceRate(buffer, rate);
+  const juce::SpinLock::ScopedLockType lock(waveformLock);
+  std::swap(overlayWaveform, converted);
+  overlayRate = rate;
+  overlayPosition = 0;
+  overlayActive.store(true);
+}
+
+void AudioEngine::stopOverlay() {
+  const juce::SpinLock::ScopedLockType lock(waveformLock);
+  overlayActive.store(false);
+  overlayPosition = 0;
 }
 
 void AudioEngine::loadWaveform(const juce::AudioBuffer<float> &sourceBuffer,
@@ -580,12 +723,17 @@ void AudioEngine::play() {
   playing = true;
 }
 
-void AudioEngine::pause() { playing = false; }
+void AudioEngine::pause() {
+  playing = false;
+  overlayActive.store(false); // not carried on when the transport plays again
+}
 
 void AudioEngine::stop() {
   playing = false;
 
   const juce::SpinLock::ScopedLockType lock(waveformLock);
+  overlayActive.store(false); // what was laid over the transport goes with it
+  overlayPosition = 0;
   currentPosition.store(0);
   interpolator.reset();
   fractionalPosition = 0.0;
