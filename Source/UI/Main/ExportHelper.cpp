@@ -1,5 +1,6 @@
 #include "ExportHelper.h"
 #include "../../Utils/AudioResampler.h"
+#include "../../Audio/Mixdown.h"
 #include "../../Utils/Localization.h"
 #include "../StyledComponents.h"
 #include <cmath>
@@ -40,38 +41,55 @@ juce::String getFormatWildcard(ExportFormat format) {
 
 juce::AudioBuffer<float> convertChannels(const juce::AudioBuffer<float> &input,
                                           int outChannels) {
-  outChannels = juce::jlimit(1, 2, outChannels);
-  const int inChannels = juce::jmax(1, input.getNumChannels());
-  const int numSamples = input.getNumSamples();
-
-  juce::AudioBuffer<float> output(outChannels, numSamples);
-  output.clear();
-
-  if (outChannels == 1) {
-    float *dst = output.getWritePointer(0);
-    for (int i = 0; i < numSamples; ++i) {
-      float sum = 0.0f;
-      for (int ch = 0; ch < inChannels; ++ch)
-        sum += input.getSample(ch, i);
-      dst[i] = sum / static_cast<float>(inChannels);
-    }
-    return output;
-  }
-
-  // Stereo output
-  if (inChannels == 1) {
-    output.copyFrom(0, 0, input, 0, 0, numSamples);
-    output.copyFrom(1, 0, input, 0, 0, numSamples);
-  } else {
-    output.copyFrom(0, 0, input, 0, 0, numSamples);
-    output.copyFrom(1, 0, input, 1, 0, numSamples);
-  }
-  return output;
+  // One rule for a single track and for the whole (Mixdown.h).
+  return mixdown::toChannels(input, outChannels);
 }
 
 juce::AudioBuffer<float> resampleAudio(const juce::AudioBuffer<float> &input,
                                         int sourceRate, int targetRate) {
   return AudioResampler::resample(input, sourceRate, targetRate);
+}
+
+ExportAudio buildExportAudio(const ExportSettings &settings,
+                             const juce::AudioBuffer<float> &voice, int voiceRate,
+                             const BackingTrack &backing, float voiceDb) {
+  ExportAudio result;
+  if (settings.track == ExportTrack::voice) {
+    // The voice, as it was always exported: no fader on it.
+    result.audio = convertChannels(voice, settings.channels);
+    result.audio = resampleAudio(result.audio, voiceRate, settings.sampleRate);
+    return result;
+  }
+
+  juce::AudioBuffer<float> backingAudio;
+  int backingRate = 0;
+  {
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(backing.file));
+    if (reader != nullptr && reader->lengthInSamples > 0) {
+      backingRate = static_cast<int>(std::lround(reader->sampleRate));
+      backingAudio.setSize(static_cast<int>(reader->numChannels),
+                           static_cast<int>(reader->lengthInSamples));
+      reader->read(&backingAudio, 0, backingAudio.getNumSamples(), 0, true, true);
+    }
+  }
+  if (backingAudio.getNumSamples() <= 0) {
+    result.error = TR("dialog.backing_unreadable") + "\n" + backing.file.getFullPathName();
+    return result;
+  }
+  if (settings.track == ExportTrack::backing) {
+    result.audio = convertChannels(backingAudio, settings.channels);
+    result.audio = resampleAudio(result.audio, backingRate, settings.sampleRate);
+    return result;
+  }
+  // The two as they play together: each at its fader.
+  auto mixed = mixdown::mix({&voice, voiceRate, voiceDb},
+                            {&backingAudio, backingRate, backing.gainDb},
+                            settings.sampleRate, settings.channels);
+  result.audio = std::move(mixed.audio);
+  result.mixPeak = mixed.peak;
+  return result;
 }
 
 juce::AudioFormat *findFormatForExtension(juce::AudioFormatManager &manager,
@@ -98,9 +116,24 @@ class ExportSettingsContent final : public juce::Component, private juce::Button
 public:
   ExportSettingsContent(int inputSampleRate,
                         const std::optional<ExportSettings> &savedSettings,
-                        std::function<void(std::optional<ExportSettings>)> done)
-      : onDone(std::move(done)) {
+                        std::function<void(std::optional<ExportSettings>)> done,
+                        bool offerTracks)
+      : onDone(std::move(done)), tracksOffered(offerTracks) {
     setOpaque(false);
+
+    // Which track, when there is an accompaniment to choose.
+    if (tracksOffered)
+      setupCombo(trackBox, trackLabel, TR("export.track"),
+                 {TR("export.track_voice"), TR("export.track_backing"), TR("export.track_mix")}, 1);
+    // The recording's own rate, under the rate chosen: the same exports
+    // without a conversion.
+    addAndMakeVisible(sourceRateNote);
+    sourceRateNote.setText(TR("export.source_rate").replace("{rate}", juce::String(inputSampleRate)),
+                           juce::dontSendNotification);
+    sourceRateNote.setJustificationType(juce::Justification::centredRight);
+    sourceRateNote.setColour(juce::Label::textColourId, APP_COLOR_TEXT_MUTED);
+    sourceRateNote.setFont(AppFont::getFont(12.0f));
+    sourceRateNote.setMinimumHorizontalScale(0.7f);
 
     addAndMakeVisible(title);
     title.setText(TR("export.title"), juce::dontSendNotification);
@@ -181,7 +214,9 @@ public:
     const int rowHeight = 32;
     const int rowGap = 6;
     constexpr int cardVerticalPadding = 12;
-    const int cardHeight = 4 * rowHeight + 3 * rowGap + 2 * cardVerticalPadding;
+    const int rows = tracksOffered ? 5 : 4;
+    const int cardHeight =
+        rows * rowHeight + (rows - 1) * rowGap + kSourceRateNoteHeight + 2 * cardVerticalPadding;
     cardBounds = area.removeFromTop(cardHeight);
     area.removeFromTop(16);
     auto buttonRow = area.removeFromTop(32);
@@ -197,8 +232,14 @@ public:
         content.removeFromTop(rowGap);
     };
 
+    if (tracksOffered)
+      layoutRow(trackLabel, trackBox);
     layoutRow(formatLabel, formatBox);
     layoutRow(sampleRateLabel, sampleRateBox);
+    // The note sits in the gap under the rate, and takes its own line.
+    content.setTop(content.getY() - rowGap);
+    sourceRateNote.setBounds(content.removeFromTop(kSourceRateNoteHeight));
+    content.removeFromTop(rowGap);
     layoutRow(bitDepthLabel, bitDepthBox);
     layoutRow(channelsLabel, channelsBox);
 
@@ -232,6 +273,10 @@ private:
 
   ExportSettings getSettings() const {
     ExportSettings settings;
+    if (tracksOffered)
+      settings.track = trackBox.getSelectedId() == 2   ? ExportTrack::backing
+                       : trackBox.getSelectedId() == 3 ? ExportTrack::mix
+                                                       : ExportTrack::voice;
     switch (formatBox.getSelectedId()) {
     case 2:
       settings.format = ExportFormat::flac;
@@ -266,21 +311,38 @@ private:
       closeWith(std::nullopt);
   }
 
+public:
+  static constexpr int kSourceRateNoteHeight = 16;
+  /** The dialog's height for its rows. */
+  static int heightFor(bool offerTracks) { return 284 + kSourceRateNoteHeight + (offerTracks ? 38 : 0); }
+
+private:
   std::function<void(std::optional<ExportSettings>)> onDone;
+  bool tracksOffered = false;
   juce::Rectangle<int> cardBounds;
   juce::Label title;
-  juce::Label formatLabel, sampleRateLabel, bitDepthLabel, channelsLabel;
-  StyledComboBox formatBox, sampleRateBox, bitDepthBox, channelsBox;
+  juce::Label trackLabel, formatLabel, sampleRateLabel, bitDepthLabel, channelsLabel;
+  juce::Label sourceRateNote;
+  StyledComboBox trackBox, formatBox, sampleRateBox, bitDepthBox, channelsBox;
   juce::TextButton cancelButton, exportButton;
 };
+
+std::unique_ptr<juce::Component> makeExportSettingsContent(int inputSampleRate, bool offerTracks) {
+  auto content = std::make_unique<ExportSettingsContent>(inputSampleRate, std::nullopt,
+                                                         [](std::optional<ExportSettings>) {},
+                                                         offerTracks);
+  content->setSize(420, ExportSettingsContent::heightFor(offerTracks));
+  return content;
+}
 
 void showExportSettingsDialogAsync(
     juce::Component *parent, int inputSampleRate,
     const std::optional<ExportSettings> &savedSettings,
-    std::function<void(std::optional<ExportSettings>)> onDone) {
+    std::function<void(std::optional<ExportSettings>)> onDone, bool offerTracks) {
   constexpr int dialogWidth = 420;
-  constexpr int dialogHeight = 284;
-  auto *content = new ExportSettingsContent(inputSampleRate, savedSettings, std::move(onDone));
+  const int dialogHeight = ExportSettingsContent::heightFor(offerTracks);
+  auto *content =
+      new ExportSettingsContent(inputSampleRate, savedSettings, std::move(onDone), offerTracks);
   content->setSize(dialogWidth, dialogHeight);
 
   juce::DialogWindow::LaunchOptions opts;
