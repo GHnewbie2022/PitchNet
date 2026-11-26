@@ -264,9 +264,12 @@ private:
       loadLanguageMapFromFile(enFile, englishStrings);
   }
 
-  /** "zh-TW" -> "zh_TW_json", the name juce_add_binary_data generates. */
+  /** "zh-TW" -> "zhTW_json", the name juce_add_binary_data generates: it
+   *  keeps letters, digits and underscores, and drops the hyphen (it does
+   *  not turn it into an underscore - with that name the Traditional
+   *  Chinese file was never found, and the language never listed). */
   static juce::String getBinaryResourceName(const juce::String &langCode) {
-    return langCode.replaceCharacter('-', '_') + "_json";
+    return langCode.removeCharacters("-") + "_json";
   }
 
   static bool loadLanguageMapFromBinaryData(
