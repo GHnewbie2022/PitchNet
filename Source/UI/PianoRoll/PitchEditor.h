@@ -23,8 +23,10 @@ public:
     void setSnapToSemitoneDragEnabled(bool enabled) { snapToSemitoneDragEnabled = enabled; }
     void setDragSnapMode(DragSnapMode mode) { dragSnapMode = mode; }
     void setPitchReferenceHz(int hz) { pitchReferenceHz = juce::jlimit(420, 450, hz); }
-    float getSnappedDragOffset(float rawOffsetSemitones,
-                               float anchorMidiNote) const;
+    /** `anchor`: the note the drag is measured on. With changes of key in
+     *  the project (Project::keyRootFor) it snaps to that note's key. */
+    float getSnappedDragOffset(float rawOffsetSemitones, float anchorMidiNote,
+                               const Note* anchor = nullptr) const;
 
     // Note selection and dragging
     Note* findNoteAt(float x, float y);
@@ -86,6 +88,7 @@ private:
     std::vector<Note*> draggedNotes;
     Note* hoveredMultiDragNote = nullptr;
     float multiDragSnapAnchorMidi = 60.0f;
+    const Note* multiDragSnapAnchor = nullptr; // whose key a drag of several snaps to
     bool multiDragFine = false;
     std::vector<float> originalMidiNotes;
     std::vector<std::vector<float>> originalF0ValuesMulti;

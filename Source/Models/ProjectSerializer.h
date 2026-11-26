@@ -39,7 +39,14 @@ public:
     // it would not see them: it would render those notes by what the
     // detector finds, and save them without the marks. So it refuses the
     // file. Versions 6 to 9 still open, no note of theirs marked.
-    static constexpr int FORMAT_VERSION = 10;
+    // 11: the wizard's data (spec section 15): changes of key along the
+    // recording ("keyChanges"), the accompaniment the project links
+    // ("backing") with the voice's level beside it ("vocalGainDb"), and
+    // notes locked against automatic tuning ("locked"). A build before it
+    // would show and snap to one key throughout, and save the project
+    // without any of them. So it refuses the file. Versions 6 to 10 still
+    // open, with none of these.
+    static constexpr int FORMAT_VERSION = 11;
     static constexpr int STRETCH_BY_KIND = 2;
     static constexpr int FIRST_WARP_FORMAT_VERSION = 6;
 

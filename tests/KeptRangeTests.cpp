@@ -80,7 +80,7 @@ void theMarksAreSaved()
   project.getNotes()[1].setKeptRange(kNone, kNone); // marked, keeping nothing
 
   const auto saved = ProjectSerializer::toSavedJson(project);
-  CHECK(static_cast<int>(saved.getProperty("formatVersion", 0)) == 10);
+  CHECK(static_cast<int>(saved.getProperty("formatVersion", 0)) == ProjectSerializer::FORMAT_VERSION);
   const auto text = juce::JSON::toString(saved);
   Project reopened;
   CHECK(ProjectSerializer::fromJson(reopened, juce::JSON::parse(text)));

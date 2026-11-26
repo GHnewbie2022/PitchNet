@@ -306,6 +306,13 @@ public:
         keptTailFrom = kKeepsNone;
     }
 
+    // Locked (spec section 15): the user heard this note and wants it left
+    // as it is. The wizard's automatic tuning passes it by; editing by hand
+    // is as free as ever. A split leaves both pieces locked, a merge with a
+    // locked note is locked.
+    bool isLocked() const { return locked; }
+    void setLocked(bool lock) { locked = lock; }
+
     // True after this note has contributed to the rendered composite waveform.
     // This lightweight state replaces the former per-note audio cache and lets
     // incremental synthesis refresh connected edited-note clusters.
@@ -420,6 +427,7 @@ private:
     std::vector<SourceSpan> analysisSpans;
     bool renderedEdit = false; // Audio for this note is present in the composite
     SynthEngine synthEngine = SynthEngine::Auto;
+    bool locked = false;              // see isLocked()
     bool keptRangeSet = false;        // kept by hand, see setKeptRange()
     int keptHeadUntil = kKeepsNone;   // source frame, or kKeepsNone
     int keptTailFrom = kKeepsNone;    // source frame, or kKeepsNone

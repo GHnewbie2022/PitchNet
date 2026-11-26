@@ -545,7 +545,7 @@ bool SelectHandler::mouseDrag(const juce::MouseEvent &e, float worldX,
           deltaY, originalMidiNote, project->getPitchReferenceHz());
     else if (owner_.snapToSemitoneDrag != e.mods.isAltDown())
       deltaSemitones = owner_.pitchEditor->getSnappedDragOffset(
-          deltaSemitones, originalMidiNote);
+          deltaSemitones, originalMidiNote, draggedNote);
 
     draggedNote->setPitchOffset(deltaSemitones);
     draggedNote->markDirty();

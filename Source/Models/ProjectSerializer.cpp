@@ -395,6 +395,34 @@ juce::var ProjectSerializer::toJson(const Project& project,
     obj->setProperty("projectKeyRoot", project.getProjectKeyRoot());
     obj->setProperty("projectKeyMode", static_cast<int>(project.getProjectKeyMode()));
     obj->setProperty("projectKeyInitialized", project.getMacroParameters()->projectKeyInitialized);
+    // The wizard's data (spec section 15), each written only when there is
+    // some: changes of key, the accompaniment, the voice's level beside it.
+    if (!project.getKeyChanges().empty()) {
+        juce::Array<juce::var> changes;
+        for (const auto& change : project.getKeyChanges()) {
+            auto* changeObject = new juce::DynamicObject();
+            changeObject->setProperty("frame", change.sourceFrame);
+            changeObject->setProperty("root", change.root);
+            changes.add(juce::var(changeObject));
+        }
+        obj->setProperty("keyChanges", changes);
+    }
+    if (project.getBacking().isSet()) {
+        const auto& backing = project.getBacking();
+        auto* backingObject = new juce::DynamicObject();
+        backingObject->setProperty("path", backing.file.getFullPathName());
+        backingObject->setProperty("sampleRate", backing.sampleRate);
+        backingObject->setProperty("channels", backing.channels);
+        backingObject->setProperty("samples", backing.samples);
+        backingObject->setProperty("aligned", backing.aligned);
+        backingObject->setProperty("audible", backing.audible);
+        backingObject->setProperty("gainDb", backing.gainDb);
+        obj->setProperty("backing", juce::var(backingObject));
+    }
+    if (project.getVocalGainDb() != 0.0f)
+        obj->setProperty("vocalGainDb", project.getVocalGainDb());
+    if (project.isKeyConfirmed())
+        obj->setProperty("keyConfirmed", true);
     obj->setProperty("pitchReferenceHz", project.getPitchReferenceHz());
     obj->setProperty("snapToSemitones", project.getSnapToSemitones());
     obj->setProperty("dragSnapMode",
@@ -659,6 +687,28 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
         detectedMode >= static_cast<int>(ScaleMode::Major) && detectedMode <= static_cast<int>(ScaleMode::WholeTone)
             ? static_cast<ScaleMode>(detectedMode) : ScaleMode::Major);
     project.setUseProjectKey(static_cast<bool>(json.getProperty("useProjectKey", true)));
+    {
+        std::vector<KeyChange> changes;
+        if (const auto* list = json.getProperty("keyChanges", juce::var()).getArray())
+            for (const auto& item : *list)
+                changes.push_back({static_cast<int>(item.getProperty("frame", 0)),
+                                   static_cast<int>(item.getProperty("root", 0))});
+        project.setKeyChanges(std::move(changes));
+        BackingTrack backing;
+        const auto saved = json.getProperty("backing", juce::var());
+        if (saved.isObject() && saved.getProperty("path", "").toString().isNotEmpty()) {
+            backing.file = juce::File(saved.getProperty("path", "").toString());
+            backing.sampleRate = static_cast<int>(saved.getProperty("sampleRate", 0));
+            backing.channels = static_cast<int>(saved.getProperty("channels", 0));
+            backing.samples = static_cast<juce::int64>(saved.getProperty("samples", 0));
+            backing.aligned = static_cast<bool>(saved.getProperty("aligned", false));
+            backing.audible = static_cast<bool>(saved.getProperty("audible", false));
+            backing.gainDb = static_cast<float>(saved.getProperty("gainDb", -6.0));
+        }
+        project.setBacking(std::move(backing));
+        project.setVocalGainDb(static_cast<float>(json.getProperty("vocalGainDb", 0.0)));
+        project.setKeyConfirmed(static_cast<bool>(json.getProperty("keyConfirmed", false)));
+    }
     project.setPitchReferenceHz(static_cast<int>(json.getProperty("pitchReferenceHz", 440)));
     project.setSnapToSemitones(static_cast<bool>(
         json.getProperty("snapToSemitones", false)));
@@ -1248,6 +1298,8 @@ juce::var ProjectSerializer::noteToJson(const Note& note,
         obj->setProperty("synthEngine", "vocoderRecordedHighsFry");
     else if (note.getSynthEngine() == Note::SynthEngine::Vocoder)
         obj->setProperty("synthEngine", "vocoder");
+    if (note.isLocked())
+        obj->setProperty("locked", true);
     // The stretches kept by hand, written only for the notes that have them.
     if (note.hasKeptRange())
     {
@@ -1367,6 +1419,7 @@ bool ProjectSerializer::noteFromJson(Note& note, const juce::var& json,
                 static_cast<int>(json.getProperty("keptHeadUntil", Note::kKeepsNone)),
                 static_cast<int>(json.getProperty("keptTailFrom", Note::kKeepsNone)));
     }
+    note.setLocked(static_cast<bool>(json.getProperty("locked", false)));
     note.setVibrato(static_cast<float>(json.getProperty("vibrato", 1.0)));
     note.setPitchDrift(static_cast<float>(json.getProperty("pitchDrift", 1.0)));
     note.setSmoothLeftFrames(json.getProperty("smoothLeftFrames", 0));

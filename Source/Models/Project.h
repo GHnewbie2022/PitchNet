@@ -199,6 +199,52 @@ enum class TimelineGridDivision : int
     ThirtySecond = 32
 };
 
+/**
+ * A change of key (spec section 15): from `sourceFrame` of the recording on,
+ * the key is the scale on `root` (0 = C). The frame is the recording's, as a
+ * note's source frames are, so a stretch of the timeline takes the change
+ * along with the notes it belongs to. Before the first change the key is the
+ * project's own (Project::getScaleRootNote).
+ */
+struct KeyChange
+{
+    int sourceFrame = 0;
+    int root = 0;
+
+    bool operator==(const KeyChange &other) const
+    {
+        return sourceFrame == other.sourceFrame && root == other.root;
+    }
+    bool operator!=(const KeyChange &other) const { return !(*this == other); }
+};
+
+/**
+ * The accompaniment a project is tuned against (spec section 15): a file the
+ * project links, as it links its recording. Heard beside the voice while
+ * editing, read to find the key, mixed into an export of the whole. The
+ * plug-in keeps it with the project and does nothing with it: the host plays
+ * the accompaniment there.
+ */
+struct BackingTrack
+{
+    juce::File file;
+    int sampleRate = 0; // the file as it read when it was linked
+    int channels = 0;
+    juce::int64 samples = 0;
+    bool aligned = false; // the user said it starts where the recording does: asked once a file
+    bool audible = false; // plays along while editing
+    float gainDb = -6.0f;
+
+    bool isSet() const { return file != juce::File{}; }
+    bool operator==(const BackingTrack &other) const
+    {
+        return file == other.file && sampleRate == other.sampleRate && channels == other.channels &&
+               samples == other.samples && aligned == other.aligned && audible == other.audible &&
+               gainDb == other.gainDb;
+    }
+    bool operator!=(const BackingTrack &other) const { return !(*this == other); }
+};
+
 struct MacroParameters
 {
     ScaleMode scaleMode = ScaleMode::Chromatic;
@@ -367,6 +413,49 @@ public:
     ScaleMode getProjectKeyMode() const { return macroParameters->projectKeyMode; }
     void setProjectKey(int root, ScaleMode mode);
 
+    // Changes of key along the recording (KeyChange), in order. None: the
+    // project's key throughout.
+    const std::vector<KeyChange> &getKeyChanges() const { return keyChanges; }
+    /** Kept in order, one a frame (the last given wins), roots 0..11; a
+     *  change at or before frame 0 is dropped (that is the project's key). */
+    void setKeyChanges(std::vector<KeyChange> changes);
+    /** The root of the key at a frame of the recording. */
+    int keyRootAt(int sourceFrame) const;
+    /** ...of the key a note is sung in: where the middle of it was recorded. */
+    int keyRootFor(const Note &note) const
+    {
+        return keyRootAt((note.getSrcStartFrame() + note.getSrcEndFrame()) / 2);
+    }
+
+    // The accompaniment (BackingTrack) and the voice's level beside it.
+    const BackingTrack &getBacking() const { return backing; }
+    void setBacking(BackingTrack track)
+    {
+        if (backing == track)
+            return;
+        backing = std::move(track);
+        modified = true;
+    }
+    // The user confirmed the key (the wizard, or a flag on the ruler): the
+    // wizard, run again, starts from it rather than from its own first guess.
+    bool isKeyConfirmed() const { return keyConfirmed; }
+    void setKeyConfirmed(bool confirmed)
+    {
+        if (keyConfirmed != confirmed)
+        {
+            keyConfirmed = confirmed;
+            modified = true;
+        }
+    }
+    float getVocalGainDb() const { return vocalGainDb; }
+    void setVocalGainDb(float db)
+    {
+        if (vocalGainDb == db)
+            return;
+        vocalGainDb = db;
+        modified = true;
+    }
+
     int getPitchReferenceHz() const { return macroParameters->pitchReferenceHz; }
     void setPitchReferenceHz(int hz);
     bool getSnapToSemitones() const { return macroParameters->snapToSemitones; }
@@ -444,6 +533,10 @@ private:
     ScaleMode detectedKeyMode = ScaleMode::Major;
     ScaleMode preferredScaleMode = ScaleMode::Major;
     int scaleRootNote = 0; // 0 = C, 1 = C#, ..., 11 = B
+    std::vector<KeyChange> keyChanges;
+    BackingTrack backing;
+    float vocalGainDb = 0.0f;
+    bool keyConfirmed = false;
     std::shared_ptr<MacroParameters> macroParameters;
     std::shared_ptr<debugjournal::Journal> debugJournal = std::make_shared<debugjournal::Journal>();
     recording::Fingerprint recordingFingerprint;

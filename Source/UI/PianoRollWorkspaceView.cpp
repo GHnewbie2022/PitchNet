@@ -482,7 +482,7 @@ void PianoRollWorkspaceView::showPitchCenterPopup()
             const float sourceMidi = center.sourceMidiNote;
             const float corrected = snapToScale
                 ? ScaleUtils::snapMidiToScale(sourceMidi, correctionScaleMode,
-                                               state.target.project->getScaleRootNote(),
+                                               state.target.project->keyRootFor(*center.note),
                                                state.target.project->getPitchReferenceHz())
                 : std::round(sourceMidi);
             const float signedDeviation = sourceMidi - corrected;

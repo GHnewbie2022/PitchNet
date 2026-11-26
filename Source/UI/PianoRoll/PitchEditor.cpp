@@ -7,14 +7,16 @@
 PitchEditor::PitchEditor() = default;
 
 float PitchEditor::getSnappedDragOffset(float rawOffsetSemitones,
-                                        float anchorMidiNote) const
+                                        float anchorMidiNote,
+                                        const Note* anchor) const
 {
   const int roundedOffset = static_cast<int>(std::round(rawOffsetSemitones));
   if (dragSnapMode != DragSnapMode::Scale || project == nullptr)
     return static_cast<float>(roundedOffset);
 
   const ScaleMode scaleMode = project->getPreferredScaleMode();
-  const int rootNote = project->getScaleRootNote();
+  const int rootNote =
+      anchor != nullptr ? project->keyRootFor(*anchor) : project->getScaleRootNote();
   if (scaleMode == ScaleMode::None || scaleMode == ScaleMode::Chromatic ||
       rootNote < 0)
     return static_cast<float>(roundedOffset);
@@ -128,7 +130,7 @@ void PitchEditor::updateNoteDrag(float y)
   float deltaY = dragStartY - y;
   float deltaSemitones = deltaY / coordMapper->getPixelsPerSemitone();
   if (snapToSemitoneDragEnabled)
-    deltaSemitones = getSnappedDragOffset(deltaSemitones, originalMidiNote);
+    deltaSemitones = getSnappedDragOffset(deltaSemitones, originalMidiNote, draggedNote);
 
   draggedNote->setPitchOffset(deltaSemitones);
   draggedNote->markDirty();
@@ -228,7 +230,7 @@ void PitchEditor::snapNoteToSemitone(Note *note)
   const float currentOffset = note->getPitchOffset();
   const float adjustedMidi = note->getMidiNote() + currentOffset;
   const float snappedMidi = static_cast<float>(ScaleUtils::snapMidiToScale(
-      adjustedMidi, project->getScaleMode(), project->getScaleRootNote(),
+      adjustedMidi, project->getScaleMode(), project->keyRootFor(*note),
       project->getPitchReferenceHz()));
   const float snappedOffset = snappedMidi - note->getMidiNote();
 
@@ -267,6 +269,7 @@ void PitchEditor::startMultiNoteDrag(const std::vector<Note *> &notes,
   multiDragSnapAnchorMidi = hoveredNote != nullptr
                                 ? hoveredNote->getMidiNote()
                                 : notes.front()->getMidiNote();
+  multiDragSnapAnchor = hoveredNote != nullptr ? hoveredNote : notes.front();
 
   auto &audioData = project->getAudioData();
   int f0Size = static_cast<int>(audioData.f0.size());
@@ -314,7 +317,7 @@ void PitchEditor::updateMultiNoteDrag(float x, float y, bool invertSnap)
         deltaY, multiDragSnapAnchorMidi, pitchReferenceHz);
   else if (snapToSemitoneDragEnabled != invertSnap)
     deltaSemitones =
-        getSnappedDragOffset(deltaSemitones, multiDragSnapAnchorMidi);
+        getSnappedDragOffset(deltaSemitones, multiDragSnapAnchorMidi, multiDragSnapAnchor);
 
   for (auto *note : draggedNotes)
   {

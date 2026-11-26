@@ -309,6 +309,41 @@ void Project::setUseProjectKey(bool inherit)
     modified = true;
 }
 
+void Project::setKeyChanges(std::vector<KeyChange> changes)
+{
+    for (auto &change : changes)
+        change.root = (change.root % 12 + 12) % 12;
+    // In order of frame, the later of two on one frame after the earlier.
+    std::stable_sort(changes.begin(), changes.end(),
+                     [](const KeyChange &a, const KeyChange &b) { return a.sourceFrame < b.sourceFrame; });
+    std::vector<KeyChange> kept;
+    for (const auto &change : changes)
+    {
+        if (change.sourceFrame <= 0)
+            continue;
+        if (!kept.empty() && kept.back().sourceFrame == change.sourceFrame)
+            kept.back() = change;
+        else
+            kept.push_back(change);
+    }
+    if (kept == keyChanges)
+        return;
+    keyChanges = std::move(kept);
+    modified = true;
+}
+
+int Project::keyRootAt(int sourceFrame) const
+{
+    int root = getScaleRootNote();
+    for (const auto &change : keyChanges)
+    {
+        if (change.sourceFrame > sourceFrame)
+            break;
+        root = change.root;
+    }
+    return root;
+}
+
 void Project::setProjectKey(int root, ScaleMode mode)
 {
     macroParameters->projectKeyRoot = juce::jlimit(0, 11, root);

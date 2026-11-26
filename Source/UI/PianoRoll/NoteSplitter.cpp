@@ -755,6 +755,7 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame, bool keepCentre)
     // the stretches kept by hand go with them. Those are frames of the
     // recording (Note::setKeptRange), so each half keeps what of them lies
     // in it with nothing to work out.
+    secondNote.setLocked(note->isLocked());
     secondNote.setSynthEngine(note->getSynthEngine());
     if (note->hasKeptRange())
         secondNote.setKeptRange(note->getKeptHeadUntil(), note->getKeptTailFrom());
@@ -1034,6 +1035,8 @@ bool NoteSplitter::mergeNotes(Note *first, Note *second)
         sungPitch(project->getAudioData(), aroundStart, aroundEnd);
 
     Note mergedNote = firstNote;
+    // Locked when either half was (Note::isLocked).
+    mergedNote.setLocked(firstNote.isLocked() || secondNote.isLocked());
     mergedNote.setEndFrame(secondNote.getEndFrame());
     mergedNote.setSrcEndFrame(secondNote.getSrcEndFrame());
     {
